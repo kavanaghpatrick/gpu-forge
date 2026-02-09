@@ -1,0 +1,72 @@
+// Template: gemm.metal.tmpl
+// GPU-Forge Metal Shader Template — Tiled General Matrix Multiply
+//
+// Parameters:
+//   {{TYPE}}      — Data type (float, half)
+//   {{TILE_SIZE}} — Tile dimension for shared memory blocking (16 or 32)
+//
+// Computes: C = A * B
+//   A is M x K, B is K x N, C is M x N (row-major)
+//
+// Uses threadgroup shared memory for tiled loading to maximize
+// data reuse and minimize global memory bandwidth.
+
+#include <metal_stdlib>
+using namespace metal;
+
+constant uint TILE = {{TILE_SIZE}};
+
+kernel void gemm(
+    device const {{TYPE}}* A [[buffer(0)]],
+    device const {{TYPE}}* B [[buffer(1)]],
+    device {{TYPE}}*       C [[buffer(2)]],
+    constant uint&         M [[buffer(3)]],
+    constant uint&         N [[buffer(4)]],
+    constant uint&         K [[buffer(5)]],
+    uint2 tid  [[thread_position_in_threadgroup]],
+    uint2 gid  [[threadgroup_position_in_grid]]
+) {
+    // Shared memory tiles for A and B
+    threadgroup {{TYPE}} tileA[{{TILE_SIZE}}][{{TILE_SIZE}}];
+    threadgroup {{TYPE}} tileB[{{TILE_SIZE}}][{{TILE_SIZE}}];
+
+    // Global row and column for this thread
+    uint row = gid.y * TILE + tid.y;
+    uint col = gid.x * TILE + tid.x;
+
+    {{TYPE}} acc = {{TYPE}}(0);
+
+    // Iterate over tiles along the K dimension
+    uint numTiles = (K + TILE - 1) / TILE;
+    for (uint t = 0; t < numTiles; t++) {
+        // Collaborative load of tile from A
+        uint aCol = t * TILE + tid.x;
+        if (row < M && aCol < K) {
+            tileA[tid.y][tid.x] = A[row * K + aCol];
+        } else {
+            tileA[tid.y][tid.x] = {{TYPE}}(0);
+        }
+
+        // Collaborative load of tile from B
+        uint bRow = t * TILE + tid.y;
+        if (bRow < K && col < N) {
+            tileB[tid.y][tid.x] = B[bRow * N + col];
+        } else {
+            tileB[tid.y][tid.x] = {{TYPE}}(0);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Multiply-accumulate within the tile
+        for (uint k = 0; k < TILE; k++) {
+            acc += tileA[tid.y][k] * tileB[k][tid.x];
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write result to global memory
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
+}

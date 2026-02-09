@@ -1,0 +1,17 @@
+{
+  "name": "reduction-kernel",
+  "description": "GPU parallel reduction kernel with configurable operation",
+  "parameters": {
+    "PROJECT_NAME": { "type": "string", "required": true },
+    "KERNEL_NAME": { "type": "string", "default": "reduce" },
+    "TYPE": { "type": "string", "default": "float", "options": ["float", "half", "int", "uint"] },
+    "OP": { "type": "string", "default": "sum", "options": ["sum", "max", "min", "mul"] },
+    "IDENTITY": { "type": "string", "default": "0" }
+  },
+  "files": [
+    { "template": "metal/reduction.metal.tmpl", "output": "Sources/{{PROJECT_NAME}}/Shaders/reduce.metal" },
+    { "template": "swift/Package.swift.tmpl", "output": "Package.swift" },
+    { "template": "swift/main.swift.tmpl", "output": "Sources/{{PROJECT_NAME}}/main.swift" }
+  ],
+  "knowledge_applied": ["gpu-perf", "simd-wave", "msl-kernels"]
+}

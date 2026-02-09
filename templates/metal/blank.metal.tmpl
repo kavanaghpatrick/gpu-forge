@@ -1,0 +1,24 @@
+// Template: blank.metal.tmpl
+// GPU-Forge Metal Shader Template — Minimal Kernel Skeleton
+//
+// Parameters:
+//   {{KERNEL_NAME}} — Name of the compute kernel function
+//   {{TYPE}}        — Primary data type (float, half, int, uint)
+//
+// A minimal starting point for custom Metal compute kernels.
+// Add buffers, threadgroup memory, and logic as needed.
+
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void {{KERNEL_NAME}}(
+    device const {{TYPE}}* input  [[buffer(0)]],
+    device {{TYPE}}*       output [[buffer(1)]],
+    constant uint&         count  [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    if (tid >= count) return;
+
+    // TODO: Implement kernel logic
+    output[tid] = input[tid];
+}

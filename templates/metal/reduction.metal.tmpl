@@ -1,0 +1,50 @@
+// Template: reduction.metal.tmpl
+// GPU-Forge Metal Shader Template — Parallel Reduction
+//
+// Parameters:
+//   {{TYPE}}     — Data type (float, half, int, uint)
+//   {{OP}}       — Reduction operation name (sum, max, min, product)
+//   {{IDENTITY}} — Identity element for the operation (0 for sum, -INFINITY for max, etc.)
+//
+// Usage: Performs tree-based parallel reduction within a threadgroup,
+//        writing per-threadgroup partial results to the output buffer.
+//        A second dispatch (or CPU-side) merges partial results.
+
+#include <metal_stdlib>
+using namespace metal;
+
+// Inline reduction operator
+inline {{TYPE}} reduce_op({{TYPE}} a, {{TYPE}} b) {
+    // {{OP}} operation — replace body for custom ops
+    return a + b;
+}
+
+kernel void reduce_{{OP}}(
+    device const {{TYPE}}* input  [[buffer(0)]],
+    device {{TYPE}}*       output [[buffer(1)]],
+    constant uint&         count  [[buffer(2)]],
+    uint tid [[thread_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint gid [[threadgroup_position_in_grid]],
+    uint threads_per_group [[threads_per_threadgroup]]
+) {
+    // Shared memory for threadgroup reduction
+    threadgroup {{TYPE}} shared[256];
+
+    // Load from global memory (or identity if out of bounds)
+    shared[lid] = (tid < count) ? input[tid] : {{TYPE}}({{IDENTITY}});
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Tree-based reduction within the threadgroup
+    for (uint stride = threads_per_group / 2; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            shared[lid] = reduce_op(shared[lid], shared[lid + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Thread 0 of each threadgroup writes the partial result
+    if (lid == 0) {
+        output[gid] = shared[0];
+    }
+}

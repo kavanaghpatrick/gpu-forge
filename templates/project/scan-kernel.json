@@ -1,0 +1,18 @@
+{
+  "name": "scan-kernel",
+  "description": "GPU parallel prefix sum (scan) kernel with configurable operation",
+  "parameters": {
+    "PROJECT_NAME": { "type": "string", "required": true },
+    "KERNEL_NAME": { "type": "string", "default": "prefix_sum" },
+    "TYPE": { "type": "string", "default": "float", "options": ["float", "half", "int", "uint"] },
+    "OP": { "type": "string", "default": "sum", "options": ["sum", "max", "min", "mul"] },
+    "IDENTITY": { "type": "string", "default": "0" },
+    "SCAN_TYPE": { "type": "string", "default": "exclusive", "options": ["exclusive", "inclusive"] }
+  },
+  "files": [
+    { "template": "metal/scan.metal.tmpl", "output": "Sources/{{PROJECT_NAME}}/Shaders/scan.metal" },
+    { "template": "swift/Package.swift.tmpl", "output": "Package.swift" },
+    { "template": "swift/main.swift.tmpl", "output": "Sources/{{PROJECT_NAME}}/main.swift" }
+  ],
+  "knowledge_applied": ["simd-wave", "gpu-perf", "msl-kernels"]
+}

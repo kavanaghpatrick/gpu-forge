@@ -1,0 +1,16 @@
+{
+  "name": "mlx-custom-kernel",
+  "description": "MLX custom Metal kernel project using mx.fast.metal_kernel() for Python-driven GPU compute",
+  "parameters": {
+    "PROJECT_NAME": { "type": "string", "required": true },
+    "KERNEL_NAME": { "type": "string", "default": "custom_op" },
+    "TYPE": { "type": "string", "default": "float", "options": ["float", "half", "bfloat16"] },
+    "INPUT_COUNT": { "type": "string", "default": "1", "options": ["1", "2", "3"] },
+    "OUTPUT_COUNT": { "type": "string", "default": "1", "options": ["1", "2"] }
+  },
+  "files": [
+    { "template": "mlx/custom-kernel.py.tmpl", "output": "{{PROJECT_NAME}}/{{KERNEL_NAME}}.py" },
+    { "template": "metal/blank.metal.tmpl", "output": "{{PROJECT_NAME}}/kernels/{{KERNEL_NAME}}.metal" }
+  ],
+  "knowledge_applied": ["mlx-compute", "msl-kernels", "gpu-perf"]
+}

@@ -1,0 +1,474 @@
+#!/bin/bash
+# Knowledge Base CLI — query and manage the GPU computing knowledge DB
+# Usage: kb <command> [args...]
+
+# 3-level DB path resolution:
+# 1. GPU_FORGE_DB env var (highest priority)
+# 2. ${CLAUDE_PLUGIN_ROOT}/data/gpu_knowledge.db (plugin runtime)
+# 3. $(dirname "$0")/../data/gpu_knowledge.db (script-relative fallback)
+if [ -n "$GPU_FORGE_DB" ]; then
+  DB="$GPU_FORGE_DB"
+elif [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
+  DB="${CLAUDE_PLUGIN_ROOT}/data/gpu_knowledge.db"
+else
+  DB="$(dirname "$0")/../data/gpu_knowledge.db"
+fi
+
+# Escape single quotes for safe SQL string interpolation
+escape_sql() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+# Run sqlite3 with error checking
+run_sql() {
+  local output
+  output=$(sqlite3 "$@" 2>&1)
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "ERROR: sqlite3 failed (exit code $rc)" >&2
+    echo "$output" >&2
+    # Provide friendly messages for common constraint violations
+    case "$output" in
+      *"blog_post/forum_post/other"*"verified"*)
+        echo "HINT: blog_post, forum_post, and other sources cannot have 'verified' confidence. Use 'high' instead." >&2
+        ;;
+      *"UNIQUE constraint"*"idx_citations_title_year"*)
+        echo "HINT: A citation with this title and year already exists. Check for duplicates with: kb dedup" >&2
+        ;;
+      *"UNIQUE constraint"*"idx_citations_doi"*)
+        echo "HINT: A citation with this DOI already exists. Check for duplicates with: kb dedup" >&2
+        ;;
+    esac
+    return $rc
+  fi
+  [ -n "$output" ] && printf '%s\n' "$output"
+  return 0
+}
+
+case "${1}" in
+  add)
+    # kb add <skill_name> <topic> <claim> [evidence] [source_url] [source_title] [source_type] [confidence] [tags]
+    skill=$(escape_sql "$2")
+    topic=$(escape_sql "$3")
+    claim=$(escape_sql "$4")
+    evidence=$(escape_sql "$5")
+    source_url=$(escape_sql "$6")
+    source_title=$(escape_sql "$7")
+    source_type="${8:-other}"
+    confidence="${9:-unverified}"
+    tags=$(escape_sql "${10}")
+    run_sql "$DB" "INSERT INTO findings (skill_id, topic, claim, evidence, source_url, source_title, source_type, confidence, tags)
+      SELECT id, '$topic', '$claim', '$evidence', '$source_url', '$source_title', '$source_type', '$confidence', '$tags'
+      FROM skills WHERE name='$skill';"
+    if [ $? -eq 0 ]; then
+      echo "Finding added to ${2}/${3}"
+    fi
+    ;;
+
+  search)
+    # kb search <query> [--limit N]
+    query=$(escape_sql "$2")
+    limit=10
+    shift 2
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --limit)
+          shift
+          limit="$1"
+          ;;
+      esac
+      shift
+    done
+    run_sql -header -column "$DB" \
+      "SELECT f.id, s.name as skill, f.claim, f.confidence, f.source_title
+       FROM findings_fts fts
+       JOIN findings f ON f.id = fts.rowid
+       JOIN skills s ON s.id = f.skill_id
+       WHERE findings_fts MATCH '$query'
+       ORDER BY bm25(findings_fts, 10.0, 5.0, 2.0, 1.0)
+       LIMIT $limit;"
+    ;;
+
+  skill)
+    # kb skill <skill_name> — list all findings for a skill
+    skill=$(escape_sql "$2")
+    run_sql -header -column "$DB" \
+      "SELECT f.id, f.topic, substr(f.claim, 1, 80) as claim, f.confidence, f.source_type, f.date_found
+       FROM findings f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE s.name='$skill'
+       ORDER BY f.topic, f.date_found DESC;"
+    ;;
+
+  topic)
+    # kb topic <topic> — list all findings for a topic across all skills
+    topic=$(escape_sql "$2")
+    run_sql -header -column "$DB" \
+      "SELECT f.id, s.name as skill, substr(f.claim, 1, 80) as claim, f.confidence, f.source_url
+       FROM findings f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE f.topic LIKE '%$topic%'
+       ORDER BY s.layer, s.id;"
+    ;;
+
+  detail)
+    # kb detail <finding_id> — show full detail of a finding
+    id=$(echo "$2" | grep -E '^[0-9]+$')
+    if [ -z "$id" ]; then
+      echo "ERROR: finding_id must be a number" >&2
+      exit 1
+    fi
+    run_sql -header -column "$DB" \
+      "SELECT f.*, s.name as skill_name
+       FROM findings f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE f.id=$id;"
+    run_sql -header -column "$DB" \
+      "SELECT * FROM citations WHERE finding_id=$id;"
+    ;;
+
+  cite)
+    # kb cite <finding_id> <authors> <title> <venue> <year> [doi] [url] [author_source]
+    id=$(echo "$2" | grep -E '^[0-9]+$')
+    if [ -z "$id" ]; then
+      echo "ERROR: finding_id must be a number" >&2
+      exit 1
+    fi
+    authors=$(escape_sql "$3")
+    title=$(escape_sql "$4")
+    venue=$(escape_sql "$5")
+    year=$(echo "$6" | grep -E '^[0-9]+$')
+    if [ -z "$year" ]; then
+      echo "ERROR: year must be a number" >&2
+      exit 1
+    fi
+    doi=$(escape_sql "$7")
+    url=$(escape_sql "$8")
+    author_source="${9:-unverified}"
+    run_sql "$DB" "INSERT INTO citations (finding_id, authors, title, venue, year, doi, url, author_source)
+      VALUES ($id, '$authors', '$title', '$venue', $year, '$doi', '$url', '$author_source');"
+    if [ $? -eq 0 ]; then
+      echo "Citation added to finding #${2}"
+    fi
+    ;;
+
+  stats)
+    # kb stats — overview of knowledge base
+    echo "=== Knowledge Base Stats ==="
+    run_sql -header -column "$DB" \
+      "SELECT s.name as skill, s.layer,
+              COUNT(f.id) as findings,
+              SUM(CASE WHEN f.confidence='verified' THEN 1 ELSE 0 END) as verified,
+              SUM(CASE WHEN f.confidence='unverified' THEN 1 ELSE 0 END) as unverified
+       FROM skills s
+       LEFT JOIN findings f ON f.skill_id = s.id
+       GROUP BY s.id
+       ORDER BY s.layer, s.id;"
+    echo ""
+    echo "Total findings: $(run_sql "$DB" "SELECT COUNT(*) FROM findings;")"
+    echo "Total citations: $(run_sql "$DB" "SELECT COUNT(*) FROM citations;")"
+    echo "Investigations: $(run_sql "$DB" "SELECT COUNT(*) FROM investigations;")"
+    ;;
+
+  investigations)
+    # kb investigations — list investigation sessions
+    run_sql -header -column "$DB" \
+      "SELECT i.id, s.name as skill, i.topic, i.status, i.findings_added, i.started_at
+       FROM investigations i
+       LEFT JOIN skills s ON s.id = i.skill_id
+       ORDER BY i.started_at DESC
+       LIMIT 20;"
+    ;;
+
+  log-start)
+    # kb log-start <skill_name> <topic> [github_issue]
+    skill=$(escape_sql "$2")
+    topic=$(escape_sql "$3")
+    issue="${4:-NULL}"
+    run_sql "$DB" "INSERT INTO investigations (skill_id, topic, github_issue)
+      SELECT id, '$topic', $issue FROM skills WHERE name='$skill';"
+    run_sql "$DB" "SELECT last_insert_rowid();"
+    ;;
+
+  log-end)
+    # kb log-end <investigation_id> <queries_run> <findings_added> <summary>
+    id=$(echo "$2" | grep -E '^[0-9]+$')
+    queries=$(echo "$3" | grep -E '^[0-9]+$')
+    findings_count=$(echo "$4" | grep -E '^[0-9]+$')
+    if [ -z "$id" ] || [ -z "$queries" ] || [ -z "$findings_count" ]; then
+      echo "ERROR: investigation_id, queries, and findings must be numbers" >&2
+      exit 1
+    fi
+    summary=$(escape_sql "$5")
+    run_sql "$DB" "UPDATE investigations
+      SET completed_at=datetime('now'), status='completed',
+          queries_run=$queries, findings_added=$findings_count, summary='$summary'
+      WHERE id=$id;"
+    if [ $? -eq 0 ]; then
+      echo "Investigation #${2} completed"
+    fi
+    ;;
+
+  export)
+    # kb export [skill_name] — export findings as markdown
+    if [ -n "${2}" ]; then
+      skill=$(escape_sql "$2")
+      FILTER="WHERE s.name='$skill'"
+    else
+      FILTER=""
+    fi
+    run_sql "$DB" "SELECT '## ' || s.title || ' (' || s.name || ')' || char(10) ||
+      GROUP_CONCAT(
+        '### ' || f.topic || char(10) ||
+        '- **' || f.claim || '**' || char(10) ||
+        COALESCE('  Evidence: ' || f.evidence || char(10), '') ||
+        COALESCE('  Source: [' || f.source_title || '](' || f.source_url || ')' || char(10), '') ||
+        '  Confidence: ' || f.confidence || char(10),
+        char(10)
+      )
+      FROM findings f
+      JOIN skills s ON s.id = f.skill_id
+      ${FILTER}
+      GROUP BY s.id
+      ORDER BY s.layer, s.id;"
+    ;;
+
+  unverified)
+    # kb unverified — list all unverified findings that need validation
+    run_sql -header -column "$DB" \
+      "SELECT f.id, s.name as skill, f.topic, substr(f.claim, 1, 80) as claim, f.date_found
+       FROM findings f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE f.confidence = 'unverified'
+       ORDER BY s.layer, s.id;"
+    ;;
+
+  verify)
+    # kb verify — run quality checks on the entire knowledge base
+    echo "=== Knowledge Base Quality Report ==="
+    echo ""
+    issues=0
+
+    # Check 1: Confidence inflation (blog/forum/other marked verified)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_type IN ('blog_post','forum_post','other') AND confidence='verified';")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "ISSUE: $count findings with inflated confidence (blog/forum/other marked verified):"
+      run_sql -header -column "$DB" \
+        "SELECT f.id, s.name as skill, f.topic, substr(f.claim,1,60) as claim, f.source_type, f.confidence
+         FROM findings f JOIN skills s ON s.id=f.skill_id
+         WHERE f.source_type IN ('blog_post','forum_post','other') AND f.confidence='verified';"
+      echo ""
+      issues=$((issues + count))
+    else
+      echo "OK: No confidence inflation found"
+    fi
+
+    # Check 2: Citations with unverified authors
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM citations WHERE author_source='unverified' OR author_source IS NULL;")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $count citations with unverified authors:"
+      run_sql -header -column "$DB" \
+        "SELECT c.id, c.authors, substr(c.title,1,60) as title, c.author_source
+         FROM citations c
+         WHERE c.author_source='unverified' OR c.author_source IS NULL;"
+      echo ""
+      issues=$((issues + count))
+    else
+      echo "OK: All citation authors verified"
+    fi
+
+    # Check 3: Near-duplicate findings (same source_url + skill + topic + similar claim prefix)
+    # Multiple distinct claims from the same source about the same topic is normal.
+    # Only flag pairs where the first 50 chars of claim match (true near-duplicates).
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM (
+      SELECT DISTINCT a.id
+      FROM findings a
+      JOIN findings b ON a.source_url = b.source_url
+        AND a.skill_id = b.skill_id
+        AND a.topic = b.topic
+        AND a.id < b.id
+        AND substr(a.claim, 1, 50) = substr(b.claim, 1, 50)
+      WHERE a.source_url IS NOT NULL AND a.source_url != '');")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $count near-duplicate findings detected (same URL + skill + topic + similar claim):"
+      run_sql -header -column "$DB" \
+        "SELECT a.id as id_a, b.id as id_b, s.name as skill, a.topic, substr(a.claim,1,60) as claim_prefix
+         FROM findings a
+         JOIN findings b ON a.source_url = b.source_url
+           AND a.skill_id = b.skill_id
+           AND a.topic = b.topic
+           AND a.id < b.id
+           AND substr(a.claim, 1, 50) = substr(b.claim, 1, 50)
+         JOIN skills s ON s.id = a.skill_id
+         WHERE a.source_url IS NOT NULL AND a.source_url != '';"
+      echo ""
+      issues=$((issues + count))
+    else
+      echo "OK: No near-duplicate findings detected"
+    fi
+
+    # Check 4: Suspicious source categorization
+    suspicious=0
+    # Wikipedia should not be blog_post
+    wiki_count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_url LIKE '%wikipedia.org%' AND source_type='blog_post';")
+    if [ "$wiki_count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $wiki_count Wikipedia pages categorized as blog_post (should be 'other'):"
+      run_sql -header -column "$DB" \
+        "SELECT f.id, f.source_url, f.source_type FROM findings f
+         WHERE f.source_url LIKE '%wikipedia.org%' AND f.source_type='blog_post';"
+      suspicious=$((suspicious + wiki_count))
+    fi
+    # Hacker News / Reddit should be forum_post
+    hn_count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE (source_url LIKE '%news.ycombinator.com%' OR source_url LIKE '%reddit.com%') AND source_type != 'forum_post';")
+    if [ "$hn_count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $hn_count HN/Reddit posts not categorized as forum_post:"
+      run_sql -header -column "$DB" \
+        "SELECT f.id, f.source_url, f.source_type FROM findings f
+         WHERE (f.source_url LIKE '%news.ycombinator.com%' OR f.source_url LIKE '%reddit.com%') AND f.source_type != 'forum_post';"
+      suspicious=$((suspicious + hn_count))
+    fi
+    if [ "$suspicious" -eq 0 ]; then
+      echo "OK: No suspicious source categorization"
+    fi
+    issues=$((issues + suspicious))
+
+    # Check 5: Findings without source URLs
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_url IS NULL OR source_url='';")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $count findings have no source URL"
+      issues=$((issues + count))
+    else
+      echo "OK: All findings have source URLs"
+    fi
+
+    echo ""
+    if [ "$issues" -gt 0 ]; then
+      echo "TOTAL: $issues issue(s) found"
+    else
+      echo "ALL CHECKS PASSED — knowledge base is clean"
+    fi
+    ;;
+
+  dedup)
+    # kb dedup — detect duplicate citations and findings
+    echo "=== Duplicate Detection Report ==="
+    echo ""
+    dupes=0
+
+    # Duplicate citations by title
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM (
+      SELECT title, COUNT(*) as cnt FROM citations GROUP BY title HAVING cnt > 1);")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "DUPLICATE CITATIONS by title:"
+      run_sql -header -column "$DB" \
+        "SELECT c.id, substr(c.title,1,60) as title, c.year, c.authors
+         FROM citations c
+         WHERE c.title IN (SELECT title FROM citations GROUP BY title HAVING COUNT(*) > 1)
+         ORDER BY c.title;"
+      echo ""
+      dupes=$((dupes + count))
+    else
+      echo "OK: No duplicate citations by title"
+    fi
+
+    # Duplicate citations by DOI
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM (
+      SELECT doi, COUNT(*) as cnt FROM citations WHERE doi IS NOT NULL AND doi != '' GROUP BY doi HAVING cnt > 1);")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "DUPLICATE CITATIONS by DOI:"
+      run_sql -header -column "$DB" \
+        "SELECT c.id, c.doi, substr(c.title,1,60) as title
+         FROM citations c
+         WHERE c.doi IN (SELECT doi FROM citations WHERE doi IS NOT NULL AND doi != '' GROUP BY doi HAVING COUNT(*) > 1)
+         ORDER BY c.doi;"
+      echo ""
+      dupes=$((dupes + count))
+    else
+      echo "OK: No duplicate citations by DOI"
+    fi
+
+    # Exact duplicate claims within same skill+topic
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM (
+      SELECT claim, skill_id, topic, COUNT(*) as cnt
+      FROM findings
+      GROUP BY claim, skill_id, topic
+      HAVING cnt > 1);")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "DUPLICATE FINDINGS (exact claim match within same skill+topic):"
+      run_sql -header -column "$DB" \
+        "SELECT f.id, s.name as skill, f.topic, substr(f.claim,1,60) as claim
+         FROM findings f JOIN skills s ON s.id=f.skill_id
+         WHERE (f.claim, f.skill_id, f.topic) IN (
+           SELECT claim, skill_id, topic FROM findings GROUP BY claim, skill_id, topic HAVING COUNT(*) > 1)
+         ORDER BY f.claim, f.skill_id;"
+      echo ""
+      dupes=$((dupes + count))
+    else
+      echo "OK: No exact duplicate findings"
+    fi
+
+    echo ""
+    if [ "$dupes" -gt 0 ]; then
+      echo "TOTAL: $dupes group(s) of duplicates found"
+    else
+      echo "NO DUPLICATES — knowledge base is clean"
+    fi
+    ;;
+
+  fix-confidence)
+    # kb fix-confidence — downgrade inflated confidence levels
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_type IN ('blog_post','forum_post','other') AND confidence='verified';")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "Downgrading $count findings from 'verified' to 'high' (blog/forum/other sources)..."
+      # The update trigger checks NEW.confidence, not OLD — setting to 'high' won't trigger it
+      run_sql "$DB" "UPDATE findings SET confidence='high', notes=COALESCE(notes,'') || ' [Audit: downgraded from verified — source type cannot be verified]' WHERE source_type IN ('blog_post','forum_post','other') AND confidence='verified';"
+      if [ $? -eq 0 ]; then
+        echo "Done. $count findings downgraded."
+      fi
+    else
+      echo "No inflated findings found — all clean."
+    fi
+    ;;
+
+  *)
+    echo "GPU Knowledge Base CLI"
+    echo ""
+    echo "Usage: kb <command> [args...]"
+    echo ""
+    echo "Query commands:"
+    echo "  search <query>           Full-text search across all findings"
+    echo "  skill <skill_name>       List findings for a skill area"
+    echo "  topic <topic>            List findings for a topic"
+    echo "  detail <finding_id>      Show full detail of a finding"
+    echo "  stats                    Overview of knowledge base"
+    echo "  unverified               List findings needing validation"
+    echo "  export [skill_name]      Export findings as markdown"
+    echo ""
+    echo "Write commands:"
+    echo "  add <skill> <topic> <claim> [evidence] [url] [title] [type] [confidence] [tags]"
+    echo "  cite <finding_id> <authors> <title> <venue> <year> [doi] [url] [author_source]"
+    echo ""
+    echo "Quality commands:"
+    echo "  verify                   Run quality checks on the entire knowledge base"
+    echo "  dedup                    Detect duplicate citations and findings"
+    echo "  fix-confidence           Downgrade inflated confidence levels"
+    echo ""
+    echo "Investigation tracking:"
+    echo "  log-start <skill> <topic> [issue#]  Start investigation session"
+    echo "  log-end <id> <queries> <findings> <summary>  End session"
+    echo "  investigations                      List sessions"
+    echo ""
+    echo "Skills: gpu-silicon, unified-memory, metal-compute, msl-kernels,"
+    echo "        gpu-io, gpu-perf, simd-wave, mlx-compute, metal4-api,"
+    echo "        gpu-distributed, gpu-centric-arch"
+    echo ""
+    echo "Source types: academic_paper, apple_docs, wwdc_session, github_repo,"
+    echo "              blog_post, reverse_engineering, benchmark, empirical_test,"
+    echo "              patent, forum_post, book, other"
+    echo ""
+    echo "Confidence: verified, high, medium, low, unverified"
+    echo "  Note: blog_post/forum_post/other sources are capped at 'high'"
+    echo ""
+    echo "Author sources: extracted_from_page, from_metadata, unverified"
+    ;;
+esac

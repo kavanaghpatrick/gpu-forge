@@ -1,0 +1,64 @@
+// Template: scan.metal.tmpl
+// GPU-Forge Metal Shader Template — Inclusive Prefix Scan (Hillis-Steele)
+//
+// Parameters:
+//   {{TYPE}}     — Data type (float, half, int, uint)
+//   {{OP}}       — Scan operation name (sum, max, min)
+//   {{IDENTITY}} — Identity element for the operation (0 for sum, etc.)
+//
+// Performs an inclusive prefix scan within a threadgroup using
+// the Hillis-Steele algorithm. For arrays larger than one threadgroup,
+// a multi-pass approach is needed (scan partials, then propagate).
+
+#include <metal_stdlib>
+using namespace metal;
+
+// Inline scan operator
+inline {{TYPE}} scan_op({{TYPE}} a, {{TYPE}} b) {
+    // {{OP}} operation — replace body for custom ops
+    return a + b;
+}
+
+kernel void scan_{{OP}}(
+    device const {{TYPE}}* input  [[buffer(0)]],
+    device {{TYPE}}*       output [[buffer(1)]],
+    constant uint&         count  [[buffer(2)]],
+    uint tid [[thread_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint gid [[threadgroup_position_in_grid]],
+    uint threads_per_group [[threads_per_threadgroup]]
+) {
+    // Double-buffered shared memory for Hillis-Steele scan
+    threadgroup {{TYPE}} buf0[256];
+    threadgroup {{TYPE}} buf1[256];
+
+    // Load input (or identity if out of bounds)
+    buf0[lid] = (tid < count) ? input[tid] : {{TYPE}}({{IDENTITY}});
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Hillis-Steele inclusive scan
+    // Alternates between buf0 and buf1 to avoid race conditions
+    bool ping = true;
+    for (uint offset = 1; offset < threads_per_group; offset <<= 1) {
+        if (ping) {
+            if (lid >= offset) {
+                buf1[lid] = scan_op(buf0[lid - offset], buf0[lid]);
+            } else {
+                buf1[lid] = buf0[lid];
+            }
+        } else {
+            if (lid >= offset) {
+                buf0[lid] = scan_op(buf1[lid - offset], buf1[lid]);
+            } else {
+                buf0[lid] = buf1[lid];
+            }
+        }
+        ping = !ping;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write result to global memory
+    if (tid < count) {
+        output[tid] = ping ? buf0[lid] : buf1[lid];
+    }
+}

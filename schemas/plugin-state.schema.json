@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gpu-forge/schemas/plugin-state.schema.json",
+  "title": "GPU Forge Plugin State",
+  "description": "Schema for investigation state tracking in the gpu-forge Claude Code plugin",
+  "type": "object",
+  "properties": {
+    "currentInvestigation": {
+      "description": "The currently active investigation session",
+      "type": ["object", "null"],
+      "properties": {
+        "skill": {
+          "description": "The skill domain being investigated",
+          "type": "string",
+          "enum": [
+            "gpu-silicon",
+            "unified-memory",
+            "metal-compute",
+            "msl-kernels",
+            "gpu-io",
+            "gpu-perf",
+            "simd-wave",
+            "mlx-compute",
+            "metal4-api",
+            "gpu-distributed",
+            "gpu-centric-arch"
+          ]
+        },
+        "topic": {
+          "description": "The specific topic being investigated within the skill domain",
+          "type": "string",
+          "minLength": 1
+        },
+        "phase": {
+          "description": "Current phase of the investigation protocol",
+          "type": "string",
+          "enum": ["setup", "research", "store-findings", "citations", "summary"]
+        },
+        "startedAt": {
+          "description": "ISO 8601 timestamp when the investigation started",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["skill", "topic", "phase", "startedAt"],
+      "additionalProperties": false
+    },
+    "recentFindings": {
+      "description": "Array of finding IDs added during the current or recent sessions",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "default": []
+    },
+    "activeDomains": {
+      "description": "Array of skill names currently being worked on",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "gpu-silicon",
+          "unified-memory",
+          "metal-compute",
+          "msl-kernels",
+          "gpu-io",
+          "gpu-perf",
+          "simd-wave",
+          "mlx-compute",
+          "metal4-api",
+          "gpu-distributed",
+          "gpu-centric-arch"
+        ]
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "sessionStats": {
+      "description": "Statistics for the current plugin session",
+      "type": "object",
+      "properties": {
+        "queriesRun": {
+          "description": "Number of KB queries executed this session",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "findingsAdded": {
+          "description": "Number of new findings stored this session",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "citationsAdded": {
+          "description": "Number of new citations added this session",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      },
+      "required": ["queriesRun", "findingsAdded", "citationsAdded"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["currentInvestigation", "recentFindings", "activeDomains", "sessionStats"],
+  "additionalProperties": false
+}

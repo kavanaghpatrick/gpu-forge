@@ -1,0 +1,46 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install jq
+          brew tap bats-core/bats-core
+          brew install bats-core
+
+      - name: Verify plugin structure
+        run: |
+          jq . .claude-plugin/plugin.json
+          ls -la skills/ agents/ commands/ hooks/ templates/ data/ scripts/ tests/
+
+      - name: Run unit tests
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          bats tests/unit/ || true
+
+      - name: Run integration tests
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          bats tests/integration/ || true
+
+      - name: Run performance benchmarks
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          bats tests/performance/ || true
+
+      - name: Run full test suite
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          bats tests/

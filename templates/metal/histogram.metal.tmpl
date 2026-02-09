@@ -1,0 +1,65 @@
+// Template: histogram.metal.tmpl
+// GPU-Forge Metal Shader Template — Two-Phase Histogram
+//
+// Parameters:
+//   {{TYPE}} — Input data type (uint, int, float)
+//   {{BINS}} — Number of histogram bins (e.g. 256)
+//
+// Two-phase approach:
+//   Phase 1: Each threadgroup builds a local histogram using atomics,
+//            then writes it to a per-group section of the partial buffer.
+//   Phase 2: A merge kernel sums partial histograms into the final result.
+
+#include <metal_stdlib>
+using namespace metal;
+
+// Phase 1: Build per-threadgroup local histograms
+kernel void histogram_local(
+    device const {{TYPE}}* input           [[buffer(0)]],
+    device atomic_uint*    partial_histograms [[buffer(1)]],
+    constant uint&         count           [[buffer(2)]],
+    uint tid [[thread_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint gid [[threadgroup_position_in_grid]],
+    uint threads_per_group [[threads_per_threadgroup]]
+) {
+    // Threadgroup-local histogram bins
+    threadgroup atomic_uint local_bins[{{BINS}}];
+
+    // Initialize local bins to zero
+    for (uint i = lid; i < {{BINS}}; i += threads_per_group) {
+        atomic_store_explicit(&local_bins[i], 0, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Each thread processes its element and atomically increments the local bin
+    if (tid < count) {
+        uint bin = uint(input[tid]) % {{BINS}};
+        atomic_fetch_add_explicit(&local_bins[bin], 1, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write local histogram to global partial buffer
+    // Each threadgroup writes to its own section: partial_histograms[gid * BINS + bin]
+    for (uint i = lid; i < {{BINS}}; i += threads_per_group) {
+        uint val = atomic_load_explicit(&local_bins[i], memory_order_relaxed);
+        atomic_store_explicit(&partial_histograms[gid * {{BINS}} + i], val, memory_order_relaxed);
+    }
+}
+
+// Phase 2: Merge partial histograms into the final result
+kernel void histogram_merge(
+    device atomic_uint* partial_histograms [[buffer(0)]],
+    device atomic_uint* final_histogram    [[buffer(1)]],
+    constant uint&      num_groups         [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    // Each thread handles one bin
+    if (tid >= {{BINS}}) return;
+
+    uint total = 0;
+    for (uint g = 0; g < num_groups; g++) {
+        total += atomic_load_explicit(&partial_histograms[g * {{BINS}} + tid], memory_order_relaxed);
+    }
+    atomic_store_explicit(&final_histogram[tid], total, memory_order_relaxed);
+}

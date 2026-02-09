@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# SQLite
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Test artifacts
+tests/tmp/
+tests/test_helper/bats/
+tests/test_helper/bats-support/
+tests/test_helper/bats-assert/
+
+# Lock files
+.tasks.lock
+.git-commit.lock

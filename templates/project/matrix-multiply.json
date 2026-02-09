@@ -1,0 +1,17 @@
+{
+  "name": "matrix-multiply",
+  "description": "Tiled GEMM kernel using simdgroup_matrix for high-performance matrix multiplication",
+  "parameters": {
+    "PROJECT_NAME": { "type": "string", "required": true },
+    "KERNEL_NAME": { "type": "string", "default": "gemm" },
+    "TYPE": { "type": "string", "default": "float", "options": ["float", "half"] },
+    "TILE_SIZE": { "type": "string", "default": "16", "options": ["8", "16", "32"] },
+    "USE_SIMDGROUP_MATRIX": { "type": "boolean", "default": true }
+  },
+  "files": [
+    { "template": "metal/gemm.metal.tmpl", "output": "Sources/{{PROJECT_NAME}}/Shaders/gemm.metal" },
+    { "template": "swift/Package.swift.tmpl", "output": "Package.swift" },
+    { "template": "swift/main.swift.tmpl", "output": "Sources/{{PROJECT_NAME}}/main.swift" }
+  ],
+  "knowledge_applied": ["simd-wave", "msl-kernels", "gpu-perf", "gpu-silicon"]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "metal-compute-blank",
+  "description": "Blank Metal compute shader project with Swift host code and build configuration",
+  "parameters": {
+    "PROJECT_NAME": { "type": "string", "required": true },
+    "KERNEL_NAME": { "type": "string", "default": "compute" },
+    "TYPE": { "type": "string", "default": "float", "options": ["float", "half", "int", "uint"] },
+    "BUFFER_COUNT": { "type": "string", "default": "2", "options": ["1", "2", "3", "4"] }
+  },
+  "files": [
+    { "template": "metal/blank.metal.tmpl", "output": "Sources/{{PROJECT_NAME}}/Shaders/{{KERNEL_NAME}}.metal" },
+    { "template": "swift/Package.swift.tmpl", "output": "Package.swift" },
+    { "template": "swift/main.swift.tmpl", "output": "Sources/{{PROJECT_NAME}}/main.swift" },
+    { "template": "swift/MetalCompute.swift.tmpl", "output": "Sources/{{PROJECT_NAME}}/MetalCompute.swift" }
+  ],
+  "knowledge_applied": ["metal-compute", "msl-kernels", "gpu-silicon"]
+}
