@@ -93,7 +93,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-2, FR-3, FR-7, FR-11, FR-12_
   - _Design: Data Flow, Persistent Engine_
 
-- [ ] 1.10 POC Checkpoint
+- [x] 1.10 POC Checkpoint
   - **Do**: Verify full pipeline: SQL -> parse -> plan -> GPU CSV parse -> GPU filter -> GPU aggregate -> result. Create a 1M-row test CSV, run `SELECT count(*), sum(amount) FROM sales WHERE amount > 500` and verify correctness against CPU reference. Document POC results.
   - **Files**: None (verification only)
   - **Done when**: Query returns correct results on 1M-row dataset; pipeline proven end-to-end
