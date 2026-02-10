@@ -4,3 +4,4 @@
 //! Metal compute kernels. Zero-copy via mmap + makeBuffer(bytesNoCopy:).
 
 pub mod gpu;
+pub mod io;

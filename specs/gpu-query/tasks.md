@@ -30,7 +30,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-38, NFR-12_
   - _Design: GPU Kernel Architecture, Existing Patterns_
 
-- [ ] 1.3 mmap + zero-copy Metal buffer
+- [x] 1.3 mmap + zero-copy Metal buffer
   - **Do**: Create `src/io/mmap.rs` with MmapFile struct: open file, mmap with MAP_SHARED+PROT_READ, round to 16KB page alignment [KB #89], madvise(MADV_WILLNEED), makeBuffer(bytesNoCopy:) with StorageModeShared. Add fallback copy path. Create `src/io/mod.rs`.
   - **Files**: `gpu-query/src/io/mod.rs`, `gpu-query/src/io/mmap.rs`
   - **Done when**: Can mmap a file and verify Metal buffer contents match file bytes; page alignment test passes
