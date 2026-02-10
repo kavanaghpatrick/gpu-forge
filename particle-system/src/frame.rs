@@ -137,15 +137,17 @@ impl FrameRing {
 
 impl Drop for FrameRing {
     fn drop(&mut self) {
+        // With triple buffering, up to MAX_FRAMES_IN_FLIGHT frames may be in-flight.
+        // We must drain ALL pending GPU work before deallocating resources.
         if self.acquired_no_handler {
             // Semaphore was decremented by acquire() but no completion handler was
             // registered (e.g., panic during frame setup before commit). Signal it
-            // back to restore the original value so libdispatch doesn't crash.
+            // back so the drain loop below can complete.
             self.semaphore.signal();
-        } else {
-            // A completion handler was registered on the last command buffer.
-            // Wait for the GPU to finish and signal, then signal back to restore
-            // the semaphore to its original value before deallocation.
+        }
+        // Drain all in-flight frames: wait for each pending completion, then
+        // signal back to restore the semaphore to its original count.
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
             self.semaphore.wait(DispatchTime::FOREVER);
             self.semaphore.signal();
         }

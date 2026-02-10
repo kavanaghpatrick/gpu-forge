@@ -197,7 +197,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
   - _Requirements: FR-9, FR-10, FR-14_
   - _Design: Section 5.1, 5.4_
 
-- [ ] 2.3 Update FrameRing Drop for triple buffering safety
+- [x] 2.3 Update FrameRing Drop for triple buffering safety
   - **Do**:
     1. In `frame.rs` Drop impl: drain all in-flight frames, not just one. Current Drop logic handles single-buffer correctly. With 3 in-flight, we need to wait for all pending completions:
        ```rust
