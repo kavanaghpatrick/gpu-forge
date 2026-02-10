@@ -295,13 +295,14 @@ impl App {
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 2);
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
             }
-            // Dispatch pool_size / 256 threadgroups; shader guards with alive_count
-            let threadgroup_size = 256usize;
-            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
-            grid_pop_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
+            // Indirect dispatch: threadgroup count from sync_indirect_args output (update_dispatch_args)
+            unsafe {
+                grid_pop_encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                    &pool.update_dispatch_args,
+                    0,
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
             grid_pop_encoder.endEncoding();
         }
 
@@ -328,13 +329,14 @@ impl App {
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 9);
             }
 
-            // Dispatch ceil(pool_size / 256) threadgroups; shader guards with tid < alive_count
-            let threadgroup_size = 256usize;
-            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
-            update_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
+            // Indirect dispatch: threadgroup count from sync_indirect_args output (update_dispatch_args)
+            unsafe {
+                update_encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                    &pool.update_dispatch_args,
+                    0,
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
 
             update_encoder.endEncoding();
         }
@@ -347,6 +349,7 @@ impl App {
             unsafe {
                 sync_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 0);
                 sync_encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
+                sync_encoder.setBuffer_offset_atIndex(Some(&pool.update_dispatch_args), 0, 2);
             }
             sync_encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize { width: 1, height: 1, depth: 1 },

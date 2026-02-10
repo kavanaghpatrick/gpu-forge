@@ -247,7 +247,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-11_
   - _Design: Section 6.2, 4.5_
 
-- [ ] 3.2 Change grid_populate and update to indirect dispatch in main.rs
+- [x] 3.2 Change grid_populate and update to indirect dispatch in main.rs
   - **Do**:
     1. In `main.rs` sync encoder: bind buffer(2) = `pool.update_dispatch_args` via `setBuffer_offset_atIndex`
     2. In `main.rs` grid_populate dispatch: replace CPU-computed `pool.pool_size.div_ceil(256)` with indirect dispatch via `dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&pool.update_dispatch_args, 0, MTLSize{width:256,height:1,depth:1})`
