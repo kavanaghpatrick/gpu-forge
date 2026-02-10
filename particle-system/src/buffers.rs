@@ -127,20 +127,6 @@ impl ParticlePool {
         pool.init_indirect_args();
         pool.init_uniforms();
 
-        // Log total allocated memory
-        let total = sizes.total_bytes();
-        println!(
-            "ParticlePool allocated: {:.1} MB ({} bytes) for {} particles",
-            total as f64 / (1024.0 * 1024.0),
-            total,
-            pool_size
-        );
-        assert!(
-            total < 200 * 1024 * 1024,
-            "Total allocation {} MB exceeds 200 MB limit",
-            total / (1024 * 1024)
-        );
-
         pool
     }
 
@@ -220,21 +206,12 @@ impl ParticlePool {
     /// and swaps buffer references. Grid density buffer is fixed at 64^3 and not resized.
     pub fn grow(&mut self, new_size: usize) {
         if new_size <= self.pool_size {
-            println!("grow: new_size {} <= pool_size {}, skipping", new_size, self.pool_size);
             return;
         }
 
         let old_size = self.pool_size;
         let new_sizes = BufferSizes::new(new_size);
         let old_sizes = BufferSizes::new(old_size);
-
-        println!(
-            "Growing pool: {}M -> {}M ({:.1} MB -> {:.1} MB)",
-            old_size / 1_000_000,
-            new_size / 1_000_000,
-            old_sizes.total_bytes() as f64 / (1024.0 * 1024.0),
-            new_sizes.total_bytes() as f64 / (1024.0 * 1024.0),
-        );
 
         // Allocate new SoA buffers
         let new_positions = alloc_buffer(&self.device, new_sizes.positions, "positions");
@@ -328,12 +305,6 @@ impl ParticlePool {
         // uniforms stays the same
 
         self.pool_size = new_size;
-
-        println!(
-            "Pool grown to {} particles ({:.1} MB)",
-            new_size,
-            new_sizes.total_bytes() as f64 / (1024.0 * 1024.0),
-        );
     }
 
     /// Read the alive count from the given alive list buffer (CPU readback via SharedStorage).

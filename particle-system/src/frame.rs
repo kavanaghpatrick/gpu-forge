@@ -35,6 +35,11 @@ pub struct FrameRing {
     fps_last_update: Instant,
     /// Current FPS value, updated approximately once per second.
     pub fps: u32,
+
+    /// True after acquire(), false after register_completion_handler().
+    /// Used by Drop to decide whether to signal the semaphore manually
+    /// (no handler registered) or wait for the GPU handler to signal first.
+    acquired_no_handler: bool,
 }
 
 impl FrameRing {
@@ -48,6 +53,7 @@ impl FrameRing {
             fps_frame_count: 0,
             fps_last_update: Instant::now(),
             fps: 0,
+            acquired_no_handler: false,
         }
     }
 
@@ -57,6 +63,7 @@ impl FrameRing {
     pub fn acquire(&mut self) {
         // Block until a frame slot is available
         self.semaphore.wait(DispatchTime::FOREVER);
+        self.acquired_no_handler = true;
 
         // Compute dt
         let now = Instant::now();
@@ -80,9 +87,10 @@ impl FrameRing {
     /// # Safety
     /// The command buffer must be valid and not yet committed.
     pub fn register_completion_handler(
-        &self,
+        &mut self,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     ) {
+        self.acquired_no_handler = false;
         let semaphore = self.semaphore.clone();
         let handler = RcBlock::new(move |_cb: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
             semaphore.signal();
@@ -109,5 +117,22 @@ impl FrameRing {
     pub fn should_update_fps(&self) -> bool {
         // FPS was just recalculated if fps_frame_count was reset
         self.fps_frame_count == 0 && self.fps > 0
+    }
+}
+
+impl Drop for FrameRing {
+    fn drop(&mut self) {
+        if self.acquired_no_handler {
+            // Semaphore was decremented by acquire() but no completion handler was
+            // registered (e.g., panic during frame setup before commit). Signal it
+            // back to restore the original value so libdispatch doesn't crash.
+            self.semaphore.signal();
+        } else {
+            // A completion handler was registered on the last command buffer.
+            // Wait for the GPU to finish and signal, then signal back to restore
+            // the semaphore to its original value before deallocation.
+            self.semaphore.wait(DispatchTime::FOREVER);
+            self.semaphore.signal();
+        }
     }
 }

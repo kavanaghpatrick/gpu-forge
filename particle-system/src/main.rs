@@ -441,7 +441,6 @@ impl ApplicationHandler for App {
 
         // Allocate particle buffers (1M particles)
         let pool = ParticlePool::new(&gpu.device, 1_000_000);
-        println!("Pool size: {}M particles", pool.pool_size / 1_000_000);
         self.pool = Some(pool);
 
         self.gpu = Some(gpu);
@@ -456,7 +455,6 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                println!("Window close requested");
                 event_loop.exit();
             }
             WindowEvent::Resized(PhysicalSize { width, height }) => {

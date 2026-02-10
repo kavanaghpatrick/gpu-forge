@@ -219,7 +219,6 @@ impl InputState {
     pub fn handle_key(&mut self, key_code: KeyCode) {
         // Try physics key first
         if self.physics.handle_key(key_code, self.shift_held) {
-            println!("Physics: {}", self.physics.summary());
             return;
         }
         // Fall through to pool scaling keys
@@ -239,7 +238,6 @@ impl InputState {
         };
         if let Some(size) = target {
             self.pending_grow = Some(size);
-            println!("Pool grow requested: {}M", size / 1_000_000);
         }
     }
 
