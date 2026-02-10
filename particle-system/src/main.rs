@@ -88,6 +88,8 @@ impl App {
             (*uniforms_ptr)._pad_grid_min = 0.0;
             (*uniforms_ptr).grid_bounds_max = [10.0, 10.0, 10.0];
             (*uniforms_ptr)._pad_grid_max = 0.0;
+            // Pressure gradient interaction strength
+            (*uniforms_ptr).interaction_strength = 0.001;
         }
 
         // Get the next drawable from the CAMetalLayer
@@ -159,40 +161,9 @@ impl App {
             compute_encoder.endEncoding();
         }
 
-        // --- Physics update compute pass ---
-        // Reads from read_list (last frame's survivors + this frame's new emissions).
-        // Writes survivors to write_list, writes dead particles back to dead_list.
-        // POC shortcut: dispatch ceil(pool_size / 256) threadgroups; guard in shader.
-        if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
-            update_encoder.setComputePipelineState(&gpu.update_pipeline);
-
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = read_list (input),
-            // buffer(3) = write_list (output), buffer(4-8) = SoA data
-            unsafe {
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                update_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
-                update_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 3);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 4);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 5);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 6);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 7);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 8);
-            }
-
-            // Dispatch ceil(pool_size / 256) threadgroups; shader guards with tid < alive_count
-            let threadgroup_size = 256usize;
-            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
-            update_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
-
-            update_encoder.endEncoding();
-        }
-
         // --- Grid clear compute pass ---
         // Zero all 262144 cells in the grid density buffer.
+        // Must run BEFORE grid_populate and update so update kernel reads fresh grid data.
         if let Some(grid_clear_encoder) = command_buffer.computeCommandEncoder() {
             grid_clear_encoder.setComputePipelineState(&gpu.grid_clear_pipeline);
             unsafe {
@@ -208,12 +179,13 @@ impl App {
 
         // --- Grid populate compute pass ---
         // Each alive particle atomically increments its grid cell density.
-        // Reads from write_list (update kernel output = this frame's survivors).
+        // Reads from read_list (last frame's survivors + this frame's new emissions).
+        // Must run BEFORE update so the update kernel can read the density field.
         if let Some(grid_pop_encoder) = command_buffer.computeCommandEncoder() {
             grid_pop_encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
             unsafe {
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 1);
+                grid_pop_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 1);
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 2);
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
             }
@@ -225,6 +197,39 @@ impl App {
                 MTLSize { width: threadgroup_size, height: 1, depth: 1 },
             );
             grid_pop_encoder.endEncoding();
+        }
+
+        // --- Physics update compute pass ---
+        // Reads from read_list (last frame's survivors + this frame's new emissions).
+        // Reads grid_density for pressure gradient force.
+        // Writes survivors to write_list, writes dead particles back to dead_list.
+        if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
+            update_encoder.setComputePipelineState(&gpu.update_pipeline);
+
+            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = read_list (input),
+            // buffer(3) = write_list (output), buffer(4-8) = SoA data, buffer(9) = grid_density
+            unsafe {
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
+                update_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
+                update_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 3);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 4);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 5);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 6);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 7);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 8);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 9);
+            }
+
+            // Dispatch ceil(pool_size / 256) threadgroups; shader guards with tid < alive_count
+            let threadgroup_size = 256usize;
+            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
+            update_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
+                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
+            );
+
+            update_encoder.endEncoding();
         }
 
         // --- Sync alive count to indirect args (GPU compute, single thread) ---

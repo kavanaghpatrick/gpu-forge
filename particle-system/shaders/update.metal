@@ -1,13 +1,28 @@
 #include "types.h"
 
-/// Physics update kernel: apply gravity, drag, semi-implicit Euler integration,
-/// boundary bounce, lifetime aging, and dead/alive list management.
+/// Grid dimension constant (must match grid.metal).
+constant int GRID_DIM = 64;
+
+/// Convert a world-space position to a grid cell coordinate.
+inline int3 pos_to_cell(float3 pos, float3 grid_min, float3 grid_max) {
+    float3 norm = (pos - grid_min) / (grid_max - grid_min);
+    int3 cell = int3(norm * float(GRID_DIM));
+    return clamp(cell, int3(0), int3(GRID_DIM - 1));
+}
+
+/// Convert a 3D grid cell coordinate to a linear index.
+inline int cell_index(int3 cell) {
+    return cell.z * GRID_DIM * GRID_DIM + cell.y * GRID_DIM + cell.x;
+}
+
+/// Physics update kernel: apply gravity, drag, pressure gradient from grid density,
+/// semi-implicit Euler integration, boundary bounce, lifetime aging, and
+/// dead/alive list management.
 ///
 /// Reads from alive_list_a (current frame's alive particles from emission).
 /// Writes survivors to alive_list_b (for rendering this frame).
 /// Writes dead particles back to dead_list (for recycling).
-///
-/// POC: skips grid density reads (pressure = 0) and mouse attraction.
+/// Reads grid_density for pressure gradient force computation.
 kernel void update_physics_kernel(
     constant Uniforms&     uniforms       [[buffer(0)]],
     device uint*           dead_list      [[buffer(1)]],
@@ -18,6 +33,7 @@ kernel void update_physics_kernel(
     device half2*          lifetimes      [[buffer(6)]],
     device half4*          colors         [[buffer(7)]],
     device half*           sizes          [[buffer(8)]],
+    device const uint*     grid_density   [[buffer(9)]],
     uint                   tid            [[thread_position_in_grid]]
 ) {
     // Guard: alive_list_a counter is at offset 0 (first uint of header)
@@ -44,6 +60,28 @@ kernel void update_physics_kernel(
     // --- Apply drag ---
     float drag = uniforms.drag_coefficient;
     vel *= (1.0 - drag * dt);
+
+    // --- Pressure gradient force from grid density ---
+    // Read 3x3x3 neighborhood around particle's cell and compute
+    // approximate pressure gradient (density difference * direction).
+    int3 center_cell = pos_to_cell(pos, uniforms.grid_bounds_min, uniforms.grid_bounds_max);
+    uint center_density = grid_density[cell_index(center_cell)];
+
+    float3 pressure_gradient = float3(0.0);
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                int3 neighbor = center_cell + int3(dx, dy, dz);
+                if (any(neighbor < int3(0)) || any(neighbor >= int3(GRID_DIM))) continue;
+                uint neighbor_density = grid_density[cell_index(neighbor)];
+                float diff = float(neighbor_density) - float(center_density);
+                float3 dir = normalize(float3(dx, dy, dz));
+                pressure_gradient += diff * dir;
+            }
+        }
+    }
+    vel += pressure_gradient * uniforms.interaction_strength * dt;
 
     // --- Semi-implicit Euler integration ---
     pos += vel * dt;

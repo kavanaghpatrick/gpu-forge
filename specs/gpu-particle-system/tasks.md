@@ -268,7 +268,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-17, AC-6.1, AC-6.2_
   - _Design: Grid Clear Kernel, Grid Populate Kernel_
 
-- [ ] 2.2 Pressure gradient force from grid density
+- [x] 2.2 Pressure gradient force from grid density
   - **Do**:
     1. In `shaders/update.metal`: add grid density reads
        - Compute cell index from particle position

@@ -17,7 +17,7 @@ pub fn default_camera_matrices() -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
 /// in structs (padded to 16-byte alignment), so we use `[f32; 3]` + explicit
 /// padding float to match.
 ///
-/// Total size: 208 bytes.
+/// Total size: 224 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
@@ -51,6 +51,12 @@ pub struct Uniforms {
     pub emission_count: u32,
     /// Total pool capacity
     pub pool_size: u32,
+    /// Pressure gradient interaction strength (default: 0.001)
+    pub interaction_strength: f32,
+    /// Padding to reach 224 bytes (multiple of 16)
+    pub _pad1: f32,
+    pub _pad2: f32,
+    pub _pad3: f32,
 }
 
 impl Default for Uniforms {
@@ -73,6 +79,10 @@ impl Default for Uniforms {
             particle_size_scale: 1.0,
             emission_count: 10000,
             pool_size: 1_000_000,
+            interaction_strength: 0.001,
+            _pad1: 0.0,
+            _pad2: 0.0,
+            _pad3: 0.0,
         }
     }
 }
