@@ -631,7 +631,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-23, NFR-8, NFR-12_
   - _Design: Mixed Precision, Technical Decisions_
 
-- [ ] 4.3 [VERIFY] Quality checkpoint: build + all tests
+- [x] 4.3 [VERIFY] Quality checkpoint: build + all tests
   - **Do**: Run full quality suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10 && cargo clippy 2>&1 | tail -5 && cargo build --release 2>&1 | tail -3`
   - **Done when**: All tests pass, clean build
