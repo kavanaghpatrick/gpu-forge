@@ -186,6 +186,8 @@ pub struct InputState {
     pub shift_held: bool,
     /// Runtime-tunable physics parameters
     pub physics: PhysicsParams,
+    /// Whether to capture the next GPU frame (toggled by F1 key)
+    pub capture_next_frame: bool,
 }
 
 impl Default for InputState {
@@ -202,6 +204,7 @@ impl Default for InputState {
             pending_grow: None,
             shift_held: false,
             physics: PhysicsParams::default(),
+            capture_next_frame: false,
         }
     }
 }
@@ -217,6 +220,11 @@ impl InputState {
     /// Physics keys: G, D, A, R, E (with Shift modifier).
     /// Pool keys: 1 -> 1M, 2 -> 2M, 5 -> 5M, 0 -> 10M.
     pub fn handle_key(&mut self, key_code: KeyCode) {
+        // F1: request GPU frame capture
+        if key_code == KeyCode::F1 {
+            self.capture_next_frame = true;
+            return;
+        }
         // Try physics key first
         if self.physics.handle_key(key_code, self.shift_held) {
             return;
@@ -280,6 +288,7 @@ mod tests {
         assert_eq!(s.burst_world_pos, [0.0, 0.0, 0.0]);
         assert!(s.pending_grow.is_none());
         assert!(!s.shift_held);
+        assert!(!s.capture_next_frame);
         assert!((s.physics.gravity - (-9.81)).abs() < 1e-5);
     }
 

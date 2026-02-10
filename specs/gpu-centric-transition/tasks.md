@@ -10,7 +10,7 @@ created: 2026-02-10
 
 Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count or computes emission threadgroups. Accept hardcoded values, skip tests.
 
-- [ ] 1.1 Add DispatchArgs and GpuEmissionParams structs to types.rs and types.h
+- [x] 1.1 Add DispatchArgs and GpuEmissionParams structs to types.rs and types.h
   - **Do**:
     1. In `particle-system/src/types.rs`, add `DispatchArgs` struct: `#[repr(C)] pub struct DispatchArgs { pub threadgroups_per_grid: [u32; 3] }` with Default impl `[0,1,1]`
     2. Add `GpuEmissionParams` struct: `#[repr(C)] pub struct GpuEmissionParams { pub emission_count: u32, pub actual_burst_count: u32, pub _pad0: u32, pub _pad1: u32 }` with Default
@@ -23,7 +23,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-3, FR-4, NFR-6_
   - _Design: Section 4.2, 3.2_
 
-- [ ] 1.2 Rename emission_count to base_emission_rate in Uniforms
+- [x] 1.2 Rename emission_count to base_emission_rate in Uniforms
   - **Do**:
     1. In `types.rs`: rename field `emission_count` to `base_emission_rate` in Uniforms struct + Default impl
     2. In `types.h`: rename `uint emission_count` to `uint base_emission_rate` at offset 200
@@ -38,7 +38,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-2_
   - _Design: Section 12.1_
 
-- [ ] 1.3 Create prepare_dispatch.metal kernel
+- [x] 1.3 Create prepare_dispatch.metal kernel
   - **Do**:
     1. Create `particle-system/shaders/prepare_dispatch.metal` with `#include "types.h"`
     2. Implement `kernel void prepare_dispatch(...)` per design Section 3.2:
@@ -54,13 +54,13 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1_
   - _Design: Section 3.1, 3.2, KB 134, KB 277_
 
-- [ ] 1.4 [VERIFY] Quality checkpoint: cargo build && cargo test
+- [x] 1.4 [VERIFY] Quality checkpoint: cargo build && cargo test
   - **Do**: Run full build and test suite to catch any issues from tasks 1.1-1.3
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -5`
   - **Done when**: Build succeeds, all 65 existing tests pass
   - **Commit**: `chore(gpu-centric): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.5 Modify emission.metal to read from GpuEmissionParams
+- [x] 1.5 Modify emission.metal to read from GpuEmissionParams
   - **Do**:
     1. In `emission.metal`: add `device const GpuEmissionParams* emission_params [[buffer(8)]]` parameter to `emission_kernel`
     2. Change guard from `if (tid >= uniforms.base_emission_rate) return` to `if (tid >= emission_params->emission_count) return`
@@ -72,7 +72,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1, FR-3_
   - _Design: Section 3.5_
 
-- [ ] 1.6 Add new buffers to ParticlePool and prepare_dispatch pipeline to GpuState
+- [x] 1.6 Add new buffers to ParticlePool and prepare_dispatch pipeline to GpuState
   - **Do**:
     1. In `buffers.rs` ParticlePool struct, add fields:
        - `pub emission_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>` (12 bytes)
@@ -89,7 +89,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1, FR-3, FR-4_
   - _Design: Section 3.3, 4.2_
 
-- [ ] 1.7 Integrate prepare_dispatch + indirect emission dispatch in main.rs
+- [x] 1.7 Integrate prepare_dispatch + indirect emission dispatch in main.rs
   - **Do**:
     1. Remove CPU readback of dead_count (lines ~132-136 in `render()`): delete `let dead_count = unsafe { ... pool.dead_list.contents() ... }`
     2. Remove CPU computation of `emission_count` and `actual_burst_count` (lines ~136-138)
@@ -115,7 +115,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1, FR-5, FR-6, FR-7, FR-8, FR-13_
   - _Design: Section 4.4, 3.1_
 
-- [ ] 1.8 Update GPU integration tests for new emission kernel signature
+- [x] 1.8 Update GPU integration tests for new emission kernel signature
   - **Do**:
     1. In `tests/gpu_integration.rs`, update `EmissionBuffers` to include `gpu_emission_params` buffer (16 bytes) and `emission_dispatch_args` buffer (12 bytes)
     2. Update `PhysicsBuffers` similarly
@@ -131,13 +131,13 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: NFR-5_
   - _Design: Section 11.2_
 
-- [ ] 1.9 [VERIFY] Quality checkpoint: full test suite
+- [x] 1.9 [VERIFY] Quality checkpoint: full test suite
   - **Do**: Run full build and complete test suite including GPU integration tests
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass (61+ unit tests + 4 GPU integration tests), zero regressions
   - **Commit**: `chore(gpu-centric): pass Phase 1 quality checkpoint` (only if fixes needed)
 
-- [ ] 1.10 POC Checkpoint — verify indirect dispatch works end-to-end
+- [x] 1.10 POC Checkpoint — verify indirect dispatch works end-to-end
   - **Do**:
     1. Run `cargo build` to confirm compilation
     2. Run `cargo test` to confirm all tests pass
@@ -155,7 +155,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
 
 Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform ring buffer.
 
-- [ ] 2.1 Change MAX_FRAMES_IN_FLIGHT to 3 and add uniform ring buffer
+- [x] 2.1 Change MAX_FRAMES_IN_FLIGHT to 3 and add uniform ring buffer
   - **Do**:
     1. In `frame.rs`: change `const MAX_FRAMES_IN_FLIGHT: usize = 1` to `3`. Update comment to reflect GPU-centric architecture enables safe triple buffering
     2. In `buffers.rs` ParticlePool: add `pub uniform_ring: Retained<ProtocolObject<dyn MTLBuffer>>` (768 bytes = 3 x 256)
@@ -169,7 +169,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
   - _Requirements: FR-9, FR-10_
   - _Design: Section 5.1, 5.2, KB 232_
 
-- [ ] 2.2 Wire uniform ring buffer into main.rs render loop
+- [x] 2.2 Wire uniform ring buffer into main.rs render loop
   - **Do**:
     1. In `main.rs render()`: compute `let uniform_offset = ParticlePool::uniforms_offset(self.frame_ring.frame_index());`
     2. Write uniforms to `pool.uniform_ring` at `uniform_offset` instead of `pool.uniforms`
@@ -197,7 +197,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
   - _Requirements: FR-9, FR-10, FR-14_
   - _Design: Section 5.1, 5.4_
 
-- [ ] 2.3 Update FrameRing Drop for triple buffering safety
+- [x] 2.3 Update FrameRing Drop for triple buffering safety
   - **Do**:
     1. In `frame.rs` Drop impl: drain all in-flight frames, not just one. Current Drop logic handles single-buffer correctly. With 3 in-flight, we need to wait for all pending completions:
        ```rust
@@ -223,7 +223,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
   - _Requirements: FR-9_
   - _Design: Section 5.2, KB 232, pitfall #4 from research.md_
 
-- [ ] 2.4 [VERIFY] Quality checkpoint: build + tests after triple buffering
+- [x] 2.4 [VERIFY] Quality checkpoint: build + tests after triple buffering
   - **Do**: Run full build and test suite. GPU integration tests may need updates if they depend on single-buffering assumptions.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass, build clean
@@ -233,7 +233,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
 
 Focus: All variable-count dispatches use indirect args. Add debug infrastructure.
 
-- [ ] 3.1 Extend sync_indirect_args to write next-frame update_dispatch_args
+- [x] 3.1 Extend sync_indirect_args to write next-frame update_dispatch_args
   - **Do**:
     1. In `buffers.rs` ParticlePool: add `pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>` (12 bytes)
     2. In `ParticlePool::new()`: allocate and init to `DispatchArgs { threadgroups_per_grid: [pool_size.div_ceil(256) as u32, 1, 1] }` (bootstrap value for first frame, per design R6)
@@ -247,7 +247,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-11_
   - _Design: Section 6.2, 4.5_
 
-- [ ] 3.2 Change grid_populate and update to indirect dispatch in main.rs
+- [x] 3.2 Change grid_populate and update to indirect dispatch in main.rs
   - **Do**:
     1. In `main.rs` sync encoder: bind buffer(2) = `pool.update_dispatch_args` via `setBuffer_offset_atIndex`
     2. In `main.rs` grid_populate dispatch: replace CPU-computed `pool.pool_size.div_ceil(256)` with indirect dispatch via `dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&pool.update_dispatch_args, 0, MTLSize{width:256,height:1,depth:1})`
@@ -260,7 +260,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-12, US-T3_
   - _Design: Section 4.5_
 
-- [ ] 3.3 Update GPU integration tests for extended sync_indirect_args
+- [x] 3.3 Update GPU integration tests for extended sync_indirect_args
   - **Do**:
     1. In `tests/gpu_integration.rs`: add `update_dispatch_args` buffer to `PhysicsBuffers`
     2. Update `dispatch_sync_indirect` helper to bind buffer(2) = update_dispatch_args
@@ -273,13 +273,13 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: NFR-5, NFR-6_
   - _Design: Section 11.2_
 
-- [ ] 3.4 [VERIFY] Quality checkpoint: build + all tests
+- [x] 3.4 [VERIFY] Quality checkpoint: build + all tests
   - **Do**: Run full build and all tests after Phase 3 core changes
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass, no regressions
   - **Commit**: `chore(gpu-centric): pass Phase 3 quality checkpoint` (only if fixes needed)
 
-- [ ] 3.5 Add F1 GPU capture key
+- [x] 3.5 Add F1 GPU capture key
   - **Do**:
     1. In `input.rs` InputState: add `pub capture_next_frame: bool` field, default false
     2. In `input.rs` InputState::handle_key: add `KeyCode::F1 => { self.capture_next_frame = true; }` before pool key fallthrough
@@ -300,7 +300,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-15_
   - _Design: Section 7.1, KB 137_
 
-- [ ] 3.6 Add debug-telemetry feature flag and DebugTelemetry struct
+- [x] 3.6 Add debug-telemetry feature flag and DebugTelemetry struct
   - **Do**:
     1. In `Cargo.toml`: add `[features]` section with `debug-telemetry = []`
     2. In `types.rs`: add `DebugTelemetry` struct (8 x u32 = 32 bytes) with layout test. Gate behind `#[cfg(feature = "debug-telemetry")]`
@@ -315,7 +315,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-16, FR-17_
   - _Design: Section 7.2, 7.3_
 
-- [ ] 3.7 [VERIFY] Quality checkpoint: full build with and without debug-telemetry
+- [x] 3.7 [VERIFY] Quality checkpoint: full build with and without debug-telemetry
   - **Do**: Run full build and test suite in both configurations
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -5 && cargo test --features debug-telemetry 2>&1 | tail -5`
   - **Done when**: All tests pass in both configurations
@@ -325,7 +325,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
 
 Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration tests, conservation invariant.
 
-- [ ] 4.1 Add unit tests for new structs and helpers
+- [x] 4.1 Add unit tests for new structs and helpers
   - **Do**:
     1. In `types.rs` tests module, add/verify:
        - `test_dispatch_args_layout`: size==12, align==4, field offsets at 0/4/8
@@ -344,7 +344,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - _Requirements: NFR-6_
   - _Design: Section 11.1_
 
-- [ ] 4.2 Add GPU integration test: prepare_dispatch correctness
+- [x] 4.2 Add GPU integration test: prepare_dispatch correctness
   - **Do**:
     1. In `tests/gpu_integration.rs`, add test `test_prepare_dispatch_correctness`:
        - Allocate dead_list with count=500 (set counter to 500, fill 500 indices)
@@ -366,7 +366,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - _Requirements: NFR-6_
   - _Design: Section 11.2_
 
-- [ ] 4.3 Add GPU integration test: indirect dispatch round-trip
+- [x] 4.3 Add GPU integration test: indirect dispatch round-trip
   - **Do**:
     1. Add test `test_indirect_dispatch_round_trip`:
        - Full pipeline: prepare_dispatch -> emission (indirect) -> grid_clear -> grid_populate -> update -> sync_indirect_args
@@ -384,13 +384,13 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - _Requirements: NFR-4, NFR-5_
   - _Design: Section 11.2, 11.5_
 
-- [ ] 4.4 [VERIFY] Quality checkpoint: all tests including new GPU integration
+- [x] 4.4 [VERIFY] Quality checkpoint: all tests including new GPU integration
   - **Do**: Run full test suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass (unit + GPU integration, old + new)
   - **Commit**: `chore(gpu-centric): pass Phase 4 test quality checkpoint` (only if fixes needed)
 
-- [ ] 4.5 Add conservation invariant stress test
+- [x] 4.5 Add conservation invariant stress test
   - **Do**:
     1. Add test `test_conservation_invariant_stress`:
        - Pool size 10000, base_emission_rate=500
@@ -409,7 +409,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
 
 Focus: Clean up code structure, extract helpers, improve error handling.
 
-- [ ] 5.1 Extract compute dispatch encoding into helper methods
+- [x] 5.1 Extract compute dispatch encoding into helper methods
   - **Do**:
     1. In `main.rs` or a new `encode.rs` module: extract repeated compute encoder patterns into helper functions:
        - `encode_prepare_dispatch(cmd_buf, gpu, pool, write_list, uniform_offset)`
@@ -426,7 +426,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Commit**: `refactor(main): extract compute dispatch encoding into helper methods`
   - _Design: Architecture section_
 
-- [ ] 5.2 Add error handling for buffer allocation failures
+- [x] 5.2 Add error handling for buffer allocation failures
   - **Do**:
     1. In `buffers.rs`: ensure all new buffer allocations (emission_dispatch_args, gpu_emission_params, update_dispatch_args, uniform_ring) have clear panic messages matching existing pattern
     2. In `gpu.rs`: ensure prepare_dispatch pipeline creation has clear panic message
@@ -437,7 +437,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Commit**: `refactor(buffers): improve error handling and safety documentation`
   - _Design: Error Handling_
 
-- [ ] 5.3 [VERIFY] Quality checkpoint: full test suite after refactoring
+- [x] 5.3 [VERIFY] Quality checkpoint: full test suite after refactoring
   - **Do**: Run full build and test suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass, no regressions from refactoring
@@ -445,7 +445,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
 
 ## Phase 6: Quality Gates & PR
 
-- [ ] 6.1 [VERIFY] Full local CI: build + test + clippy
+- [x] 6.1 [VERIFY] Full local CI: build + test + clippy
   - **Do**: Run complete local quality suite
   - **Verify**: All commands must pass:
     ```
@@ -459,7 +459,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Done when**: Build, all tests, clippy, and feature-gated build all pass
   - **Commit**: `fix(gpu-centric): address clippy/lint issues` (if fixes needed)
 
-- [ ] 6.2 Create PR and verify CI
+- [x] 6.2 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current` (should be `feat/gpu-particle-system` or similar)
     2. If on default branch, STOP and alert user
@@ -475,7 +475,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
 
 ## Phase 7: PR Lifecycle
 
-- [ ] 7.1 Monitor CI and fix any failures
+- [x] 7.1 Monitor CI and fix any failures
   - **Do**:
     1. Check CI status: `gh pr checks`
     2. If failures: read logs, fix issues, push fixes
@@ -483,7 +483,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Done when**: All CI checks green
   - **Commit**: `fix(ci): resolve CI failures` (if needed)
 
-- [ ] 7.2 [VERIFY] AC checklist — all acceptance criteria verified
+- [x] 7.2 [VERIFY] AC checklist — all acceptance criteria verified
   - **Do**: Programmatically verify each acceptance criterion:
     1. AC US-T1: `grep -n "prepare_dispatch" particle-system/shaders/prepare_dispatch.metal | head -3` (kernel exists)
     2. AC US-T1: `! grep -q "dead_list.contents()" particle-system/src/main.rs` (no CPU dead_count read)
