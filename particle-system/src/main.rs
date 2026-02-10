@@ -35,7 +35,7 @@ use camera::OrbitCamera;
 use frame::FrameRing;
 use gpu::GpuState;
 use input::InputState;
-use types::{CounterHeader, Uniforms};
+use types::Uniforms;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -89,13 +89,6 @@ impl App {
         // write_list: update kernel writes this frame's survivors here; render uses this
         let (read_list, write_list) = pool.get_ping_pong_lists(self.ping_pong);
 
-        // --- Reset ONLY the write list counter to 0 at frame start (CPU write) ---
-        // The read list still holds last frame's survivors — do NOT reset it.
-        unsafe {
-            let write_ptr = write_list.contents().as_ptr() as *mut CounterHeader;
-            (*write_ptr).count = 0;
-        }
-
         // --- Update uniforms ---
         let base_emission: u32 = self.input.physics.emission_rate;
         let view_mat = self.camera.view_matrix();
@@ -128,15 +121,6 @@ impl App {
             0
         };
 
-        // Total emission = base + burst, clamped to available dead list slots
-        let dead_count = unsafe {
-            let dead_ptr = pool.dead_list.contents().as_ptr() as *const CounterHeader;
-            (*dead_ptr).count
-        };
-        let emission_count = (base_emission + burst_count).min(dead_count);
-        // Actual burst_count must not exceed total emission
-        let actual_burst_count = burst_count.min(emission_count);
-
         unsafe {
             let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
             (*uniforms_ptr).view_matrix = view_mat;
@@ -162,7 +146,7 @@ impl App {
             // Burst emission parameters
             (*uniforms_ptr).burst_position = self.input.burst_world_pos;
             (*uniforms_ptr)._pad_burst = 0.0;
-            (*uniforms_ptr).burst_count = actual_burst_count;
+            (*uniforms_ptr).burst_count = burst_count;
         }
 
         // Clear burst_requested after uploading uniforms
@@ -208,15 +192,43 @@ impl App {
         // Register completion handler that signals the semaphore
         self.frame_ring.register_completion_handler(&command_buffer);
 
+        // --- Prepare dispatch compute pass ---
+        // GPU-side computation of emission parameters and dispatch args.
+        // Reads dead_count, computes emission_count, writes indirect dispatch args.
+        // Also resets write_list counter to 0 (replaces CPU write_list reset).
+        if let Some(prepare_encoder) = command_buffer.computeCommandEncoder() {
+            prepare_encoder.setLabel(Some(ns_string!("Prepare Dispatch")));
+            prepare_encoder.setComputePipelineState(&gpu.prepare_dispatch_pipeline);
+
+            // buffer(0)=dead_list, buffer(1)=uniforms, buffer(2)=write_list,
+            // buffer(3)=emission_dispatch_args, buffer(4)=gpu_emission_params
+            unsafe {
+                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 0);
+                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 1);
+                prepare_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 2);
+                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.emission_dispatch_args), 0, 3);
+                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.gpu_emission_params), 0, 4);
+            }
+
+            // Single threadgroup of 32 threads (SIMD-aligned, only thread 0 does work)
+            prepare_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: 1, height: 1, depth: 1 },
+                MTLSize { width: 32, height: 1, depth: 1 },
+            );
+
+            prepare_encoder.endEncoding();
+        }
+
         // --- Emission compute pass ---
         // Emission appends new particles to the READ list (alongside last frame's survivors).
+        // Uses indirect dispatch: threadgroup count from GPU-computed emission_dispatch_args.
         if let Some(compute_encoder) = command_buffer.computeCommandEncoder() {
             compute_encoder.setLabel(Some(ns_string!("Emission")));
             compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
 
             // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
             // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
-            // buffer(6) = colors, buffer(7) = sizes
+            // buffer(6) = colors, buffer(7) = sizes, buffer(8) = gpu_emission_params
             unsafe {
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
@@ -226,15 +238,17 @@ impl App {
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 6);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 7);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.gpu_emission_params), 0, 8);
             }
 
-            // Dispatch ceil(emission_count / 256) threadgroups of 256
-            let threadgroup_size = 256usize;
-            let threadgroup_count = (emission_count as usize).div_ceil(threadgroup_size);
-            compute_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
+            // Indirect dispatch: threadgroup count from prepare_dispatch kernel output
+            unsafe {
+                compute_encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                    &pool.emission_dispatch_args,
+                    0,
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
 
             compute_encoder.endEncoding();
         }
@@ -380,7 +394,7 @@ impl App {
             if let Some(window) = &self.window {
                 // Read alive count from the write list (this frame's survivors)
                 // Safe because GPU is done with this buffer (single buffering)
-                let alive_count = pool.read_alive_count(write_list);
+                let alive_count = pool.read_alive_count_from_indirect();
                 let alive_k = alive_count as f64 / 1_000.0;
                 let pool_m = pool.pool_size as f64 / 1_000_000.0;
                 let fps = self.frame_ring.fps;

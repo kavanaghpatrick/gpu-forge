@@ -89,7 +89,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1, FR-3, FR-4_
   - _Design: Section 3.3, 4.2_
 
-- [ ] 1.7 Integrate prepare_dispatch + indirect emission dispatch in main.rs
+- [x] 1.7 Integrate prepare_dispatch + indirect emission dispatch in main.rs
   - **Do**:
     1. Remove CPU readback of dead_count (lines ~132-136 in `render()`): delete `let dead_count = unsafe { ... pool.dead_list.contents() ... }`
     2. Remove CPU computation of `emission_count` and `actual_burst_count` (lines ~136-138)
