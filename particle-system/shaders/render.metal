@@ -18,7 +18,7 @@ vertex VertexOut vertex_main(
     uint                   vertex_id    [[vertex_id]],
     uint                   instance_id  [[instance_id]],
     device const uint*     alive_list   [[buffer(0)]],
-    device const float3*   positions    [[buffer(1)]],
+    device const packed_float3* positions [[buffer(1)]],
     device const half4*    colors       [[buffer(2)]],
     device const half*     sizes        [[buffer(3)]],
     constant Uniforms&     uniforms     [[buffer(4)]]

@@ -57,7 +57,7 @@ impl App {
             None => return,
         };
 
-        // Acquire a frame slot (blocks if all 3 are in use)
+        // Acquire a frame slot (blocks until GPU finishes previous frame)
         self.frame_ring.acquire();
 
         // --- Ping-pong: determine read and write lists ---
@@ -97,7 +97,7 @@ impl App {
         // Get the drawable's texture
         let texture = drawable.texture();
 
-        // Create render pass descriptor with dark blue clear color
+        // Create render pass descriptor with dark background
         let render_pass_desc = MTLRenderPassDescriptor::renderPassDescriptor();
         let color_attachment = unsafe {
             render_pass_desc.colorAttachments().objectAtIndexedSubscript(0)
@@ -106,9 +106,9 @@ impl App {
         color_attachment.setLoadAction(MTLLoadAction::Clear);
         color_attachment.setStoreAction(MTLStoreAction::Store);
         color_attachment.setClearColor(MTLClearColor {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.2,
+            red: 0.02,
+            green: 0.02,
+            blue: 0.08,
             alpha: 1.0,
         });
 
@@ -248,7 +248,11 @@ impl App {
         // Update window title with FPS approximately once per second
         if self.frame_ring.should_update_fps() {
             if let Some(window) = &self.window {
-                window.set_title(&format!("GPU Particles - {} FPS", self.frame_ring.fps));
+                let title = format!(
+                    "GPU Particles - {} FPS",
+                    self.frame_ring.fps,
+                );
+                window.set_title(&title);
             }
         }
     }

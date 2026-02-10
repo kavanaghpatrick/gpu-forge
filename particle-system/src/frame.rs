@@ -6,8 +6,12 @@ use dispatch2::{DispatchRetained, DispatchSemaphore, DispatchTime};
 use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLCommandBuffer;
 
-/// Maximum number of frames in flight (triple buffering).
-const MAX_FRAMES_IN_FLIGHT: usize = 3;
+/// Maximum number of frames in flight.
+/// Using 1 (single buffering) because particle SoA buffers and alive/dead lists
+/// are shared (not per-frame). Multiple in-flight frames would race on these buffers.
+/// For POC this is fine; triple buffering requires per-frame buffer copies or
+/// partitioned buffer regions.
+const MAX_FRAMES_IN_FLIGHT: usize = 1;
 
 /// Triple-buffer semaphore ring for pipelining CPU/GPU work.
 ///
@@ -90,6 +94,7 @@ impl FrameRing {
     }
 
     /// Advance the frame index to the next slot in the ring.
+    #[allow(clippy::modulo_one)]
     pub fn advance(&mut self) {
         self.frame_index = (self.frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
     }

@@ -13,8 +13,8 @@ kernel void update_physics_kernel(
     device uint*           dead_list      [[buffer(1)]],
     device const uint*     alive_list_a   [[buffer(2)]],  // input: current alive
     device uint*           alive_list_b   [[buffer(3)]],  // output: survivors
-    device float3*         positions      [[buffer(4)]],
-    device float3*         velocities     [[buffer(5)]],
+    device packed_float3*  positions      [[buffer(4)]],
+    device packed_float3*  velocities     [[buffer(5)]],
     device half2*          lifetimes      [[buffer(6)]],
     device half4*          colors         [[buffer(7)]],
     device half*           sizes          [[buffer(8)]],

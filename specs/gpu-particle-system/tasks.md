@@ -219,7 +219,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - **Done when**: Clean build
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.12 POC Checkpoint: particles on screen at 60fps
+- [x] 1.12 POC Checkpoint: particles on screen at 60fps
   - **Do**:
     1. Run the application; verify:
        - Window opens with dark background

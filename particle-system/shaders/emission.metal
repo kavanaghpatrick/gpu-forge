@@ -31,8 +31,8 @@ kernel void emission_kernel(
     constant Uniforms&     uniforms       [[buffer(0)]],
     device uint*           dead_list      [[buffer(1)]],
     device uint*           alive_list     [[buffer(2)]],
-    device float3*         positions      [[buffer(3)]],
-    device float3*         velocities     [[buffer(4)]],
+    device packed_float3*  positions      [[buffer(3)]],
+    device packed_float3*  velocities     [[buffer(4)]],
     device half2*          lifetimes      [[buffer(5)]],
     device half4*          colors         [[buffer(6)]],
     device half*           sizes          [[buffer(7)]],
@@ -49,8 +49,9 @@ kernel void emission_kernel(
     device atomic_uint* dead_counter = (device atomic_uint*)&dead_list[0];
     uint prev_count = atomic_fetch_sub_explicit(dead_counter, 1, memory_order_relaxed);
 
-    // If prev_count <= 0, the dead list was empty; undo the decrement and bail
-    if (prev_count <= 0u) {
+    // If prev_count was 0, the atomic_fetch_sub wrapped to UINT_MAX.
+    // Detect both 0 and wrap-around: any value > pool_size means underflow.
+    if (prev_count == 0u || prev_count > uniforms.pool_size) {
         atomic_fetch_add_explicit(dead_counter, 1, memory_order_relaxed);
         return;
     }
