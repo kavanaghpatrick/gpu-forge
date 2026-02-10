@@ -260,7 +260,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-12, US-T3_
   - _Design: Section 4.5_
 
-- [ ] 3.3 Update GPU integration tests for extended sync_indirect_args
+- [x] 3.3 Update GPU integration tests for extended sync_indirect_args
   - **Do**:
     1. In `tests/gpu_integration.rs`: add `update_dispatch_args` buffer to `PhysicsBuffers`
     2. Update `dispatch_sync_indirect` helper to bind buffer(2) = update_dispatch_args

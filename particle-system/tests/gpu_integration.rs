@@ -552,6 +552,7 @@ pub struct PhysicsBuffers {
     pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub indirect_args: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 /// Grid dimension constant (must match shader).
@@ -660,6 +661,16 @@ impl PhysicsBuffers {
             std::ptr::write(ptr.add(3), 0u32); // _pad1
         }
 
+        // DispatchArgs for update/grid_populate indirect dispatch: 12 bytes (3 x u32)
+        // Zero-init; sync_indirect_args will write correct values
+        let update_dispatch_args = alloc_buffer(device, 12);
+        unsafe {
+            let ptr = buffer_ptr(&update_dispatch_args) as *mut u32;
+            std::ptr::write(ptr, 0u32); // threadgroupsPerGridX
+            std::ptr::write(ptr.add(1), 1u32); // threadgroupsPerGridY
+            std::ptr::write(ptr.add(2), 1u32); // threadgroupsPerGridZ
+        }
+
         Self {
             uniforms,
             dead_list,
@@ -673,6 +684,7 @@ impl PhysicsBuffers {
             grid_density,
             indirect_args,
             gpu_emission_params,
+            update_dispatch_args,
         }
     }
 }
@@ -782,11 +794,12 @@ fn dispatch_update(ctx: &GpuTestContextFull, bufs: &PhysicsBuffers, pool_size: u
     cmd_buf.waitUntilCompleted();
 }
 
-/// Dispatch sync_indirect_args kernel. Reads alive_list counter, writes DrawArgs.
+/// Dispatch sync_indirect_args kernel. Reads alive_list counter, writes DrawArgs and DispatchArgs.
 fn dispatch_sync_indirect(
     ctx: &GpuTestContextFull,
     alive_list: &ProtocolObject<dyn MTLBuffer>,
     indirect_args: &ProtocolObject<dyn MTLBuffer>,
+    update_dispatch_args: &ProtocolObject<dyn MTLBuffer>,
 ) {
     let cmd_buf = ctx
         .queue
@@ -800,10 +813,11 @@ fn dispatch_sync_indirect(
     encoder.setComputePipelineState(&ctx.sync_indirect_pipeline);
 
     // sync_indirect_args buffer bindings:
-    // 0: alive_list, 1: indirect_args
+    // 0: alive_list, 1: indirect_args, 2: update_dispatch_args
     unsafe {
         encoder.setBuffer_offset_atIndex(Some(alive_list), 0, 0);
         encoder.setBuffer_offset_atIndex(Some(indirect_args), 0, 1);
+        encoder.setBuffer_offset_atIndex(Some(update_dispatch_args), 0, 2);
     }
 
     // Single thread dispatch
@@ -1039,8 +1053,8 @@ fn test_indirect_draw_args_gpu_integration() {
         emission_count, alive_count
     );
 
-    // Step 3: Run sync_indirect_args (reads alive_list_b counter, writes indirect_args)
-    dispatch_sync_indirect(&ctx, &bufs.alive_list_b, &bufs.indirect_args);
+    // Step 3: Run sync_indirect_args (reads alive_list_b counter, writes indirect_args + update_dispatch_args)
+    dispatch_sync_indirect(&ctx, &bufs.alive_list_b, &bufs.indirect_args, &bufs.update_dispatch_args);
 
     // Step 4: Read back indirect args and verify
     unsafe {
@@ -1074,6 +1088,80 @@ fn test_indirect_draw_args_gpu_integration() {
         println!(
             "test_indirect_draw_args PASSED: vertexCount={}, instanceCount={}, vertexStart={}, baseInstance={}",
             vertex_count, instance_count, vertex_start, base_instance
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// test_sync_indirect_writes_update_dispatch_args: verify DispatchArgs output
+// ---------------------------------------------------------------------------
+
+/// GPU integration test for sync_indirect_args writing update_dispatch_args.
+///
+/// Emits 100 particles, runs physics (all survive), runs sync_indirect_args,
+/// then reads back update_dispatch_args and verifies:
+/// - threadgroupsPerGridX == ceil(100 / 256) == 1
+/// - threadgroupsPerGridY == 1
+/// - threadgroupsPerGridZ == 1
+#[test]
+fn test_sync_indirect_writes_update_dispatch_args() {
+    let pool_size: usize = 1000;
+    let emission_count: u32 = 100;
+
+    let ctx = GpuTestContextFull::new();
+    let bufs = PhysicsBuffers::new(&ctx.device, pool_size);
+
+    // Step 1: Emit 100 particles into alive_list_a
+    dispatch_emission_physics(&ctx, &bufs, emission_count);
+
+    let alive_after_emission = unsafe { read_counter(&bufs.alive_list_a) };
+    assert_eq!(
+        alive_after_emission, emission_count,
+        "Alive list A should have {} after emission, got {}",
+        emission_count, alive_after_emission
+    );
+
+    // Step 2: Run physics (reads alive_list_a, writes alive_list_b; all survive at age=0.016s)
+    dispatch_update(&ctx, &bufs, pool_size);
+
+    let alive_after_update = unsafe { read_counter(&bufs.alive_list_b) };
+    assert_eq!(
+        alive_after_update, emission_count,
+        "All {} particles should survive after 1 step, got {}",
+        emission_count, alive_after_update
+    );
+
+    // Step 3: Run sync_indirect_args (reads alive_list_b, writes indirect_args + update_dispatch_args)
+    dispatch_sync_indirect(&ctx, &bufs.alive_list_b, &bufs.indirect_args, &bufs.update_dispatch_args);
+
+    // Step 4: Read back update_dispatch_args and verify
+    unsafe {
+        let args_ptr = bufs.update_dispatch_args.contents().as_ptr() as *const u32;
+        let threadgroups_x = std::ptr::read(args_ptr);
+        let threadgroups_y = std::ptr::read(args_ptr.add(1));
+        let threadgroups_z = std::ptr::read(args_ptr.add(2));
+
+        // ceil(100 / 256) == 1, but shader uses max((alive_count + 255) / 256, 1) == 1
+        let expected_x = (emission_count as u32 + 255) / 256;
+        assert_eq!(
+            threadgroups_x, expected_x,
+            "threadgroupsPerGridX should be ceil({}/256) = {}, got {}",
+            emission_count, expected_x, threadgroups_x
+        );
+        assert_eq!(
+            threadgroups_y, 1,
+            "threadgroupsPerGridY should be 1, got {}",
+            threadgroups_y
+        );
+        assert_eq!(
+            threadgroups_z, 1,
+            "threadgroupsPerGridZ should be 1, got {}",
+            threadgroups_z
+        );
+
+        println!(
+            "test_sync_indirect_writes_update_dispatch_args PASSED: threadgroups=[{}, {}, {}]",
+            threadgroups_x, threadgroups_y, threadgroups_z
         );
     }
 }
