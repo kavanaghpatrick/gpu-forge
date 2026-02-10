@@ -54,7 +54,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1_
   - _Design: Section 3.1, 3.2, KB 134, KB 277_
 
-- [ ] 1.4 [VERIFY] Quality checkpoint: cargo build && cargo test
+- [x] 1.4 [VERIFY] Quality checkpoint: cargo build && cargo test
   - **Do**: Run full build and test suite to catch any issues from tasks 1.1-1.3
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -5`
   - **Done when**: Build succeeds, all 65 existing tests pass

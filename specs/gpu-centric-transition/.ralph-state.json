@@ -1,0 +1,26 @@
+{
+  "source": "spec",
+  "name": "gpu-centric-transition",
+  "basePath": "./specs/gpu-centric-transition",
+  "phase": "execution",
+  "commitSpec": true,
+  "totalTasks": 33,
+  "awaitingApproval": false,
+  "relatedSpecs": [
+    {
+      "name": "gpu-particle-system",
+      "relevance": "high",
+      "reason": "Target codebase for this transition",
+      "mayNeedUpdate": false
+    }
+  ],
+  "taskIndex": 4,
+  "taskIteration": 1,
+  "maxTaskIterations": 5,
+  "recoveryMode": false,
+  "maxFixTasksPerOriginal": 3,
+  "maxFixTaskDepth": 3,
+  "globalIteration": 5,
+  "maxGlobalIterations": 100,
+  "fixTaskMap": {}
+}
