@@ -544,7 +544,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Done when**: All tests pass, no clippy warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 3.5 GPU integration test: emission kernel
+- [x] 3.5 GPU integration test: emission kernel
   - **Do**:
     1. Create `tests/gpu_integration.rs` (integration test file)
     2. Test emission_kernel:
