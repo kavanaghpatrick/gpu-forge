@@ -133,3 +133,252 @@ impl InputState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::KeyCode;
+
+    // --- Default / construction ---
+
+    #[test]
+    fn default_state_is_zeroed() {
+        let s = InputState::default();
+        assert_eq!(s.cursor_x, 0.0);
+        assert_eq!(s.cursor_y, 0.0);
+        assert_eq!(s.prev_cursor_x, 0.0);
+        assert_eq!(s.prev_cursor_y, 0.0);
+        assert!(!s.left_held);
+        assert!(!s.right_held);
+        assert!(!s.burst_requested);
+        assert_eq!(s.burst_world_pos, [0.0, 0.0, 0.0]);
+        assert!(s.pending_grow.is_none());
+    }
+
+    // --- Cursor position tracking ---
+
+    #[test]
+    fn cursor_position_returns_current_coords() {
+        let mut s = InputState::default();
+        s.cursor_x = 150.0;
+        s.cursor_y = 300.0;
+        assert_eq!(s.cursor_position(), (150.0, 300.0));
+    }
+
+    #[test]
+    fn update_cursor_tracks_position() {
+        let mut s = InputState::default();
+        s.update_cursor(100.0, 200.0);
+        assert_eq!(s.cursor_x, 100.0);
+        assert_eq!(s.cursor_y, 200.0);
+        assert_eq!(s.cursor_position(), (100.0, 200.0));
+    }
+
+    #[test]
+    fn update_cursor_stores_previous_position() {
+        let mut s = InputState::default();
+        s.update_cursor(10.0, 20.0);
+        s.update_cursor(30.0, 40.0);
+        // prev should be the first position
+        assert_eq!(s.prev_cursor_x, 10.0);
+        assert_eq!(s.prev_cursor_y, 20.0);
+        // current should be the second position
+        assert_eq!(s.cursor_x, 30.0);
+        assert_eq!(s.cursor_y, 40.0);
+    }
+
+    // --- Click detection and burst flag ---
+
+    #[test]
+    fn burst_flag_initially_false() {
+        let s = InputState::default();
+        assert!(!s.burst_requested);
+    }
+
+    #[test]
+    fn burst_flag_can_be_set_and_consumed() {
+        let mut s = InputState::default();
+        // Simulate a left click triggering burst
+        s.left_held = true;
+        s.burst_requested = true;
+        s.burst_world_pos = [1.0, 2.0, 3.0];
+
+        assert!(s.burst_requested);
+        assert_eq!(s.burst_world_pos, [1.0, 2.0, 3.0]);
+
+        // Simulate frame consumption
+        s.burst_requested = false;
+        assert!(!s.burst_requested);
+        // World pos persists until next burst
+        assert_eq!(s.burst_world_pos, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn left_held_tracks_mouse_button_state() {
+        let mut s = InputState::default();
+        assert!(!s.left_held);
+        s.left_held = true;
+        assert!(s.left_held);
+        s.left_held = false;
+        assert!(!s.left_held);
+    }
+
+    // --- Keyboard state: pool growth triggers ---
+
+    #[test]
+    fn handle_pool_key_digit1_sets_1m() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::Digit1);
+        assert_eq!(s.pending_grow, Some(1_000_000));
+    }
+
+    #[test]
+    fn handle_pool_key_digit2_sets_2m() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::Digit2);
+        assert_eq!(s.pending_grow, Some(2_000_000));
+    }
+
+    #[test]
+    fn handle_pool_key_digit5_sets_5m() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::Digit5);
+        assert_eq!(s.pending_grow, Some(5_000_000));
+    }
+
+    #[test]
+    fn handle_pool_key_digit0_sets_10m() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::Digit0);
+        assert_eq!(s.pending_grow, Some(10_000_000));
+    }
+
+    #[test]
+    fn handle_pool_key_unrecognized_key_does_nothing() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::KeyA);
+        assert!(s.pending_grow.is_none());
+        s.handle_pool_key(KeyCode::Digit3);
+        assert!(s.pending_grow.is_none());
+        s.handle_pool_key(KeyCode::Space);
+        assert!(s.pending_grow.is_none());
+    }
+
+    #[test]
+    fn handle_pool_key_overwrites_previous_pending_grow() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::Digit1);
+        assert_eq!(s.pending_grow, Some(1_000_000));
+        s.handle_pool_key(KeyCode::Digit5);
+        assert_eq!(s.pending_grow, Some(5_000_000));
+    }
+
+    #[test]
+    fn pending_grow_consumed_by_take() {
+        let mut s = InputState::default();
+        s.handle_pool_key(KeyCode::Digit2);
+        let val = s.pending_grow.take();
+        assert_eq!(val, Some(2_000_000));
+        assert!(s.pending_grow.is_none());
+    }
+
+    // --- Drag accumulation for camera orbit ---
+
+    #[test]
+    fn update_cursor_returns_none_when_right_not_held() {
+        let mut s = InputState::default();
+        let result = s.update_cursor(100.0, 200.0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn update_cursor_returns_delta_when_right_held() {
+        let mut s = InputState::default();
+        // First position - establishes baseline
+        s.update_cursor(100.0, 200.0);
+        // Now hold right button
+        s.right_held = true;
+        // Drag to a new position
+        let result = s.update_cursor(130.0, 250.0);
+        assert!(result.is_some());
+        let (dx, dy) = result.unwrap();
+        assert!((dx - 30.0).abs() < 1e-5);
+        assert!((dy - 50.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn drag_delta_accumulates_across_multiple_moves() {
+        let mut s = InputState::default();
+        s.right_held = true;
+
+        // Move from (0,0) to (10,5)
+        let d1 = s.update_cursor(10.0, 5.0).unwrap();
+        assert!((d1.0 - 10.0).abs() < 1e-5);
+        assert!((d1.1 - 5.0).abs() < 1e-5);
+
+        // Move from (10,5) to (25,15)
+        let d2 = s.update_cursor(25.0, 15.0).unwrap();
+        assert!((d2.0 - 15.0).abs() < 1e-5);
+        assert!((d2.1 - 10.0).abs() < 1e-5);
+
+        // Move from (25,15) to (20,10) — negative delta
+        let d3 = s.update_cursor(20.0, 10.0).unwrap();
+        assert!((d3.0 - (-5.0)).abs() < 1e-5);
+        assert!((d3.1 - (-5.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn drag_stops_when_right_released() {
+        let mut s = InputState::default();
+        s.right_held = true;
+        let _ = s.update_cursor(10.0, 10.0);
+        assert!(s.update_cursor(20.0, 20.0).is_some());
+
+        // Release right button
+        s.right_held = false;
+        let result = s.update_cursor(30.0, 30.0);
+        assert!(result.is_none());
+        // Position still tracked
+        assert_eq!(s.cursor_x, 30.0);
+        assert_eq!(s.cursor_y, 30.0);
+    }
+
+    #[test]
+    fn drag_delta_zero_when_cursor_stationary() {
+        let mut s = InputState::default();
+        s.update_cursor(50.0, 50.0);
+        s.right_held = true;
+        let result = s.update_cursor(50.0, 50.0).unwrap();
+        assert!((result.0).abs() < 1e-5);
+        assert!((result.1).abs() < 1e-5);
+    }
+
+    // --- Unprojection ---
+
+    #[test]
+    fn unproject_zero_window_returns_origin() {
+        let view = [[1.0, 0.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0, 0.0],
+                     [0.0, 0.0, 1.0, 0.0],
+                     [0.0, 0.0, 0.0, 1.0]];
+        let proj = view;
+        let result = unproject_cursor_to_world(100.0, 100.0, 0, 0, &view, &proj);
+        assert_eq!(result, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn unproject_identity_center_hits_z_zero() {
+        // Identity view and projection: NDC center (0,0) with ray along -Z
+        // Using a simple orthographic-like projection
+        let identity = [[1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0]];
+        // Center of a 200x200 window => NDC (0, 0)
+        let result = unproject_cursor_to_world(100.0, 100.0, 200, 200, &identity, &identity);
+        // With identity matrices, near = (0,0,-1), far = (0,0,1), ray hits z=0 at t=0.5
+        assert!((result[0]).abs() < 1e-4);
+        assert!((result[1]).abs() < 1e-4);
+        assert!((result[2]).abs() < 1e-4);
+    }
+}
