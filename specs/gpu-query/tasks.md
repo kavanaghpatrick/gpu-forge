@@ -216,7 +216,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-19, FR-20_
   - _Design: TUI Rendering Architecture_
 
-- [ ] 3.2 Query editor with syntax highlighting and autocomplete
+- [x] 3.2 Query editor with syntax highlighting and autocomplete
   - **Do**: Create `src/tui/editor.rs` with multi-line SQL editor (tui-textarea or custom). SQL syntax highlighting: keywords (blue), identifiers (green), literals (yellow), numbers (magenta). Create `src/tui/autocomplete.rs` with tab-complete popup: table names, column names + types + cardinality, SQL keywords, functions. Fuzzy matching.
   - **Files**: `gpu-query/src/tui/editor.rs`, `gpu-query/src/tui/autocomplete.rs`
   - **Done when**: Can type SQL with syntax highlighting; Tab shows autocomplete popup with column types

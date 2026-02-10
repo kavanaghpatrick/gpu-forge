@@ -4,6 +4,8 @@
 //! query editor, results display, and GPU metrics. Built on ratatui + crossterm.
 
 pub mod app;
+pub mod autocomplete;
+pub mod editor;
 pub mod event;
 pub mod gradient;
 pub mod themes;
