@@ -55,6 +55,11 @@ pub struct ParticlePool {
     /// Bootstrap value uses pool_size for first frame (design R6).
     pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
 
+    // --- Debug telemetry ---
+    /// Debug telemetry buffer (32 bytes = 8 x u32). Only allocated when debug-telemetry feature is enabled.
+    #[cfg(feature = "debug-telemetry")]
+    pub debug_telemetry: Retained<ProtocolObject<dyn MTLBuffer>>,
+
     // --- Grid density ---
     /// Grid density buffer: 64^3 = 262144 uint32 cells (1.05 MB).
     pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -135,6 +140,10 @@ impl ParticlePool {
             "update_dispatch_args",
         );
 
+        // Allocate debug telemetry buffer (32 bytes) when feature is enabled
+        #[cfg(feature = "debug-telemetry")]
+        let debug_telemetry_buf = alloc_buffer(device, 32, "debug_telemetry");
+
         let pool = Self {
             pool_size,
             device: device.clone(),
@@ -146,6 +155,8 @@ impl ParticlePool {
             dead_list,
             alive_list_a,
             alive_list_b,
+            #[cfg(feature = "debug-telemetry")]
+            debug_telemetry: debug_telemetry_buf,
             grid_density,
             indirect_args,
             emission_dispatch_args,
@@ -163,6 +174,8 @@ impl ParticlePool {
         pool.init_gpu_emission_params();
         pool.init_update_dispatch_args();
         pool.init_uniform_ring();
+        #[cfg(feature = "debug-telemetry")]
+        pool.init_debug_telemetry();
 
         pool
     }
@@ -265,6 +278,15 @@ impl ParticlePool {
                 let slot = base.add(Self::uniforms_offset(i)) as *mut Uniforms;
                 std::ptr::write(slot, Uniforms::default());
             }
+        }
+    }
+
+    /// Initialize debug telemetry buffer to all zeros (32 bytes).
+    #[cfg(feature = "debug-telemetry")]
+    fn init_debug_telemetry(&self) {
+        unsafe {
+            let ptr = buffer_ptr(&self.debug_telemetry) as *mut u8;
+            std::ptr::write_bytes(ptr, 0, 32);
         }
     }
 
@@ -397,6 +419,16 @@ impl ParticlePool {
                     threadgroups_per_grid: [new_size.div_ceil(256) as u32, 1, 1],
                 },
             );
+        }
+
+        // Reallocate debug telemetry buffer when feature is enabled (no copy, GPU rewrites each frame)
+        #[cfg(feature = "debug-telemetry")]
+        {
+            let new_debug_telemetry = alloc_buffer(&self.device, 32, "debug_telemetry");
+            unsafe {
+                std::ptr::write_bytes(new_debug_telemetry.contents().as_ptr() as *mut u8, 0, 32);
+            }
+            self.debug_telemetry = new_debug_telemetry;
         }
 
         // Swap buffer references (old buffers dropped when replaced)

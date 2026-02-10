@@ -25,24 +25,37 @@ fn main() {
         panic!("No .metal files found in shaders/ directory");
     }
 
+    // Check if debug-telemetry feature is enabled via Cargo
+    let debug_telemetry = env::var("CARGO_FEATURE_DEBUG_TELEMETRY").is_ok();
+
     // Compile each .metal file to .air (Apple Intermediate Representation)
     let mut air_files = Vec::new();
     for metal_file in &metal_files {
         let stem = metal_file.file_stem().unwrap().to_str().unwrap();
         let air_file = out_dir.join(format!("{}.air", stem));
 
-        let status = Command::new("xcrun")
-            .args([
-                "-sdk",
-                "macosx",
-                "metal",
-                "-c",
-                "-I",
-                shader_dir.to_str().unwrap(),
-                metal_file.to_str().unwrap(),
-                "-o",
-                air_file.to_str().unwrap(),
-            ])
+        let mut cmd = Command::new("xcrun");
+        cmd.args([
+            "-sdk",
+            "macosx",
+            "metal",
+            "-c",
+            "-I",
+            shader_dir.to_str().unwrap(),
+        ]);
+
+        // Conditionally define DEBUG_TELEMETRY for shader compilation
+        if debug_telemetry {
+            cmd.arg("-DDEBUG_TELEMETRY=1");
+        }
+
+        cmd.args([
+            metal_file.to_str().unwrap(),
+            "-o",
+            air_file.to_str().unwrap(),
+        ]);
+
+        let status = cmd
             .status()
             .expect("Failed to run xcrun metal compiler");
 

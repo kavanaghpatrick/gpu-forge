@@ -300,7 +300,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-15_
   - _Design: Section 7.1, KB 137_
 
-- [ ] 3.6 Add debug-telemetry feature flag and DebugTelemetry struct
+- [x] 3.6 Add debug-telemetry feature flag and DebugTelemetry struct
   - **Do**:
     1. In `Cargo.toml`: add `[features]` section with `debug-telemetry = []`
     2. In `types.rs`: add `DebugTelemetry` struct (8 x u32 = 32 bytes) with layout test. Gate behind `#[cfg(feature = "debug-telemetry")]`

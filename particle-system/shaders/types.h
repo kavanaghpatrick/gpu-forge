@@ -71,6 +71,21 @@ struct GpuEmissionParams {
     uint _pad1;
 };
 
+// Debug telemetry data written by GPU compute kernels for diagnostics.
+// Layout: 8 x uint = 32 bytes. Only available when DEBUG_TELEMETRY is defined.
+#if DEBUG_TELEMETRY
+struct DebugTelemetry {
+    uint alive_count;
+    uint dead_count;
+    uint emit_count;
+    uint update_threadgroups;
+    uint emission_threadgroups;
+    uint frame_number;
+    uint _reserved0;
+    uint _reserved1;
+};
+#endif
+
 // Counter header for dead/alive list buffers.
 // Layout: first 16 bytes of buffer.
 //   offset 0:  count (uint, atomic counter)

@@ -103,6 +103,9 @@ kernel void sync_indirect_args(
     device const uint*    alive_list    [[buffer(0)]],
     device DrawArgs*      indirect_args [[buffer(1)]],
     device DispatchArgs*  update_args   [[buffer(2)]],
+#if DEBUG_TELEMETRY
+    device DebugTelemetry* telemetry    [[buffer(3)]],
+#endif
     uint                  tid           [[thread_position_in_grid]]
 ) {
     if (tid != 0) return;
@@ -121,4 +124,10 @@ kernel void sync_indirect_args(
     update_args->threadgroupsPerGridX = threadgroups;
     update_args->threadgroupsPerGridY = 1;
     update_args->threadgroupsPerGridZ = 1;
+
+#if DEBUG_TELEMETRY
+    // Write telemetry data for CPU readback
+    telemetry->alive_count = alive_count;
+    telemetry->update_threadgroups = threadgroups;
+#endif
 }

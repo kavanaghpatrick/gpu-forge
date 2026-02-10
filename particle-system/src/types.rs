@@ -194,6 +194,33 @@ impl Default for GpuEmissionParams {
     }
 }
 
+/// Debug telemetry data written by GPU compute kernels for diagnostics.
+///
+/// Layout: 8 x u32 = 32 bytes. Written by `sync_indirect_args` when DEBUG_TELEMETRY is enabled.
+/// Readable from CPU via SharedStorage for HUD display or logging.
+#[cfg(feature = "debug-telemetry")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
+pub struct DebugTelemetry {
+    /// Number of alive particles this frame
+    pub alive_count: u32,
+    /// Number of dead particles this frame
+    pub dead_count: u32,
+    /// Number of particles emitted this frame
+    pub emit_count: u32,
+    /// Threadgroups dispatched for update kernel
+    pub update_threadgroups: u32,
+    /// Threadgroups dispatched for emission kernel
+    pub emission_threadgroups: u32,
+    /// Frame number (echoed from uniforms)
+    pub frame_number: u32,
+    /// Reserved for future use
+    pub _reserved0: u32,
+    /// Reserved for future use
+    pub _reserved1: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +340,37 @@ mod tests {
 
             let pad1 = base.add(12) as *const u32;
             assert_eq!(*pad1, 0, "_pad1 offset 12");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "debug-telemetry")]
+    fn test_debug_telemetry_layout() {
+        use super::DebugTelemetry;
+        // DebugTelemetry: 8 x u32 = 32 bytes
+        assert_eq!(
+            mem::size_of::<DebugTelemetry>(),
+            32,
+            "DebugTelemetry must be 32 bytes (8 x u32)"
+        );
+        assert_eq!(
+            mem::align_of::<DebugTelemetry>(),
+            4,
+            "DebugTelemetry must be 4-byte aligned"
+        );
+
+        // Verify field offsets
+        let telemetry = DebugTelemetry::default();
+        let base = &telemetry as *const DebugTelemetry as *const u8;
+        unsafe {
+            assert_eq!(*(base as *const u32), 0, "alive_count at offset 0");
+            assert_eq!(*(base.add(4) as *const u32), 0, "dead_count at offset 4");
+            assert_eq!(*(base.add(8) as *const u32), 0, "emit_count at offset 8");
+            assert_eq!(*(base.add(12) as *const u32), 0, "update_threadgroups at offset 12");
+            assert_eq!(*(base.add(16) as *const u32), 0, "emission_threadgroups at offset 16");
+            assert_eq!(*(base.add(20) as *const u32), 0, "frame_number at offset 20");
+            assert_eq!(*(base.add(24) as *const u32), 0, "_reserved0 at offset 24");
+            assert_eq!(*(base.add(28) as *const u32), 0, "_reserved1 at offset 28");
         }
     }
 }
