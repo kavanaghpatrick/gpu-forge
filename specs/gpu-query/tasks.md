@@ -75,7 +75,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-12_
   - _Design: Kernel 5: Aggregation_
 
-- [ ] 1.8 SQL parser integration
+- [x] 1.8 SQL parser integration
   - **Do**: Create `src/sql/mod.rs`, `src/sql/parser.rs` wrapping sqlparser-rs for the MVP SQL subset. Create `src/sql/types.rs` with DataType enum and expression types. Create `src/sql/logical_plan.rs` with plan nodes (Scan, Filter, Aggregate, Sort, Limit). Create `src/sql/physical_plan.rs` mapping logical plan to kernel dispatch graph.
   - **Files**: `gpu-query/src/sql/mod.rs`, `gpu-query/src/sql/parser.rs`, `gpu-query/src/sql/types.rs`, `gpu-query/src/sql/logical_plan.rs`, `gpu-query/src/sql/physical_plan.rs`
   - **Done when**: Can parse `SELECT count(*) FROM t WHERE col > 100` to a physical plan; unit tests for parse + plan

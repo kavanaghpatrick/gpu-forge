@@ -5,4 +5,5 @@
 
 pub mod gpu;
 pub mod io;
+pub mod sql;
 pub mod storage;
