@@ -132,7 +132,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-6, AC-3.1 through AC-3.6_
   - _Design: Emission Kernel, GPU PRNG_
 
-- [ ] 1.7 Basic vertex + fragment shaders and render pipeline
+- [x] 1.7 Basic vertex + fragment shaders and render pipeline
   - **Do**:
     1. Create `shaders/render.metal`:
        - `vertex_main`: read particle index from alive list via instance_id, read position/color/size from SoA, apply view*projection, emit billboard quad (4 vertices: -0.5,-0.5 / +0.5,-0.5 / -0.5,+0.5 / +0.5,+0.5 as triangle strip), scale by particle size

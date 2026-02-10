@@ -5,12 +5,13 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::msg_send;
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLCommandQueue, MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
-    MTLPixelFormat,
+    MTLBlendFactor, MTLCommandQueue, MTLCompareFunction, MTLComputePipelineState,
+    MTLCreateSystemDefaultDevice, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice,
+    MTLLibrary, MTLPixelFormat, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
 };
 use objc2_quartz_core::CAMetalLayer;
 
-/// Core GPU state: device, command queue, metal layer, shader library, and compute pipelines.
+/// Core GPU state: device, command queue, metal layer, shader library, compute and render pipelines.
 #[allow(dead_code)]
 pub struct GpuState {
     pub device: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -18,6 +19,9 @@ pub struct GpuState {
     pub layer: Retained<CAMetalLayer>,
     pub library: Retained<ProtocolObject<dyn MTLLibrary>>,
     pub emission_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub sync_indirect_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub render_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    pub depth_stencil_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
 }
 
 impl GpuState {
@@ -55,9 +59,58 @@ impl GpuState {
             .newComputePipelineStateWithFunction_error(&emission_fn)
             .expect("Failed to create emission compute pipeline");
 
+        // Create compute pipeline for sync_indirect_args kernel
+        let sync_fn_name = NSString::from_str("sync_indirect_args");
+        let sync_fn = library
+            .newFunctionWithName(&sync_fn_name)
+            .expect("Failed to find sync_indirect_args in metallib");
+        #[allow(deprecated)]
+        let sync_indirect_pipeline = device
+            .newComputePipelineStateWithFunction_error(&sync_fn)
+            .expect("Failed to create sync_indirect_args compute pipeline");
+
+        // Create render pipeline state for particle billboard quads
+        let vertex_fn_name = NSString::from_str("vertex_main");
+        let vertex_fn = library
+            .newFunctionWithName(&vertex_fn_name)
+            .expect("Failed to find vertex_main in metallib");
+        let fragment_fn_name = NSString::from_str("fragment_main");
+        let fragment_fn = library
+            .newFunctionWithName(&fragment_fn_name)
+            .expect("Failed to find fragment_main in metallib");
+
+        let render_desc = MTLRenderPipelineDescriptor::new();
+        render_desc.setVertexFunction(Some(&vertex_fn));
+        render_desc.setFragmentFunction(Some(&fragment_fn));
+
+        // Configure color attachment 0: BGRA8Unorm with alpha blending
+        let color_attachment = unsafe {
+            render_desc.colorAttachments().objectAtIndexedSubscript(0)
+        };
+        color_attachment.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        color_attachment.setBlendingEnabled(true);
+        color_attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+        color_attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+        color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::SourceAlpha);
+        color_attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+
+        #[allow(deprecated)]
+        let render_pipeline = device
+            .newRenderPipelineStateWithDescriptor_error(&render_desc)
+            .expect("Failed to create render pipeline state");
+
+        // Create depth stencil state (depth write off for transparent particles)
+        let depth_desc = MTLDepthStencilDescriptor::new();
+        depth_desc.setDepthWriteEnabled(false);
+        depth_desc.setDepthCompareFunction(MTLCompareFunction::Always);
+        let depth_stencil_state = device
+            .newDepthStencilStateWithDescriptor(&depth_desc)
+            .expect("Failed to create depth stencil state");
+
         println!("Metal device: {:?}", device.name());
         println!("Loaded metallib from: {}", metallib_path);
         println!("Emission pipeline created successfully");
+        println!("Render pipeline created successfully");
 
         Self {
             device,
@@ -65,6 +118,9 @@ impl GpuState {
             layer,
             library,
             emission_pipeline,
+            sync_indirect_pipeline,
+            render_pipeline,
+            depth_stencil_state,
         }
     }
 

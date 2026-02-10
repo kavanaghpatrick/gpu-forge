@@ -1,3 +1,16 @@
+use glam::{Mat4, Vec3};
+
+/// Compute default view and projection matrices for particle rendering.
+///
+/// Camera at (0,0,5) looking at origin, with perspective projection
+/// (60 deg FOV, 1280/720 aspect, 0.1-100 near/far).
+#[allow(dead_code)]
+pub fn default_camera_matrices() -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
+    let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+    let proj = Mat4::perspective_rh(60f32.to_radians(), 1280.0 / 720.0, 0.1, 100.0);
+    (view.to_cols_array_2d(), proj.to_cols_array_2d())
+}
+
 /// Rust-side Uniforms struct matching the MSL `Uniforms` in shaders/types.h.
 ///
 /// Layout must be identical byte-for-byte. MSL float3 occupies 16 bytes
@@ -42,19 +55,10 @@ pub struct Uniforms {
 
 impl Default for Uniforms {
     fn default() -> Self {
+        let (view_matrix, projection_matrix) = default_camera_matrices();
         Self {
-            view_matrix: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            projection_matrix: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
+            view_matrix,
+            projection_matrix,
             mouse_world_pos: [0.0, 0.0, 0.0],
             _pad_mouse: 0.0,
             dt: 0.016,

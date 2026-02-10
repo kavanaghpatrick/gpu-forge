@@ -9,7 +9,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_metal::{
     MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder, MTLLoadAction, MTLRenderPassDescriptor, MTLSize, MTLStoreAction,
+    MTLComputeCommandEncoder, MTLLoadAction, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLSize, MTLStoreAction,
 };
 use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -64,8 +65,11 @@ impl App {
 
         // --- Update uniforms ---
         let emission_count: u32 = 10000;
+        let (view_mat, proj_mat) = types::default_camera_matrices();
         unsafe {
             let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
+            (*uniforms_ptr).view_matrix = view_mat;
+            (*uniforms_ptr).projection_matrix = proj_mat;
             (*uniforms_ptr).dt = self.frame_ring.dt;
             (*uniforms_ptr).frame_number = self.frame_number;
             (*uniforms_ptr).emission_count = emission_count;
@@ -132,7 +136,7 @@ impl App {
 
             // Dispatch ceil(emission_count / 256) threadgroups of 256
             let threadgroup_size = 256usize;
-            let threadgroup_count = (emission_count as usize + threadgroup_size - 1) / threadgroup_size;
+            let threadgroup_count = (emission_count as usize).div_ceil(threadgroup_size);
             compute_encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize { width: threadgroup_count, height: 1, depth: 1 },
                 MTLSize { width: threadgroup_size, height: 1, depth: 1 },
@@ -141,7 +145,21 @@ impl App {
             compute_encoder.endEncoding();
         }
 
-        // Create render command encoder (empty pass - just clear)
+        // --- Sync alive count to indirect args (GPU compute, single thread) ---
+        if let Some(sync_encoder) = command_buffer.computeCommandEncoder() {
+            sync_encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
+            unsafe {
+                sync_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 0);
+                sync_encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
+            }
+            sync_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: 1, height: 1, depth: 1 },
+                MTLSize { width: 1, height: 1, depth: 1 },
+            );
+            sync_encoder.endEncoding();
+        }
+
+        // --- Render pass: draw particle billboard quads ---
         let encoder = match command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc) {
             Some(enc) => enc,
             None => {
@@ -150,7 +168,30 @@ impl App {
             }
         };
 
-        // End the (empty) render pass
+        // Set render pipeline and depth stencil state
+        encoder.setRenderPipelineState(&gpu.render_pipeline);
+        encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
+
+        // Bind vertex buffers matching render.metal vertex_main signature:
+        // buffer(0) = alive_list, buffer(1) = positions, buffer(2) = colors,
+        // buffer(3) = sizes, buffer(4) = uniforms
+        unsafe {
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 0);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.colors), 0, 2);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.sizes), 0, 3);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.uniforms), 0, 4);
+        }
+
+        // Indirect draw: triangle strip, 4 vertices per instance, instanceCount from indirect_args
+        unsafe {
+            encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
+                MTLPrimitiveType::TriangleStrip,
+                &pool.indirect_args,
+                0,
+            );
+        }
+
         encoder.endEncoding();
 
         // Present drawable and commit
