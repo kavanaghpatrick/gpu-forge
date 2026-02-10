@@ -365,3 +365,133 @@ impl ParticlePool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{CounterHeader, COUNTER_HEADER_SIZE};
+    use objc2_metal::MTLCreateSystemDefaultDevice;
+
+    fn get_device() -> Retained<ProtocolObject<dyn MTLDevice>> {
+        MTLCreateSystemDefaultDevice().expect("No Metal device available")
+    }
+
+    #[test]
+    fn test_pool_new_buffer_lengths() {
+        let device = get_device();
+        let pool = ParticlePool::new(&device, 1_000_000);
+
+        // Position buffer: 1M * 12 bytes (float3)
+        assert_eq!(pool.positions.length(), 1_000_000 * 12);
+        // Velocity buffer: 1M * 12 bytes (float3)
+        assert_eq!(pool.velocities.length(), 1_000_000 * 12);
+        // Lifetime buffer: 1M * 4 bytes (half2)
+        assert_eq!(pool.lifetimes.length(), 1_000_000 * 4);
+        // Color buffer: 1M * 8 bytes (half4)
+        assert_eq!(pool.colors.length(), 1_000_000 * 8);
+        // Size buffer: 1M * 4 bytes (half padded)
+        assert_eq!(pool.sizes.length(), 1_000_000 * 4);
+    }
+
+    #[test]
+    fn test_pool_new_dead_list_counter() {
+        let device = get_device();
+        let pool = ParticlePool::new(&device, 1_000_000);
+
+        // Dead list counter should be initialized to pool_size
+        unsafe {
+            let header = pool.dead_list.contents().as_ptr() as *const CounterHeader;
+            assert_eq!((*header).count, 1_000_000);
+        }
+    }
+
+    #[test]
+    fn test_pool_new_alive_list_counters() {
+        let device = get_device();
+        let pool = ParticlePool::new(&device, 1_000_000);
+
+        // Both alive list counters should be 0
+        unsafe {
+            let header_a = pool.alive_list_a.contents().as_ptr() as *const CounterHeader;
+            assert_eq!((*header_a).count, 0);
+
+            let header_b = pool.alive_list_b.contents().as_ptr() as *const CounterHeader;
+            assert_eq!((*header_b).count, 0);
+        }
+    }
+
+    #[test]
+    fn test_pool_grow_buffer_lengths() {
+        let device = get_device();
+        let mut pool = ParticlePool::new(&device, 1000);
+
+        // Verify initial sizes
+        assert_eq!(pool.positions.length(), 1000 * 12);
+        assert_eq!(pool.pool_size, 1000);
+
+        // Grow to 2000
+        pool.grow(2000);
+
+        assert_eq!(pool.pool_size, 2000);
+        assert_eq!(pool.positions.length(), 2000 * 12);
+        assert_eq!(pool.velocities.length(), 2000 * 12);
+        assert_eq!(pool.lifetimes.length(), 2000 * 4);
+        assert_eq!(pool.colors.length(), 2000 * 8);
+        assert_eq!(pool.sizes.length(), 2000 * 4);
+    }
+
+    #[test]
+    fn test_pool_grow_dead_list_extended() {
+        let device = get_device();
+        let mut pool = ParticlePool::new(&device, 1000);
+
+        // Initially dead list has 1000 entries with indices [0..999]
+        unsafe {
+            let header = pool.dead_list.contents().as_ptr() as *const CounterHeader;
+            assert_eq!((*header).count, 1000);
+        }
+
+        // Grow to 2000
+        pool.grow(2000);
+
+        unsafe {
+            let header = pool.dead_list.contents().as_ptr() as *const CounterHeader;
+            // Dead list counter should be 1000 (original) + 1000 (new) = 2000
+            assert_eq!((*header).count, 2000);
+
+            // Verify new indices [1000..1999] are present after the original 1000
+            let indices_ptr =
+                (pool.dead_list.contents().as_ptr() as *const u8).add(COUNTER_HEADER_SIZE)
+                    as *const u32;
+            let indices = std::slice::from_raw_parts(indices_ptr, 2000);
+
+            // Original indices [0..999] should still be there
+            for i in 0..1000 {
+                assert_eq!(indices[i], i as u32, "Original index {} mismatch", i);
+            }
+
+            // New indices [1000..1999] should be at positions [1000..1999]
+            for i in 0..1000 {
+                assert_eq!(
+                    indices[1000 + i],
+                    (1000 + i) as u32,
+                    "New index {} mismatch",
+                    1000 + i
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_pool_grow_noop_for_same_size() {
+        let device = get_device();
+        let mut pool = ParticlePool::new(&device, 1000);
+
+        // Growing to same or smaller size should be a no-op
+        pool.grow(1000);
+        assert_eq!(pool.pool_size, 1000);
+
+        pool.grow(500);
+        assert_eq!(pool.pool_size, 1000);
+    }
+}

@@ -482,7 +482,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
 
 ---
 
-- [ ] 3.1 Unit tests: buffer allocation and types
+- [x] 3.1 Unit tests: buffer allocation and types
   - **Do**:
     1. In `src/buffers.rs`: add `#[cfg(test)] mod tests`
     2. Test `ParticlePool::new(1_000_000)`:

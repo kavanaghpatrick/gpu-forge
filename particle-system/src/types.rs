@@ -144,6 +144,73 @@ pub struct CounterHeader {
 #[allow(dead_code)]
 pub const COUNTER_HEADER_SIZE: usize = std::mem::size_of::<CounterHeader>();
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem;
+
+    #[test]
+    fn test_uniforms_size_256() {
+        // Uniforms must be exactly 256 bytes (padded to match Metal buffer allocation)
+        assert_eq!(
+            mem::size_of::<Uniforms>(),
+            256,
+            "Uniforms struct must be 256 bytes"
+        );
+    }
+
+    #[test]
+    fn test_draw_args_layout() {
+        // DrawArgs matches MTLDrawPrimitivesIndirectArguments: 4 x u32 = 16 bytes
+        assert_eq!(
+            mem::size_of::<DrawArgs>(),
+            16,
+            "DrawArgs must be 16 bytes (4 x u32)"
+        );
+
+        // Verify field offsets match MTLDrawPrimitivesIndirectArguments layout:
+        // offset 0: vertexCount (u32)
+        // offset 4: instanceCount (u32)
+        // offset 8: vertexStart (u32)
+        // offset 12: baseInstance (u32)
+        let args = DrawArgs::default();
+        let base = &args as *const DrawArgs as *const u8;
+        unsafe {
+            let vertex_count_ptr = base as *const u32;
+            assert_eq!(*vertex_count_ptr, 4, "vertexCount should be 4");
+
+            let instance_count_ptr = base.add(4) as *const u32;
+            assert_eq!(*instance_count_ptr, 0, "instanceCount should be 0");
+
+            let vertex_start_ptr = base.add(8) as *const u32;
+            assert_eq!(*vertex_start_ptr, 0, "vertexStart should be 0");
+
+            let base_instance_ptr = base.add(12) as *const u32;
+            assert_eq!(*base_instance_ptr, 0, "baseInstance should be 0");
+        }
+    }
+
+    #[test]
+    fn test_counter_header_size() {
+        // CounterHeader must be 16 bytes (u32 count + 12 bytes padding)
+        assert_eq!(
+            mem::size_of::<CounterHeader>(),
+            16,
+            "CounterHeader must be 16 bytes"
+        );
+        assert_eq!(COUNTER_HEADER_SIZE, 16);
+    }
+
+    #[test]
+    fn test_draw_args_default_values() {
+        let args = DrawArgs::default();
+        assert_eq!(args.vertex_count, 4);
+        assert_eq!(args.instance_count, 0);
+        assert_eq!(args.vertex_start, 0);
+        assert_eq!(args.base_instance, 0);
+    }
+}
+
 /// Per-particle SoA buffer sizes in bytes for a given pool capacity.
 #[allow(dead_code)]
 #[derive(Debug)]
