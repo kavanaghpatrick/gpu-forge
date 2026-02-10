@@ -90,7 +90,7 @@ impl App {
         }
 
         // --- Update uniforms ---
-        let base_emission: u32 = 10000;
+        let base_emission: u32 = self.input.physics.emission_rate;
         let view_mat = self.camera.view_matrix();
         let proj_mat = self.camera.projection_matrix();
 
@@ -144,11 +144,14 @@ impl App {
             (*uniforms_ptr)._pad_grid_min = 0.0;
             (*uniforms_ptr).grid_bounds_max = [10.0, 10.0, 10.0];
             (*uniforms_ptr)._pad_grid_max = 0.0;
+            // Physics parameters from runtime-tunable PhysicsParams
+            (*uniforms_ptr).gravity = self.input.physics.gravity;
+            (*uniforms_ptr).drag_coefficient = self.input.physics.drag_coefficient;
             // Pressure gradient interaction strength
             (*uniforms_ptr).interaction_strength = 0.001;
             // Mouse attraction parameters
             (*uniforms_ptr).mouse_attraction_radius = 5.0;
-            (*uniforms_ptr).mouse_attraction_strength = 10.0;
+            (*uniforms_ptr).mouse_attraction_strength = self.input.physics.mouse_attraction_strength;
             // Burst emission parameters
             (*uniforms_ptr).burst_position = self.input.burst_world_pos;
             (*uniforms_ptr)._pad_burst = 0.0;
@@ -368,8 +371,9 @@ impl App {
                 let pool_m = pool.pool_size as f64 / 1_000_000.0;
                 let fps = self.frame_ring.fps;
                 let frame_ms = if fps > 0 { 1000.0 / fps as f64 } else { 0.0 };
+                let physics_info = self.input.physics.summary();
                 let title = format!(
-                    "GPU Particles | {alive_k:.0}K/{pool_m:.0}M | {fps} FPS | {frame_ms:.1}ms",
+                    "GPU Particles | {alive_k:.0}K/{pool_m:.0}M | {fps} FPS | {frame_ms:.1}ms | {physics_info}",
                 );
                 window.set_title(&title);
             }
@@ -482,9 +486,17 @@ impl ApplicationHandler for App {
                 self.camera.zoom(scroll_amount);
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                // Track shift modifier state
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if code == winit::keyboard::KeyCode::ShiftLeft
+                        || code == winit::keyboard::KeyCode::ShiftRight
+                    {
+                        self.input.shift_held = event.state == ElementState::Pressed;
+                    }
+                }
                 if event.state == ElementState::Pressed {
                     if let PhysicalKey::Code(key_code) = event.physical_key {
-                        self.input.handle_pool_key(key_code);
+                        self.input.handle_key(key_code);
                     }
                 }
             }

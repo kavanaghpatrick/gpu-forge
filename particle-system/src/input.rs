@@ -1,4 +1,5 @@
 use glam::{Mat4, Vec4};
+use winit::keyboard::KeyCode;
 
 /// Unproject screen-space cursor coordinates to a world-space position on the z=0 plane.
 ///
@@ -54,6 +55,109 @@ pub fn unproject_cursor_to_world(
     [fallback.x, fallback.y, fallback.z]
 }
 
+/// Runtime-tunable physics parameters adjustable via keyboard.
+///
+/// - G/Shift+G: increase/decrease gravity magnitude
+/// - D/Shift+D: increase/decrease drag coefficient
+/// - A/Shift+A: increase/decrease mouse attraction strength
+/// - R: reset all parameters to defaults
+/// - E/Shift+E: increase/decrease emission rate
+#[derive(Clone, Debug)]
+pub struct PhysicsParams {
+    /// Gravity magnitude (negative = downward). Default: -9.81
+    pub gravity: f32,
+    /// Drag coefficient (velocity damping per second). Default: 0.02
+    pub drag_coefficient: f32,
+    /// Mouse attraction strength. Default: 10.0
+    pub mouse_attraction_strength: f32,
+    /// Base emission rate per frame. Default: 10000
+    pub emission_rate: u32,
+}
+
+impl Default for PhysicsParams {
+    fn default() -> Self {
+        Self {
+            gravity: -9.81,
+            drag_coefficient: 0.02,
+            mouse_attraction_strength: 10.0,
+            emission_rate: 10000,
+        }
+    }
+}
+
+impl PhysicsParams {
+    /// Reset all parameters to their default values.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Handle a physics parameter key press.
+    /// Returns true if a parameter was changed.
+    pub fn handle_key(&mut self, key_code: KeyCode, shift_held: bool) -> bool {
+        match key_code {
+            KeyCode::KeyG => {
+                if shift_held {
+                    // Shift+G: decrease gravity magnitude (less negative = weaker)
+                    self.gravity += 1.0;
+                    self.gravity = self.gravity.min(0.0);
+                } else {
+                    // G: increase gravity magnitude (more negative = stronger)
+                    self.gravity -= 1.0;
+                    self.gravity = self.gravity.max(-50.0);
+                }
+                true
+            }
+            KeyCode::KeyD => {
+                if shift_held {
+                    // Shift+D: decrease drag
+                    self.drag_coefficient -= 0.005;
+                    self.drag_coefficient = self.drag_coefficient.max(0.0);
+                } else {
+                    // D: increase drag
+                    self.drag_coefficient += 0.005;
+                    self.drag_coefficient = self.drag_coefficient.min(1.0);
+                }
+                true
+            }
+            KeyCode::KeyA => {
+                if shift_held {
+                    // Shift+A: decrease attraction
+                    self.mouse_attraction_strength -= 2.0;
+                    self.mouse_attraction_strength = self.mouse_attraction_strength.max(0.0);
+                } else {
+                    // A: increase attraction
+                    self.mouse_attraction_strength += 2.0;
+                    self.mouse_attraction_strength = self.mouse_attraction_strength.min(200.0);
+                }
+                true
+            }
+            KeyCode::KeyR => {
+                self.reset();
+                true
+            }
+            KeyCode::KeyE => {
+                if shift_held {
+                    // Shift+E: decrease emission rate
+                    self.emission_rate = self.emission_rate.saturating_sub(1000).max(1000);
+                } else {
+                    // E: increase emission rate
+                    self.emission_rate = (self.emission_rate + 1000).min(100000);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Format a short summary of current parameter values for display.
+    pub fn summary(&self) -> String {
+        format!(
+            "G:{:.1} D:{:.3} A:{:.0} E:{}",
+            self.gravity, self.drag_coefficient, self.mouse_attraction_strength, self.emission_rate
+        )
+    }
+}
+
 /// Tracks mouse and keyboard input state for camera control and interaction.
 pub struct InputState {
     /// Current cursor position in window coordinates
@@ -72,6 +176,10 @@ pub struct InputState {
     pub burst_world_pos: [f32; 3],
     /// Pending pool grow size (set by keyboard, consumed at frame boundary)
     pub pending_grow: Option<usize>,
+    /// Whether shift key is currently held
+    pub shift_held: bool,
+    /// Runtime-tunable physics parameters
+    pub physics: PhysicsParams,
 }
 
 impl Default for InputState {
@@ -86,6 +194,8 @@ impl Default for InputState {
             burst_requested: false,
             burst_world_pos: [0.0, 0.0, 0.0],
             pending_grow: None,
+            shift_held: false,
+            physics: PhysicsParams::default(),
         }
     }
 }
@@ -97,11 +207,23 @@ impl InputState {
         (self.cursor_x, self.cursor_y)
     }
 
+    /// Handle a key press for physics parameters or pool scaling.
+    /// Physics keys: G, D, A, R, E (with Shift modifier).
+    /// Pool keys: 1 -> 1M, 2 -> 2M, 5 -> 5M, 0 -> 10M.
+    pub fn handle_key(&mut self, key_code: KeyCode) {
+        // Try physics key first
+        if self.physics.handle_key(key_code, self.shift_held) {
+            println!("Physics: {}", self.physics.summary());
+            return;
+        }
+        // Fall through to pool scaling keys
+        self.handle_pool_key(key_code);
+    }
+
     /// Handle a key press for pool scaling.
     /// Keys: 1 -> 1M, 2 -> 2M, 5 -> 5M, 0 -> 10M.
     /// Sets `pending_grow` which is consumed at the frame boundary.
-    pub fn handle_pool_key(&mut self, key_code: winit::keyboard::KeyCode) {
-        use winit::keyboard::KeyCode;
+    pub fn handle_pool_key(&mut self, key_code: KeyCode) {
         let target = match key_code {
             KeyCode::Digit1 => Some(1_000_000),
             KeyCode::Digit2 => Some(2_000_000),
@@ -153,6 +275,8 @@ mod tests {
         assert!(!s.burst_requested);
         assert_eq!(s.burst_world_pos, [0.0, 0.0, 0.0]);
         assert!(s.pending_grow.is_none());
+        assert!(!s.shift_held);
+        assert!((s.physics.gravity - (-9.81)).abs() < 1e-5);
     }
 
     // --- Cursor position tracking ---
@@ -351,6 +475,136 @@ mod tests {
         let result = s.update_cursor(50.0, 50.0).unwrap();
         assert!((result.0).abs() < 1e-5);
         assert!((result.1).abs() < 1e-5);
+    }
+
+    // --- Physics params ---
+
+    #[test]
+    fn physics_params_default_values() {
+        let p = PhysicsParams::default();
+        assert!((p.gravity - (-9.81)).abs() < 1e-5);
+        assert!((p.drag_coefficient - 0.02).abs() < 1e-5);
+        assert!((p.mouse_attraction_strength - 10.0).abs() < 1e-5);
+        assert_eq!(p.emission_rate, 10000);
+    }
+
+    #[test]
+    fn physics_gravity_increase_decrease() {
+        let mut p = PhysicsParams::default();
+        // G (no shift) = increase magnitude (more negative)
+        p.handle_key(KeyCode::KeyG, false);
+        assert!((p.gravity - (-10.81)).abs() < 1e-5);
+        // Shift+G = decrease magnitude (less negative)
+        p.handle_key(KeyCode::KeyG, true);
+        assert!((p.gravity - (-9.81)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn physics_gravity_clamp_max() {
+        let mut p = PhysicsParams::default();
+        // Push gravity past 0
+        for _ in 0..20 {
+            p.handle_key(KeyCode::KeyG, true);
+        }
+        assert!(p.gravity >= 0.0 - 1e-5);
+        assert!(p.gravity <= 0.0 + 1e-5);
+    }
+
+    #[test]
+    fn physics_gravity_clamp_min() {
+        let mut p = PhysicsParams::default();
+        for _ in 0..100 {
+            p.handle_key(KeyCode::KeyG, false);
+        }
+        assert!(p.gravity >= -50.0 - 1e-5);
+    }
+
+    #[test]
+    fn physics_drag_increase_decrease() {
+        let mut p = PhysicsParams::default();
+        let orig = p.drag_coefficient;
+        p.handle_key(KeyCode::KeyD, false);
+        assert!(p.drag_coefficient > orig);
+        p.handle_key(KeyCode::KeyD, true);
+        assert!((p.drag_coefficient - orig).abs() < 1e-5);
+    }
+
+    #[test]
+    fn physics_attraction_increase_decrease() {
+        let mut p = PhysicsParams::default();
+        let orig = p.mouse_attraction_strength;
+        p.handle_key(KeyCode::KeyA, false);
+        assert!(p.mouse_attraction_strength > orig);
+        p.handle_key(KeyCode::KeyA, true);
+        assert!((p.mouse_attraction_strength - orig).abs() < 1e-5);
+    }
+
+    #[test]
+    fn physics_emission_increase_decrease() {
+        let mut p = PhysicsParams::default();
+        p.handle_key(KeyCode::KeyE, false);
+        assert_eq!(p.emission_rate, 11000);
+        p.handle_key(KeyCode::KeyE, true);
+        assert_eq!(p.emission_rate, 10000);
+    }
+
+    #[test]
+    fn physics_emission_clamp_min() {
+        let mut p = PhysicsParams::default();
+        for _ in 0..20 {
+            p.handle_key(KeyCode::KeyE, true);
+        }
+        assert!(p.emission_rate >= 1000);
+    }
+
+    #[test]
+    fn physics_reset() {
+        let mut p = PhysicsParams::default();
+        p.gravity = -20.0;
+        p.drag_coefficient = 0.5;
+        p.mouse_attraction_strength = 100.0;
+        p.emission_rate = 50000;
+        p.handle_key(KeyCode::KeyR, false);
+        let d = PhysicsParams::default();
+        assert!((p.gravity - d.gravity).abs() < 1e-5);
+        assert!((p.drag_coefficient - d.drag_coefficient).abs() < 1e-5);
+        assert!((p.mouse_attraction_strength - d.mouse_attraction_strength).abs() < 1e-5);
+        assert_eq!(p.emission_rate, d.emission_rate);
+    }
+
+    #[test]
+    fn physics_summary_format() {
+        let p = PhysicsParams::default();
+        let s = p.summary();
+        assert!(s.contains("G:"));
+        assert!(s.contains("D:"));
+        assert!(s.contains("A:"));
+        assert!(s.contains("E:"));
+    }
+
+    #[test]
+    fn handle_key_dispatches_physics_before_pool() {
+        let mut s = InputState::default();
+        // KeyG should be handled by physics, not pool
+        s.handle_key(KeyCode::KeyG);
+        assert!(s.pending_grow.is_none());
+        assert!((s.physics.gravity - (-10.81)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn handle_key_dispatches_pool_for_digits() {
+        let mut s = InputState::default();
+        s.handle_key(KeyCode::Digit2);
+        assert_eq!(s.pending_grow, Some(2_000_000));
+    }
+
+    #[test]
+    fn shift_held_modifies_physics_direction() {
+        let mut s = InputState::default();
+        s.shift_held = true;
+        s.handle_key(KeyCode::KeyG);
+        // Shift+G decreases magnitude (gravity goes toward 0)
+        assert!(s.physics.gravity > -9.81);
     }
 
     // --- Unprojection ---

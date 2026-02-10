@@ -596,7 +596,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
 
 ---
 
-- [ ] 4.1 Configurable physics parameters via keyboard (P2)
+- [x] 4.1 Configurable physics parameters via keyboard (P2)
   - **Do**:
     1. In `src/input.rs`: add keyboard mappings:
        - G/Shift+G: increase/decrease gravity magnitude
