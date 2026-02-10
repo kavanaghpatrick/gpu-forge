@@ -133,7 +133,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-12, AC-2.3, AC-2.4_
   - _Design: Kernel 5: Aggregation_
 
-- [ ] 2.4 Radix sort kernel (ORDER BY)
+- [x] 2.4 Radix sort kernel (ORDER BY)
   - **Do**: Create `shaders/sort.metal` with `radix_sort_histogram`, `radix_sort_scan` (exclusive prefix scan), `radix_sort_scatter`. 4-bit radix sort, 16 passes for 64-bit keys. Support ASC/DESC via key transformation. Wire into physical planner for ORDER BY.
   - **Files**: `gpu-query/shaders/sort.metal`, update `src/sql/physical_plan.rs`, `src/gpu/executor.rs`
   - **Done when**: ORDER BY ASC/DESC correct for INT64 and FLOAT64; matches CPU sort

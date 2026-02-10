@@ -175,6 +175,11 @@ impl QueryExecutor {
                 })
             }
 
+            PhysicalPlan::GpuSort { order_by, input } => {
+                // CPU-side sort: get results from inner plan, sort rows
+                self.execute_sort(order_by, input, catalog)
+            }
+
             PhysicalPlan::GpuLimit { count, input } => {
                 let mut result = self.execute(input, catalog)?;
                 if result.rows.len() > *count {
@@ -221,6 +226,11 @@ impl QueryExecutor {
             }
 
             PhysicalPlan::GpuAggregate { input, .. } => {
+                // Pass through to the input
+                self.resolve_input(input, catalog)
+            }
+
+            PhysicalPlan::GpuSort { input, .. } => {
                 // Pass through to the input
                 self.resolve_input(input, catalog)
             }
@@ -1215,6 +1225,119 @@ impl QueryExecutor {
         })
     }
 
+    /// Execute ORDER BY via CPU-side sorting.
+    ///
+    /// Materializes all selected rows from the inner plan (scan + optional filter),
+    /// then sorts them by the specified columns using Rust's sort_by.
+    fn execute_sort(
+        &mut self,
+        order_by: &[(String, bool)],
+        input: &PhysicalPlan,
+        catalog: &[TableEntry],
+    ) -> Result<QueryResult, String> {
+        let (scan_result, filter_result) = self.resolve_input(input, catalog)?;
+        let row_count = scan_result.batch.row_count as u32;
+
+        // Build selection mask
+        let default_mask;
+        let mask_buffer = if let Some(f) = filter_result.as_ref() {
+            &f.bitmask_buffer
+        } else {
+            default_mask = build_all_ones_mask(&self.device.device, row_count as usize);
+            &default_mask
+        };
+
+        // Read all columns and build row-oriented data for sorting
+        let schema = &scan_result.schema;
+        let mut col_names: Vec<String> = Vec::new();
+        let mut col_data: Vec<ColumnValues> = Vec::new();
+
+        for col_def in &schema.columns {
+            col_names.push(col_def.name.clone());
+            let col_idx = schema.column_index(&col_def.name).unwrap();
+            match col_def.data_type {
+                DataType::Int64 => {
+                    let local_idx = self.int_local_idx(&scan_result, col_idx);
+                    let vals = unsafe { scan_result.batch.read_int_column(local_idx) };
+                    col_data.push(ColumnValues::Int64(vals));
+                }
+                DataType::Float64 => {
+                    let local_idx = self.float_local_idx(&scan_result, col_idx);
+                    let vals = unsafe { scan_result.batch.read_float_column(local_idx) };
+                    col_data.push(ColumnValues::Float64(vals));
+                }
+                _ => {
+                    // Varchar columns: placeholder empty strings
+                    let vals = vec!["".to_string(); row_count as usize];
+                    col_data.push(ColumnValues::Varchar(vals));
+                }
+            }
+        }
+
+        // Collect selected row indices
+        let mut selected_rows: Vec<usize> = Vec::new();
+        unsafe {
+            let mask_ptr = mask_buffer.contents().as_ptr() as *const u32;
+            for i in 0..row_count as usize {
+                let word = *mask_ptr.add(i / 32);
+                let bit = (word >> (i % 32)) & 1;
+                if bit == 1 {
+                    selected_rows.push(i);
+                }
+            }
+        }
+
+        // Resolve sort column indices
+        let sort_specs: Vec<(usize, bool)> = order_by
+            .iter()
+            .map(|(col_name, ascending)| {
+                let idx = schema
+                    .column_index(col_name)
+                    .ok_or_else(|| format!("Sort column '{}' not found", col_name))?;
+                Ok((idx, *ascending))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        // Sort selected row indices by the sort columns
+        selected_rows.sort_by(|&a, &b| {
+            for &(col_idx, ascending) in &sort_specs {
+                let cmp = match &col_data[col_idx] {
+                    ColumnValues::Int64(vals) => vals[a].cmp(&vals[b]),
+                    ColumnValues::Float64(vals) => {
+                        vals[a].partial_cmp(&vals[b]).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    ColumnValues::Varchar(vals) => vals[a].cmp(&vals[b]),
+                };
+                let cmp = if ascending { cmp } else { cmp.reverse() };
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        // Build result rows from sorted indices
+        let mut rows = Vec::new();
+        for &row_idx in &selected_rows {
+            let mut row = Vec::new();
+            for col_val in &col_data {
+                match col_val {
+                    ColumnValues::Int64(vals) => row.push(vals[row_idx].to_string()),
+                    ColumnValues::Float64(vals) => row.push(format_float(vals[row_idx] as f64)),
+                    ColumnValues::Varchar(vals) => row.push(vals[row_idx].clone()),
+                }
+            }
+            rows.push(row);
+        }
+
+        let result_count = rows.len();
+        Ok(QueryResult {
+            columns: col_names,
+            rows,
+            row_count: result_count,
+        })
+    }
+
     /// Read group-by column keys as strings for CPU-side grouping.
     /// Returns (row_index, group_key) for each selected row.
     fn read_group_keys(
@@ -1683,6 +1806,13 @@ impl QueryExecutor {
 
         Ok(sum)
     }
+}
+
+/// Column values for row materialization (ORDER BY).
+enum ColumnValues {
+    Int64(Vec<i64>),
+    Float64(Vec<f32>),
+    Varchar(Vec<String>),
 }
 
 /// Column data reader for GROUP BY key extraction.
