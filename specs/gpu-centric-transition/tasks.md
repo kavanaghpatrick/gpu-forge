@@ -409,7 +409,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
 
 Focus: Clean up code structure, extract helpers, improve error handling.
 
-- [ ] 5.1 Extract compute dispatch encoding into helper methods
+- [x] 5.1 Extract compute dispatch encoding into helper methods
   - **Do**:
     1. In `main.rs` or a new `encode.rs` module: extract repeated compute encoder patterns into helper functions:
        - `encode_prepare_dispatch(cmd_buf, gpu, pool, write_list, uniform_offset)`

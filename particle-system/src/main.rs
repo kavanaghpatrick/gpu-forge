@@ -6,6 +6,7 @@
 
 mod buffers;
 mod camera;
+mod encode;
 mod frame;
 mod gpu;
 mod input;
@@ -18,8 +19,8 @@ use objc2_core_foundation::CGSize;
 use objc2_foundation::ns_string;
 use objc2_metal::{
     MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder, MTLLoadAction, MTLPrimitiveType, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLSize, MTLStoreAction,
+    MTLLoadAction, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLStoreAction,
 };
 use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -213,159 +214,13 @@ impl App {
         // Register completion handler that signals the semaphore
         self.frame_ring.register_completion_handler(&command_buffer);
 
-        // --- Prepare dispatch compute pass ---
-        // GPU-side computation of emission parameters and dispatch args.
-        // Reads dead_count, computes emission_count, writes indirect dispatch args.
-        // Also resets write_list counter to 0 (replaces CPU write_list reset).
-        if let Some(prepare_encoder) = command_buffer.computeCommandEncoder() {
-            prepare_encoder.setLabel(Some(ns_string!("Prepare Dispatch")));
-            prepare_encoder.setComputePipelineState(&gpu.prepare_dispatch_pipeline);
-
-            // buffer(0)=dead_list, buffer(1)=uniform_ring, buffer(2)=write_list,
-            // buffer(3)=emission_dispatch_args, buffer(4)=gpu_emission_params
-            unsafe {
-                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 0);
-                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 1);
-                prepare_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 2);
-                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.emission_dispatch_args), 0, 3);
-                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.gpu_emission_params), 0, 4);
-            }
-
-            // Single threadgroup of 32 threads (SIMD-aligned, only thread 0 does work)
-            prepare_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: 1, height: 1, depth: 1 },
-                MTLSize { width: 32, height: 1, depth: 1 },
-            );
-
-            prepare_encoder.endEncoding();
-        }
-
-        // --- Emission compute pass ---
-        // Emission appends new particles to the READ list (alongside last frame's survivors).
-        // Uses indirect dispatch: threadgroup count from GPU-computed emission_dispatch_args.
-        if let Some(compute_encoder) = command_buffer.computeCommandEncoder() {
-            compute_encoder.setLabel(Some(ns_string!("Emission")));
-            compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
-
-            // buffer(0) = uniform_ring, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
-            // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
-            // buffer(6) = colors, buffer(7) = sizes, buffer(8) = gpu_emission_params
-            unsafe {
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                compute_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 3);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 4);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 6);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 7);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.gpu_emission_params), 0, 8);
-            }
-
-            // Indirect dispatch: threadgroup count from prepare_dispatch kernel output
-            unsafe {
-                compute_encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
-                    &pool.emission_dispatch_args,
-                    0,
-                    MTLSize { width: 256, height: 1, depth: 1 },
-                );
-            }
-
-            compute_encoder.endEncoding();
-        }
-
-        // --- Grid clear compute pass ---
-        // Zero all 262144 cells in the grid density buffer.
-        // Must run BEFORE grid_populate and update so update kernel reads fresh grid data.
-        if let Some(grid_clear_encoder) = command_buffer.computeCommandEncoder() {
-            grid_clear_encoder.setLabel(Some(ns_string!("Grid Clear")));
-            grid_clear_encoder.setComputePipelineState(&gpu.grid_clear_pipeline);
-            unsafe {
-                grid_clear_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 0);
-            }
-            // 262144 cells / 256 threads per group = 1024 threadgroups
-            grid_clear_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: 1024, height: 1, depth: 1 },
-                MTLSize { width: 256, height: 1, depth: 1 },
-            );
-            grid_clear_encoder.endEncoding();
-        }
-
-        // --- Grid populate compute pass ---
-        // Each alive particle atomically increments its grid cell density.
-        // Reads from read_list (last frame's survivors + this frame's new emissions).
-        // Must run BEFORE update so the update kernel can read the density field.
-        if let Some(grid_pop_encoder) = command_buffer.computeCommandEncoder() {
-            grid_pop_encoder.setLabel(Some(ns_string!("Grid Populate")));
-            grid_pop_encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
-            unsafe {
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 1);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 2);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
-            }
-            // Indirect dispatch: threadgroup count from sync_indirect_args output (update_dispatch_args)
-            unsafe {
-                grid_pop_encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
-                    &pool.update_dispatch_args,
-                    0,
-                    MTLSize { width: 256, height: 1, depth: 1 },
-                );
-            }
-            grid_pop_encoder.endEncoding();
-        }
-
-        // --- Physics update compute pass ---
-        // Reads from read_list (last frame's survivors + this frame's new emissions).
-        // Reads grid_density for pressure gradient force.
-        // Writes survivors to write_list, writes dead particles back to dead_list.
-        if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
-            update_encoder.setLabel(Some(ns_string!("Physics Update")));
-            update_encoder.setComputePipelineState(&gpu.update_pipeline);
-
-            // buffer(0) = uniform_ring, buffer(1) = dead_list, buffer(2) = read_list (input),
-            // buffer(3) = write_list (output), buffer(4-8) = SoA data, buffer(9) = grid_density
-            unsafe {
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                update_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
-                update_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 3);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 4);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 5);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 6);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 7);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 8);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 9);
-            }
-
-            // Indirect dispatch: threadgroup count from sync_indirect_args output (update_dispatch_args)
-            unsafe {
-                update_encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
-                    &pool.update_dispatch_args,
-                    0,
-                    MTLSize { width: 256, height: 1, depth: 1 },
-                );
-            }
-
-            update_encoder.endEncoding();
-        }
-
-        // --- Sync alive count to indirect args (GPU compute, single thread) ---
-        // Reads from write_list (update kernel output = this frame's survivors).
-        if let Some(sync_encoder) = command_buffer.computeCommandEncoder() {
-            sync_encoder.setLabel(Some(ns_string!("Compaction")));
-            sync_encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
-            unsafe {
-                sync_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 0);
-                sync_encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
-                sync_encoder.setBuffer_offset_atIndex(Some(&pool.update_dispatch_args), 0, 2);
-            }
-            sync_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: 1, height: 1, depth: 1 },
-                MTLSize { width: 1, height: 1, depth: 1 },
-            );
-            sync_encoder.endEncoding();
-        }
+        // --- 6-pass GPU compute pipeline ---
+        encode::encode_prepare_dispatch(&command_buffer, gpu, pool, write_list, uniform_offset);
+        encode::encode_emission(&command_buffer, gpu, pool, read_list, uniform_offset);
+        encode::encode_grid_clear(&command_buffer, gpu, pool);
+        encode::encode_grid_populate(&command_buffer, gpu, pool, read_list, uniform_offset);
+        encode::encode_update(&command_buffer, gpu, pool, read_list, write_list, uniform_offset);
+        encode::encode_sync_indirect(&command_buffer, gpu, pool, write_list);
 
         // --- Render pass: draw particle billboard quads ---
         let encoder = match command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc) {
