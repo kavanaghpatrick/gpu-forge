@@ -2,4 +2,5 @@
 
 pub mod device;
 pub mod encode;
+pub mod pipeline;
 pub mod types;

@@ -57,7 +57,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-3, FR-15_
   - _Design: Kernel 1: CSV Parser_
 
-- [ ] 1.6 GPU column filter kernel (WHERE clause)
+- [x] 1.6 GPU column filter kernel (WHERE clause)
   - **Do**: Create `shaders/filter.metal` with `column_filter` kernel using function constants for COMPARE_OP, COLUMN_TYPE, HAS_NULL_CHECK. Output: selection bitmask (1-bit per row) + match_count via simd_sum + atomic. Create `src/gpu/pipeline.rs` with PSO creation using MTLFunctionConstantValues and PSO cache.
   - **Files**: `gpu-query/shaders/filter.metal`, `gpu-query/src/gpu/pipeline.rs`
   - **Done when**: Can filter INT64 column with GT/LT/EQ operators; match_count correct; PSO cache works
