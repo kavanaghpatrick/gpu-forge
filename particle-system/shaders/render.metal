@@ -96,17 +96,29 @@ fragment half4 fragment_main(VertexOut in [[stage_in]]) {
     return in.color;
 }
 
-/// Tiny compute kernel: copy alive list counter to indirect draw args instanceCount.
-/// Dispatched as a single thread after emission, before render.
+/// Tiny compute kernel: copy alive list counter to indirect draw args instanceCount,
+/// and compute next-frame update/grid_populate dispatch threadgroup count.
+/// Dispatched as a single thread after update, before render.
 kernel void sync_indirect_args(
-    device const uint*  alive_list    [[buffer(0)]],
-    device DrawArgs*    indirect_args [[buffer(1)]],
-    uint                tid           [[thread_position_in_grid]]
+    device const uint*    alive_list    [[buffer(0)]],
+    device DrawArgs*      indirect_args [[buffer(1)]],
+    device DispatchArgs*  update_args   [[buffer(2)]],
+    uint                  tid           [[thread_position_in_grid]]
 ) {
     if (tid != 0) return;
+
     // alive_list[0] is the atomic counter (first uint of counter header)
-    indirect_args->instanceCount = alive_list[0];
+    uint alive_count = alive_list[0];
+
+    // Write indirect draw arguments
+    indirect_args->instanceCount = alive_count;
     indirect_args->vertexCount = 4;
     indirect_args->vertexStart = 0;
     indirect_args->baseInstance = 0;
+
+    // Write next-frame update/grid_populate indirect dispatch arguments
+    uint threadgroups = max((alive_count + 255) / 256, 1u);
+    update_args->threadgroupsPerGridX = threadgroups;
+    update_args->threadgroupsPerGridY = 1;
+    update_args->threadgroupsPerGridZ = 1;
 }

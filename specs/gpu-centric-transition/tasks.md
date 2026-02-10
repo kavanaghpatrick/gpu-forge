@@ -223,7 +223,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
   - _Requirements: FR-9_
   - _Design: Section 5.2, KB 232, pitfall #4 from research.md_
 
-- [ ] 2.4 [VERIFY] Quality checkpoint: build + tests after triple buffering
+- [x] 2.4 [VERIFY] Quality checkpoint: build + tests after triple buffering
   - **Do**: Run full build and test suite. GPU integration tests may need updates if they depend on single-buffering assumptions.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass, build clean
@@ -233,7 +233,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
 
 Focus: All variable-count dispatches use indirect args. Add debug infrastructure.
 
-- [ ] 3.1 Extend sync_indirect_args to write next-frame update_dispatch_args
+- [x] 3.1 Extend sync_indirect_args to write next-frame update_dispatch_args
   - **Do**:
     1. In `buffers.rs` ParticlePool: add `pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>` (12 bytes)
     2. In `ParticlePool::new()`: allocate and init to `DispatchArgs { threadgroups_per_grid: [pool_size.div_ceil(256) as u32, 1, 1] }` (bootstrap value for first frame, per design R6)

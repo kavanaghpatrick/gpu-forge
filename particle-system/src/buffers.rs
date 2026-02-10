@@ -50,6 +50,10 @@ pub struct ParticlePool {
     /// GPU-computed emission parameters (16 bytes = 4 x u32).
     /// Written by `prepare_dispatch`, read by `emission_kernel`.
     pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Indirect dispatch arguments for update/grid_populate kernels (12 bytes = 3 x u32).
+    /// Written by `sync_indirect_args` kernel each frame based on alive count.
+    /// Bootstrap value uses pool_size for first frame (design R6).
+    pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
 
     // --- Grid density ---
     /// Grid density buffer: 64^3 = 262144 uint32 cells (1.05 MB).
@@ -125,6 +129,11 @@ impl ParticlePool {
             std::mem::size_of::<GpuEmissionParams>(),
             "gpu_emission_params",
         );
+        let update_dispatch_args = alloc_buffer(
+            device,
+            std::mem::size_of::<DispatchArgs>(),
+            "update_dispatch_args",
+        );
 
         let pool = Self {
             pool_size,
@@ -141,6 +150,7 @@ impl ParticlePool {
             indirect_args,
             emission_dispatch_args,
             gpu_emission_params,
+            update_dispatch_args,
             uniform_ring,
         };
 
@@ -151,6 +161,7 @@ impl ParticlePool {
         pool.init_indirect_args();
         pool.init_emission_dispatch_args();
         pool.init_gpu_emission_params();
+        pool.init_update_dispatch_args();
         pool.init_uniform_ring();
 
         pool
@@ -229,6 +240,20 @@ impl ParticlePool {
         unsafe {
             let ptr = buffer_ptr(&self.gpu_emission_params) as *mut GpuEmissionParams;
             std::ptr::write(ptr, GpuEmissionParams::default());
+        }
+    }
+
+    /// Initialize update dispatch args with bootstrap value: threadgroups = ceil(pool_size / 256).
+    /// This ensures the first frame dispatches enough threads to cover the full pool (design R6).
+    fn init_update_dispatch_args(&self) {
+        unsafe {
+            let ptr = buffer_ptr(&self.update_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(
+                ptr,
+                DispatchArgs {
+                    threadgroups_per_grid: [self.pool_size.div_ceil(256) as u32, 1, 1],
+                },
+            );
         }
     }
 
@@ -352,12 +377,26 @@ impl ParticlePool {
             std::mem::size_of::<GpuEmissionParams>(),
             "gpu_emission_params",
         );
-        // Zero-initialize: GPU will overwrite on next prepare_dispatch
+        // Allocate new update dispatch args buffer (GPU recomputes each frame via sync_indirect_args)
+        let new_update_dispatch_args = alloc_buffer(
+            &self.device,
+            std::mem::size_of::<DispatchArgs>(),
+            "update_dispatch_args",
+        );
+
+        // Initialize dispatch buffers: emission to zero, update to bootstrap value for new pool_size
         unsafe {
             let ptr = buffer_ptr(&new_emission_dispatch_args) as *mut DispatchArgs;
             std::ptr::write(ptr, DispatchArgs::default());
             let ptr = buffer_ptr(&new_gpu_emission_params) as *mut GpuEmissionParams;
             std::ptr::write(ptr, GpuEmissionParams::default());
+            let ptr = buffer_ptr(&new_update_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(
+                ptr,
+                DispatchArgs {
+                    threadgroups_per_grid: [new_size.div_ceil(256) as u32, 1, 1],
+                },
+            );
         }
 
         // Swap buffer references (old buffers dropped when replaced)
@@ -371,6 +410,7 @@ impl ParticlePool {
         self.alive_list_b = new_alive_list_b;
         self.emission_dispatch_args = new_emission_dispatch_args;
         self.gpu_emission_params = new_gpu_emission_params;
+        self.update_dispatch_args = new_update_dispatch_args;
         // grid_density stays the same (64^3 fixed)
         // indirect_args stays the same
         // uniform_ring stays the same (768 bytes, not pool-size-dependent)
