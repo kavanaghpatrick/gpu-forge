@@ -38,4 +38,15 @@ struct DrawArgs {
     uint baseInstance;    // first instance (0)
 };
 
+// Counter header for dead/alive list buffers.
+// Layout: first 16 bytes of buffer.
+//   offset 0:  count (uint, atomic counter)
+//   offset 4:  12 bytes padding (align to 16)
+// After header, uint indices start at byte offset 16 (index 4 in uint terms).
+// Access pattern:
+//   device atomic_uint* counter = (device atomic_uint*)list_buffer;
+//   device uint* indices = list_buffer + 4;  // skip 4 uints (16 bytes)
+constant uint COUNTER_HEADER_UINTS = 4;  // 16 bytes / 4 = 4 uints to skip
+
 #endif // TYPES_H
+

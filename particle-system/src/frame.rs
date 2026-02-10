@@ -84,6 +84,7 @@ impl FrameRing {
     }
 
     /// Get the current frame index (0, 1, or 2).
+    #[allow(dead_code)]
     pub fn frame_index(&self) -> usize {
         self.frame_index
     }

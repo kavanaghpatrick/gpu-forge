@@ -13,7 +13,7 @@ fn main() {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "metal") {
+            if path.extension().is_some_and(|ext| ext == "metal") {
                 Some(path)
             } else {
                 None
@@ -59,8 +59,9 @@ fn main() {
         println!("cargo:rerun-if-changed={}", metal_file.display());
     }
 
-    // Also re-run if the shared header changes
+    // Also re-run if shared headers change
     println!("cargo:rerun-if-changed=shaders/types.h");
+    println!("cargo:rerun-if-changed=shaders/prng.metal");
 
     // Link all .air files into a single .metallib
     let metallib_path = out_dir.join("shaders.metallib");

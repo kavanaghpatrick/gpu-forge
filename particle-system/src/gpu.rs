@@ -5,16 +5,19 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::msg_send;
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLPixelFormat,
+    MTLCommandQueue, MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
+    MTLPixelFormat,
 };
 use objc2_quartz_core::CAMetalLayer;
 
-/// Core GPU state: device, command queue, metal layer, and shader library.
+/// Core GPU state: device, command queue, metal layer, shader library, and compute pipelines.
+#[allow(dead_code)]
 pub struct GpuState {
     pub device: Retained<ProtocolObject<dyn MTLDevice>>,
     pub command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pub layer: Retained<CAMetalLayer>,
     pub library: Retained<ProtocolObject<dyn MTLLibrary>>,
+    pub emission_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
 }
 
 impl GpuState {
@@ -42,14 +45,26 @@ impl GpuState {
             .newLibraryWithFile_error(&path_ns)
             .expect("Failed to load shaders.metallib");
 
+        // Create compute pipeline for emission kernel
+        let emission_fn_name = NSString::from_str("emission_kernel");
+        let emission_fn = library
+            .newFunctionWithName(&emission_fn_name)
+            .expect("Failed to find emission_kernel in metallib");
+        #[allow(deprecated)]
+        let emission_pipeline = device
+            .newComputePipelineStateWithFunction_error(&emission_fn)
+            .expect("Failed to create emission compute pipeline");
+
         println!("Metal device: {:?}", device.name());
         println!("Loaded metallib from: {}", metallib_path);
+        println!("Emission pipeline created successfully");
 
         Self {
             device,
             command_queue,
             layer,
             library,
+            emission_pipeline,
         }
     }
 

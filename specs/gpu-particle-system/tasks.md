@@ -103,7 +103,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-3, FR-4, AC-2.1 through AC-2.8, NFR-7_
   - _Design: Buffer Layout, Particle Data (SoA Layout), Free/Alive Lists_
 
-- [ ] 1.6 GPU PRNG and emission compute kernel
+- [x] 1.6 GPU PRNG and emission compute kernel
   - **Do**:
     1. Create `shaders/prng.metal`: implement `pcg_hash(uint seed)` and `rand_float(uint seed)` -> [0,1) using PCG hash variant
     2. Create `shaders/emission.metal`: implement `emission_kernel` matching design signature

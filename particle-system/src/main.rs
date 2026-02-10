@@ -8,8 +8,8 @@ use std::sync::Arc;
 use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_metal::{
-    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLLoadAction,
-    MTLRenderPassDescriptor, MTLStoreAction,
+    MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLComputeCommandEncoder, MTLLoadAction, MTLRenderPassDescriptor, MTLSize, MTLStoreAction,
 };
 use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -19,13 +19,17 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use buffers::ParticlePool;
 use frame::FrameRing;
 use gpu::GpuState;
+use types::{CounterHeader, Uniforms};
 
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
+    pool: Option<ParticlePool>,
     frame_ring: FrameRing,
+    frame_number: u32,
 }
 
 impl App {
@@ -33,7 +37,9 @@ impl App {
         Self {
             window: None,
             gpu: None,
+            pool: None,
             frame_ring: FrameRing::new(),
+            frame_number: 0,
         }
     }
 
@@ -42,9 +48,29 @@ impl App {
             Some(g) => g,
             None => return,
         };
+        let pool = match &self.pool {
+            Some(p) => p,
+            None => return,
+        };
 
         // Acquire a frame slot (blocks if all 3 are in use)
         self.frame_ring.acquire();
+
+        // --- Reset alive list counter to 0 at frame start (CPU write) ---
+        unsafe {
+            let alive_ptr = pool.alive_list_a.contents().as_ptr() as *mut CounterHeader;
+            (*alive_ptr).count = 0;
+        }
+
+        // --- Update uniforms ---
+        let emission_count: u32 = 10000;
+        unsafe {
+            let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
+            (*uniforms_ptr).dt = self.frame_ring.dt;
+            (*uniforms_ptr).frame_number = self.frame_number;
+            (*uniforms_ptr).emission_count = emission_count;
+            (*uniforms_ptr).pool_size = pool.pool_size as u32;
+        }
 
         // Get the next drawable from the CAMetalLayer
         let drawable = match gpu.layer.nextDrawable() {
@@ -85,6 +111,36 @@ impl App {
         // Register completion handler that signals the semaphore
         self.frame_ring.register_completion_handler(&command_buffer);
 
+        // --- Emission compute pass ---
+        if let Some(compute_encoder) = command_buffer.computeCommandEncoder() {
+            compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
+
+            // Set buffers matching emission_kernel signature:
+            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list,
+            // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
+            // buffer(6) = colors, buffer(7) = sizes
+            unsafe {
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 2);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 3);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 4);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 6);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 7);
+            }
+
+            // Dispatch ceil(emission_count / 256) threadgroups of 256
+            let threadgroup_size = 256usize;
+            let threadgroup_count = (emission_count as usize + threadgroup_size - 1) / threadgroup_size;
+            compute_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
+                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
+            );
+
+            compute_encoder.endEncoding();
+        }
+
         // Create render command encoder (empty pass - just clear)
         let encoder = match command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc) {
             Some(enc) => enc,
@@ -101,8 +157,9 @@ impl App {
         command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
         command_buffer.commit();
 
-        // Advance frame ring index
+        // Advance frame ring index and frame number
         self.frame_ring.advance();
+        self.frame_number = self.frame_number.wrapping_add(1);
 
         // Update window title with FPS approximately once per second
         if self.frame_ring.should_update_fps() {
@@ -150,6 +207,10 @@ impl ApplicationHandler for App {
             }
             _ => panic!("Unsupported platform - expected AppKit window handle"),
         }
+
+        // Allocate particle buffers (1M particles)
+        let pool = ParticlePool::new(&gpu.device, 1_000_000);
+        self.pool = Some(pool);
 
         self.gpu = Some(gpu);
         self.window = Some(window);
