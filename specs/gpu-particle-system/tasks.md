@@ -695,7 +695,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Done when**: PR created; all CI checks green
   - **If CI fails**: Read failure details, fix locally, push, re-verify
 
-- [ ] 4.8 [VERIFY] AC checklist
+- [x] 4.8 [VERIFY] AC checklist
   - **Do**: Programmatically verify each acceptance criterion is satisfied:
     1. AC-1.1: Window creation code exists (`grep -r "WindowBuilder\|Window::new" src/main.rs`)
     2. AC-1.2: CAMetalLayer setup (`grep -r "CAMetalLayer\|BGRA8Unorm" src/`)
