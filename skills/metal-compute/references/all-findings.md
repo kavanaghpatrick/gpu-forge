@@ -1,10 +1,46 @@
-# metal-compute — All Findings (40)
+# metal-compute — All Findings (84)
+
+## Finding 690: The AGX firmware communicates timeout events via EventMsg::Timeout (discriminant 4) including counter, event_slot, and unk_8 fields. This is architecturally distinct from EventMsg::Fault (discriminant 0). On timeout, driver checks for accompanying fault info; if present, treated as fault; otherwise pure timeout. Full enum: Fault=0, Flag=1, Unk2=2, Unk3=3, Timeout=4.
+**Confidence**: verified
+**Source**: Asahi Linux AGX Driver - fw/channels.rs event types
+**Evidence**: Asahi fw/channels.rs defines EventMsg enum. The gpu.rs handler for timeout logs "GPU timeout nya~!!!!!" and calls get_fault_info() then recover().
+**Tags**: timeout,firmware,AGX,asahi,event-channel,fault,recovery
+
+## Finding 688: Asahi Linux reverse engineering reveals the AGX firmware receives two compute timeout parameters during initialization: cl_context_switch_timeout_ms=40 and cl_kill_timeout_ms=50. These control compute workload context switching and termination at firmware level. These are NOT the same as the macOS-level GPU watchdog that kills entire command buffers (which operates on a longer timescale of seconds).
+**Confidence**: verified
+**Source**: Asahi Linux AGX Driver - initdata.rs
+**Evidence**: Asahi initdata.rs: cl_context_switch_timeout_ms: 40 and cl_kill_timeout_ms: 50. The "cl" prefix likely = "compute layer." A separate cdm_context_store_latency_threshold exists for compute dispatch manager context store timing.
+**Tags**: timeout,firmware,AGX,asahi,compute,context-switch,preemption
+
+## Finding 705: For CPU-GPU ring buffer correctness on Apple Silicon, memory ordering is NOT guaranteed by atomics alone (MSL only supports relaxed). The reliable mechanism is Metal command buffer commit/completion boundaries: CPU writes data, commits CB, GPU reads in subsequent CB. For continuous streaming, Apple recommends triple buffering with dispatch_semaphore(3), not atomic-based polling. A GPU kernel polling an atomic flag set by CPU has no guarantee preceding non-atomic writes are visible.
+**Confidence**: verified
+**Source**: Metal Best Practices Guide: Triple Buffering
+**Evidence**: Metal Best Practices Guide documents triple buffering as canonical streaming pattern. gfx-rs found intermittent transfer failures with MTLStorageModeShared coherency. Since MSL atomics are relaxed-only, command buffer boundaries provide the implicit memory barrier.
+**Tags**: ring-buffer,CPU-GPU,memory-ordering,triple-buffering,command-buffer,synchronization
+
+## Finding 689: The Asahi Linux DRM GPU scheduler is configured with a 100,000ms (100 second) timeout for GPU jobs. This is the Linux-side timeout for detecting incomplete GPU work, distinct from firmware-level timeouts. This suggests macOS likely has a similar kernel-level timeout — developers report the GPU watchdog killing work "after a few seconds" which aligns with an OS-level timeout in the 5-60 second range.
+**Confidence**: verified
+**Source**: Asahi Linux AGX Driver - queue/mod.rs
+**Evidence**: Asahi queue/mod.rs: sched::Scheduler::new(dev.as_ref(), 3, WQ_SIZE, 0, 100000, ...) where 100000 is timeout in ms. The timed_out handler logs "Job timed out on the DRM scheduler" and returns NoDevice status.
+**Tags**: timeout,DRM,scheduler,asahi,100-seconds,job-timeout
+
+## Finding 686: Enhanced Command Buffer Errors (errorOptions = .encoderExecutionStatus) provide per-encoder diagnostics with negligible overhead, suitable for production. Error userInfo contains MTLCommandBufferEncoderInfoErrorKey -> array of MTLCommandBufferEncoderInfo with label and errorState. MTLCommandEncoderErrorState: Unknown(0), Completed(1), Affected(2), Pending(3), Faulted(4). Faulted identifies the causal encoder.
+**Confidence**: verified
+**Source**: Debug GPU-side errors in Metal - WWDC20
+**Evidence**: WWDC20 describes as "low overhead" suitable for shipping in production, unlike Shader Validation. Flutter/Impeller enables this on iOS 14+/macOS 11+ and iterates encoder info in completion handlers for hierarchical diagnostics.
+**Tags**: error-handling,encoderExecutionStatus,Enhanced-Command-Buffer-Errors,production
 
 ## Finding 144: IOAF error codes: code 2 = GPU Timeout Error (command buffer took too long), code 3 = GPU Hang (possible infinite loop), code 4 = execution aborted due to prior error, code 5 = discarded (victim of GPU error/recovery). Apple deliberately does not publicly document these codes.
 **Confidence**: high
 **Source**: Metal FAQ - Sealed Abstract
 **Evidence**: Metal FAQ (sealedabstract.com) and developer forum reports. Apple treats IOAF codes as driver/kernel-level issues. If you encounter them, file a bug report.
 **Tags**: IOAF,error-codes,timeout,GPU-hang
+
+## Finding 681: Asahi Linux reverse engineering reveals the AGX firmware classifies GPU errors as: Timeout (ETIMEDOUT), Fault/MMU violation (EIO), Killed/victim of concurrent error (ECANCELED), NoDevice/GPU crashed (ENODEV). When timeout or fault occurs, firmware attempts recovery. Rarely, firmware itself can lock up during recovery, requiring full system restart.
+**Confidence**: verified
+**Source**: Asahi Linux DRM AGX driver - workqueue.rs
+**Evidence**: Asahi workqueue.rs defines WorkError: Timeout, Fault(with fault info), Killed, ChannelError, NoDevice, Unknown. Error conversion: Timeout->ETIMEDOUT, Fault->EIO, Unknown->ENODATA, Killed->ECANCELED, NoDevice->ENODEV.
+**Tags**: GPU-hang,timeout,recovery,Asahi,AGX,firmware,fault
 
 ## Finding 145: Metal does NOT expose a public API to configure or extend the GPU command buffer execution timeout. There is no equivalent of CUDA's TdrDelay registry setting. The timeout is enforced at the driver/firmware level (IOKit/IOGPU). The only workaround is splitting long-running work into smaller command buffers.
 **Confidence**: high
@@ -18,6 +54,18 @@
 **Evidence**: MoltenVK issue #602: 'the system appears to revoke GPU access after multiple timeout occurrences rather than at a specific time threshold.' Splitting work across multiple sub-grids is the recommended workaround.
 **Tags**: timeout,watchdog,MoltenVK,seconds
 
+## Finding 674: For fully GPU-autonomous multi-stage compute DAGs, combine indirect dispatch with ICBs: Stage 1 writes results AND generates dispatch parameters into a buffer. Stage 2 uses dispatchThreadgroups(indirectBuffer:) to read GPU-determined parameters. Stage 1 can also encode compute_commands into an ICB that Stage 2 executes. CPU only encodes initial dispatch; all subsequent stages are GPU-determined, within a single command buffer submission.
+**Confidence**: verified
+**Source**: Metal Best Practices Guide: Indirect Buffers
+**Evidence**: dispatchThreadgroups(indirectBuffer:indirectBufferOffset:threadsPerThreadgroup:) reads MTLDispatchThreadgroupsIndirectArguments (3x uint32 for grid dimensions) from a GPU buffer. Combined with ICBs, enables N-stage chains where each stage's workload is determined by the previous stage.
+**Tags**: multi-stage,compute-DAG,indirect-dispatch,GPU-autonomous,indirect-command-buffer
+
+## Finding 667: Metal enables fully GPU-driven multi-stage pipelines where the GPU decides what to compute/render next with zero CPU-GPU synchronization during execution. WWDC19 demo showed a 5-pass pipeline: compute(occluder cull) -> render(occluders) -> compute(process occlusion) -> compute(main cull + LOD + ICB encode) -> render(scene), all without CPU intervention.
+**Confidence**: verified
+**Source**: Modern Rendering with Metal - WWDC19
+**Evidence**: Each compute thread reads from scene argument buffer, performs frustum culling, calculates LOD, retrieves mesh/material data, and encodes a draw command into an ICB slot. Atomic operations on indirect range buffer pack valid commands. WWDC19 Bistro demo: 2.8M polygons, ~8000 draw calls across 4 views, completely GPU-driven.
+**Tags**: GPU-driven,indirect-command-buffer,compute-pipeline,multi-stage,autonomous
+
 ## Finding 171: MLX creates compute pipelines via device->newComputePipelineState() for simple kernels, with dual-level caching (library-level + kernel-level hash lookup). MLX does NOT set threadGroupSizeIsMultipleOfThreadExecutionWidth or maxTotalThreadsPerThreadgroup on descriptors. For custom Metal kernels, MLX caches based on source+template hash.
 **Confidence**: verified
 **Source**: MLX Metal backend device.cpp - GitHub
@@ -29,6 +77,66 @@
 **Source**: Custom Metal Kernels - MLX Documentation
 **Evidence**: MLX docs: 'Every time you make a kernel, a new Metal library is created and possibly JIT compiled.' Cache uses hash of source + template args. MLX_METAL_JIT flag enables JIT-only compilation.
 **Tags**: MLX,custom-kernels,JIT,8x-speedup
+
+## Finding 703: MSL atomic functions (atomic_fetch_add_explicit, atomic_store_explicit, atomic_load_explicit) ONLY support memory_order_relaxed — atomicity but NO synchronization or ordering guarantees with other memory operations. This is unlike CUDA, HLSL, or Vulkan/SPIR-V which support acquire/release and sequential consistency. This means CPU-GPU ring buffers using only atomic load/store cannot rely on ordering for data visibility.
+**Confidence**: verified
+**Source**: Atomics proposal - WebGPU
+**Evidence**: WebGPU atomics proposal (gpuweb issue #1360) confirms: "Atomic functions only support memory_order_relaxed." Myles C. Maxfield (Apple) confirmed Metal requires explicit atomic types and only relaxed ordering.
+**Tags**: atomics,memory-ordering,relaxed-only,ring-buffer,CPU-GPU,MSL,limitation
+
+## Finding 697: MTLBinaryArchive supports compute pipelines via addComputePipelineFunctions(with:). Workflow: (1) create empty archive via device.makeBinaryArchive(descriptor:), (2) call binaryArchive.addComputePipelineFunctions(with: desc), (3) serialize via binaryArchive.serialize(to: url), (4) reload by setting descriptor.url. When creating pipeline states, set pipelineDescriptor.binaryArchives = [archive] — framework searches linearly and returns immediately if found, skipping MTLCompilerService.
+**Confidence**: verified
+**Source**: Build GPU binaries with Metal - WWDC20
+**Evidence**: WWDC20 session 10615 "Build GPU binaries with Metal" shows complete workflow. Archives store render, compute, and tile render pipeline functions in a single container.
+**Tags**: binary-archive,pipeline-caching,compute,MTLBinaryArchive
+
+## Finding 685: MTLCommandBufferError defines 10 codes: None(0), Internal(1), Timeout(2), PageFault(3), AccessRevoked(4, formerly Blacklisted), NotPermitted(7), OutOfMemory(8), InvalidResource(9), Memoryless(10), DeviceRemoved(11), StackOverflow(12). AccessRevoked means process blocked from GPU due to too many prior errors. DeviceRemoved only applies to eGPUs — cannot occur on Apple Silicon integrated GPU. StackOverflow = too many stack frames.
+**Confidence**: verified
+**Source**: objc2-metal Rust bindings - MTLCommandBuffer.rs
+**Evidence**: objc2-metal Rust bindings list all codes with exact values. Codes 5 and 6 are unused/skipped. Note: IOAF error codes and MTLCommandBufferError codes are DIFFERENT error reporting layers.
+**Tags**: error-handling,MTLCommandBufferError,error-codes,AccessRevoked,StackOverflow
+
+## Finding 693: MTLEvent (Metal 2.1, macOS 10.14) provides GPU-side synchronization between command buffers without CPU intervention. encodeWaitForEvent pauses a buffer's subsequent passes until event value is reached; encodeSignalEvent updates the value. This enables chaining command buffers where subsequent ones wait for prior completion, all on GPU without CPU round-trips — the key mechanism for reducing re-dispatch overhead in persistent kernel patterns.
+**Confidence**: verified
+**Source**: encodeWaitForEvent Apple Developer Documentation
+**Evidence**: Apple docs: encodeWaitForEvent "pauses the GPU from running the buffer's subsequent passes until the event equals or exceeds a value." MoltenVK used MTLEvent for Vulkan semaphores: "MTLFence could be used within a single queue, but for cross-queue an MTLEvent is required."
+**Tags**: MTLEvent,GPU-synchronization,kernel-chaining,dispatch-overhead,no-CPU
+
+## Finding 677: MTLSharedEvent enables cross-process GPU synchronization via MTLSharedEventHandle (conforms to NSSecureCoding). Process A calls makeSharedEventHandle(), sends via XPC, Process B calls newSharedEvent(handle:) to recreate. Both use counter-based signaling with monotonically increasing uint64 values via encodeSignalEvent/encodeWaitForEvent.
+**Confidence**: verified
+**Source**: MTLSharedEventHandle - Apple Developer Documentation
+**Evidence**: MTLDevice has newSharedEvent() and newSharedEventWithHandle:(). MTLSharedEventHandle conforms to NSSecureCoding for XPC. Available since macOS 10.14 / iOS 12. wgpu PR #6610 implemented this for cross-process fence sharing between Firefox Gecko and wgpu on macOS.
+**Tags**: synchronization,cross-process,MTLSharedEvent,XPC,NSSecureCoding
+
+## Finding 692: MTLSharedEvent with waitUntilSignaledValue achieves less than 50 microseconds of scheduling/waiting overhead for GPU-CPU synchronization, significantly outperforming waitUntilCompleted. Demonstrated by Anukari audio synthesis: command buffer double-buffering encodes next CB on CPU while previous executes on GPU, with MTLSharedEvent signaling completion.
+**Confidence**: high
+**Source**: Huge macOS performance improvements - Anukari Devlog
+**Evidence**: Anukari developer: "< 50us of scheduling/waiting overhead" using MTLSharedEvent. waitUntilCompleted appeared similar but MTLSharedEvent delivered substantially lower latency. Dynamic kernel parameters written to device memory after encoding but before MTLSharedEvent signals execution.
+**Tags**: MTLSharedEvent,dispatch-latency,re-dispatch,synchronization,overhead,microseconds
+
+## Finding 678: MTLSharedEvent uses counter-based (timeline) signaling where signaledValue is a monotonically increasing uint64. GPU work signals to a specific value; other work waits until value equals or exceeds target. CPU-side notification uses MTLSharedEventListener with a dispatch queue and notify(_:atValue:block:). MoltenVK uses MTLSharedEvent to implement Vulkan timeline semaphores (VK_SEMAPHORE_TYPE_TIMELINE).
+**Confidence**: verified
+**Source**: SharedEvent in metal - Rust crate documentation
+**Evidence**: SharedEvent exposes: signaled_value() -> u64, set_signaled_value(u64), notify(listener, value, block). MTLSharedEventListener is initialized with a DispatchQueue providing execution context for notification blocks.
+**Tags**: synchronization,MTLSharedEvent,timeline-semaphore,counter-based
+
+## Finding 679: MTLSharedEvent is significantly heavier than MTLEvent. MoltenVK chose device-side MTLEvent over MTLSharedEvent for Vulkan semaphores because MTLSharedEvent's host-signaling capability "could have performance implications that may not be acceptable." MTLEvent is lightweight single-device; MTLSharedEvent adds cross-process, cross-device, and CPU-signaling at higher overhead.
+**Confidence**: verified
+**Source**: MVKSemaphore: Use MTLEvent for device-side synchronization - MoltenVK PR #591
+**Evidence**: MoltenVK PR #591 explicitly rejected MTLSharedEvent for common sync path due to performance concerns. Uses MTLEvent for device-side cross-queue sync, MTLSharedEvent only for Vulkan timeline semaphore export/import (VK_EXT_metal_objects).
+**Tags**: synchronization,MTLEvent,MTLSharedEvent,performance,MoltenVK
+
+## Finding 701: Metal 3 introduced offline compilation moving GPU binary generation entirely to build time. Workflow: (1) generate JSON pipelines script describing descriptors, (2) run "metal shaders.metal -N descriptors.mtlp-json -o archive.metallib" at build time, (3) load archive at runtime. Eliminates all runtime shader compilation, making PSO creation a lightweight lookup.
+**Confidence**: verified
+**Source**: Target and optimize GPU binaries with Metal 3 - WWDC22
+**Evidence**: WWDC22 10102: pipelines script can be generated manually or harvested at runtime via addComputePipelineFunctions + serializeToURL, then extracted via "metal-source -flatbuffers=json harvested.metallib -o descriptors.mtlp-json". For Metal libraries use "metal-tt shaders.metallib descriptors.mtlp-json -o archive.metallib".
+**Tags**: binary-archive,offline-compilation,Metal-3,build-time,pipeline-caching
+
+## Finding 675: Metal 4 replaces argument buffers with MTL4ArgumentTable for resource binding. For bindless compute, the argument table needs just one buffer binding. Resources bind via gpuAddress (buffers) and gpuResourceID (textures). Residency is managed exclusively through MTL4ResidencySet. Residency sets can attach to a command queue once, automatically applying to all command buffers. Control Ultimate Edition reported significant overhead reductions.
+**Confidence**: high
+**Source**: WWDC 2025 - Discover Metal 4 - DEV Community
+**Evidence**: MTL4ArgumentTable stores binding points with sizes based on bind point requirements. Residency sets use addAllocation/addAllocations + commit(). Background thread updates supported for streaming.
+**Tags**: metal-4,argument-table,bindless,residency-sets,compute,WWDC25
 
 ## Finding 167: Metal 4 introduces two barrier types: Producer Barriers (block subsequent passes until current stages finish) and Consumer Barriers (block current pass stages until earlier passes finish). Three compute stages: dispatch, blit, acceleration_structure. This replaces implicit barrier-at-encoder-boundary from Metal 3.
 **Confidence**: verified
@@ -60,6 +168,54 @@
 **Evidence**: Apple docs and WWDC 2025 confirm mandatory residency sets. llama.cpp implementation: MTLResidencySet created with initial capacity, addAllocation() stages resources, commit() makes resident, addResidencySet() on queue for auto-inclusion.
 **Tags**: Metal-4,residency-sets,llama-cpp,250ms
 
+## Finding 682: Metal Shader Validation (MTL_SHADER_VALIDATION=1) instruments GPU shaders to detect: (1) out-of-bounds device/constant memory access, (2) out-of-bounds threadgroup memory access, (3) null texture usage. Invalid operations are PREVENTED (not just logged). Diagnostics include encoder label, function name, file URL, line/column, GPU stack backtrace. Cannot detect: timeouts/infinite loops, invalid residency, or other UB.
+**Confidence**: verified
+**Source**: Debug GPU-side errors in Metal - WWDC20
+**Evidence**: WWDC20 "Debug GPU-side errors in Metal" (10616). Invalid reads are zero-filled by default (MTL_SHADER_VALIDATION_FAIL_MODE=zerofill). System log: log stream --predicate "subsystem = 'com.apple.Metal' and category = 'GPUDebug'".
+**Tags**: validation,shader-validation,debugging,out-of-bounds,null-texture
+
+## Finding 691: The Metal shader compiler treats infinite loops as undefined behavior and can optimize them to no-ops. MSL is based on C++14 which requires forward progress. An empty while(true){} may compile to nothing — kernel appears to complete instantly. This is distinct from loops with high but finite iteration counts, which DO execute and can trigger the GPU watchdog. The wgpu project added a volatile bool workaround which caused 200 FPS to 75 FPS regression on M1 Pro.
+**Confidence**: verified
+**Source**: [Metal/MSL] Workaround for infinite loops optimized out causes performance regression - wgpu
+**Evidence**: wgpu issue #6518: Metal compiler optimizes away infinite loops. Workaround volatile bool caused severe perf regression. wgpu issue #6546 proposed iteration limits (2^64-1) instead, reasoning GPU cannot execute enough cycles to hit it in a human lifetime.
+**Tags**: compiler,infinite-loop,undefined-behavior,MSL,optimization,wgpu
+
+## Finding 694: The Metal shader compiler aggressively unrolls loops accessing stack/threadgroup memory to eliminate dynamic indexing. For high iteration counts, this causes extremely long compilation or failure — a compile-time iteration ceiling separate from the runtime watchdog. Control with #pragma clang loop unroll(full) or -fno-unroll-loops. Metal 3 offline binary archive compilation is recommended for complex kernels to avoid runtime compilation timeout.
+**Confidence**: high
+**Source**: Target and optimize GPU binaries with Metal 3 - WWDC22
+**Evidence**: Apple forums: "the compiler aggressively unrolls any loop accessing the stack." WWDC sessions: "Offline compilation is most likely to benefit large programs with deep call paths and loops, where inlining and unrolling are common."
+**Tags**: compiler,loop-unrolling,compilation-time,binary-archive,offline-compilation
+
+## Finding 704: Metal is the only major GPU API lacking device-scoped memory/execution barriers. HLSL has DeviceMemoryBarrier() since D3D11 (2009); Vulkan/SPIR-V supports them natively. Metal threadgroup_barrier with mem_device provides threadgroup-scoped ordering only, preventing inter-threadgroup patterns like single-pass prefix sum (decoupled look-back) that match memcpy throughput on other APIs. MSL 3.2 partially addresses this with coherent(device) + atomic_thread_fence with thread_scope_device.
+**Confidence**: high
+**Source**: A note on Metal shader converter - Raph Levien
+**Evidence**: Raph Levien (raphlinus) June 2023: "Metal is the only one that does not support it." Blocks efficient single-pass prefix sum (SAM technique), lock-free data structures, multi-threadgroup coordination. vello/piet-gpu abandoned single-pass prefix sum on Metal. Tree-reduction alternatives achieve only 2/3 of memcpy throughput.
+**Tags**: device-scope-barrier,memory-ordering,limitation,cross-threadgroup,prefix-sum
+
+## Finding 683: Metal provides 18+ environment variables for fine-grained validation. Key: MTL_DEBUG_LAYER (API validation), MTL_SHADER_VALIDATION (GPU validation), MTL_SHADER_VALIDATION_FAIL_MODE (zerofill/allow), MTL_SHADER_VALIDATION_RESOURCE_USAGE (missing useResource/useHeap), MTL_SHADER_VALIDATION_STACK_OVERFLOW (recursive calls). Per-pipeline control via ENABLE_PIPELINES/DISABLE_PIPELINES using pipeline labels. Visual debugging: VALIDATE_LOAD_ACTIONS=1 replaces DontCare with fuchsia; VALIDATE_STORE_ACTIONS=1 writes checkerboard pattern.
+**Confidence**: verified
+**Source**: METALVALIDATION(1) man page
+**Evidence**: MetalValidation(1) man page documents all variables. MTL_DEBUG_LAYER_ERROR_MODE defaults to assert, can be nslog or ignore. MTL_SHADER_VALIDATION_DUMP_PIPELINES=1 logs pipeline UIDs for selective validation. MTL_SHADER_VALIDATION_REPORT_TO_STDERR redirects to stderr.
+**Tags**: validation,environment-variables,debugging,per-pipeline,visual-debugging
+
+## Finding 666: Residency management is mandatory for all indirectly-accessed resources in argument buffers. Accessing a non-resident resource causes GPU restarts and command buffer failures. For compute encoders, use computeEncoder.useResource(resource, usage:). The useHeap() API reduces overhead to a single call for all resources on a heap.
+**Confidence**: verified
+**Source**: Explore bindless rendering in Metal - WWDC21
+**Evidence**: Metal 3 added enhanced shader validation detecting missing resource residency during execution, reporting shader function name, file/line, resource label, size, and residency status. Batch residency via [encoder useHeap:heap] replaces individual useResource calls.
+**Tags**: residency,argument-buffers,useResource,useHeap,compute,validation
+
+## Finding 664: Metal 3 (WWDC22) eliminated MTLArgumentEncoder for Tier 2 argument buffers. Applications directly write GPU addresses (uint64_t via gpuAddress for buffers, MTLResourceID via gpuResourceID for textures) into C structs. A compute kernel receives one argument buffer pointer and navigates the entire resource graph via pointer chasing, eliminating per-dispatch binding overhead entirely.
+**Confidence**: verified
+**Source**: Go bindless with Metal 3 - WWDC22
+**Evidence**: Host writes buffer.gpuAddress + offset as uint64_t; shader reads as constant T*. Shared header uses #if __METAL_VERSION__ to define CONSTANT_PTR(x) as either constant x* (shader) or uint64_t (CPU). For bindless compute, the argument table needs just one buffer binding: constant Scene& scene [[buffer(0)]] with scene.meshes[geometry_id].normals[0].
+**Tags**: argument-buffers,bindless,metal-3,compute,gpuAddress,tier-2
+
+## Finding 665: Argument buffer Tier 2 is required for bindless patterns and is available on Apple6 GPU family (A13+) and Mac2 GPU family. All Apple Silicon Macs support Tier 2. Tier 1 is limited to a single argument buffer; Tier 2 supports unbounded arrays with dynamic GPU-side indexing — up to 500,000 separate buffers or textures per draw/dispatch.
+**Confidence**: verified
+**Source**: Explore bindless rendering in Metal - WWDC21
+**Evidence**: Tier 1 limits: 64 buffers, 128 textures, 16 samplers per stage. Tier 2 virtually removes slot limits. Key differentiator: Tier 2 can use arrays of argument buffers indexed dynamically in shaders; Tier 1 cannot.
+**Tags**: argument-buffers,tier-1,tier-2,bindless,resource-limits,compute
+
 ## Finding 153: On Apple Silicon unified memory, MTLStorageModeShared buffers are directly accessible by both CPU and GPU at the same physical address. A ring buffer using atomic read/write indices enables CPU-GPU producer-consumer communication without copies. Only 32-bit integer atomics are natively supported on all Apple GPUs; FP32 atomics are emulated; 64-bit atomics require M2+.
 **Confidence**: verified
 **Source**: Metal Best Practices Guide: Triple Buffering
@@ -71,6 +227,42 @@
 **Source**: Coherent memory on Metal - gfx-rs GitHub
 **Evidence**: GitHub gfx-rs/gfx#2069: 'The coherency guarantees of MTLStorageModeShared for buffers are not clearly specified anywhere in Metal documentation, and intermittent transfer failures occur.' They moved away from relying on Shared mode coherency.
 **Tags**: coherency,shared-memory,undefined-behavior,limitation
+
+## Finding 698: Apple benchmarked MTLBinaryArchive on Fortnite (11,000+ PSOs, 1,700 in archive) on 6-core 3GHz Mac mini 32GB: first-compile was 1 minute 26 seconds; with binary archive, 3 seconds — a 28x speedup. The 1,700 PSOs represent the subset compiled during a test session out of 11,000+ total shader variants.
+**Confidence**: verified
+**Source**: Build GPU binaries with Metal - WWDC20
+**Evidence**: WWDC20 session 10615 case study. Fortnite compiled needed PSOs at load time to minimize hitching.
+**Tags**: binary-archive,benchmark,pipeline-creation-time,Fortnite,performance
+
+## Finding 699: In Metal 2.3 (WWDC20), binary archives required SAME GPU AND SAME OS BUILD; any mismatch caused fallback to runtime compilation. In Metal 3 (WWDC22), Apple introduced offline compilation and forward compatibility: Metal now "gracefully upgrades" archives during OS updates or at app install time, asynchronously in the background, ensuring forward compatibility with future OS versions.
+**Confidence**: verified
+**Source**: Target and optimize GPU binaries with Metal 3 - WWDC22
+**Evidence**: WWDC20: "only requirement is same GPU and same OS build." WWDC22: "Metal gracefully upgrades your binary archives during OS updates or at app install time, asynchronously in the background." Major evolution in archive durability.
+**Tags**: binary-archive,invalidation,compatibility,OS-update,Metal-3,offline-compilation
+
+## Finding 707: MTLBinaryArchive serialization/deserialization requires file-based URLs only — data URLs and in-memory approaches fail with MTLBinaryArchiveErrorInvalidFile. Apple engineers confirmed: "Currently this has to be a local file. Annoying but inexpensive to bounce through a temporary file." MoltenVK currently caches MSL source code only (not compiled binaries), with ~15ms per pipeline variant compilation on Metal.
+**Confidence**: verified
+**Source**: Explore use of Metal Binary Archives for Vulkan pipeline caching - MoltenVK
+**Evidence**: MoltenVK issue #1765 tested NSURLProtocol custom schemes and data URLs, both failing. MoltenVK discussion #1789 reports ~15ms per pipeline variant.
+**Tags**: binary-archive,MoltenVK,file-constraint,pipeline-caching
+
+## Finding 706: Binary archives are memory-mapped when loaded, reserving virtual address space. Pipelines from archives do NOT count against active app memory (unlike Metal Shader Cache). Archives can be released after pipeline states are created. Best practice: divide archives by usage pattern and release unused ones. Binary archives provide explicit lifecycle control that the automatic Metal Shader Cache does not.
+**Confidence**: verified
+**Source**: Build GPU binaries with Metal - WWDC20
+**Evidence**: WWDC20 10615: "Your binary archive file is memory mapped when loaded, meaning a virtual memory range is reserved...and released when the archive is released." Distinct from automatic shader cache, provides explicit control to collect, organize, and release compiled pipelines.
+**Tags**: binary-archive,memory-management,memory-mapped,virtual-memory,lifecycle
+
+## Finding 700: MTLPipelineOption.failOnBinaryArchiveMiss causes pipeline state creation to return nil instead of falling back to runtime compilation when pipeline not found in archives. Enables deterministic behavior: apps detect missing pipelines explicitly rather than incurring unpredictable compilation pauses. Useful for validating all needed pipelines are pre-cached.
+**Confidence**: verified
+**Source**: Build GPU binaries with Metal - WWDC20
+**Evidence**: WWDC20 10615 and WWDC21 10229 both document this. If binaryArchives set and pipeline found: returns immediately. Not found + failOnBinaryArchiveMiss: returns nil. Not found without flag: falls back to MTLCompilerService runtime compilation.
+**Tags**: binary-archive,pipeline-caching,failOnBinaryArchiveMiss,deterministic
+
+## Finding 702: Flutter's binary archive prototype showed disappointing gains. The bottleneck was shader compilation (SKSL to MSL to MTLLibrary translation), NOT PSO creation from pre-compiled libraries. Caching binary archives did not measurably reduce GrMtlPipelineStateBuilder::finalize time. Critical insight: binary archives only help when GPU binary compilation is the bottleneck, not when shader source translation dominates.
+**Confidence**: verified
+**Source**: Flutter Metal Binary Archive Prototype PR #23914
+**Evidence**: Flutter engine PR #23914 by chinmaygarde. Archives serialized as flutter_engine_<version>_<skia_version>_<index>.metallib. Testing showed primary jank source was shader library construction.
+**Tags**: binary-archive,flutter,practical-challenges,shader-compilation
 
 ## Finding 155: Metal 3.2 introduced coherent(device) qualifier enabling cross-threadgroup visibility when combined with atomic_thread_fence(memory_order_seq_cst, thread_scope_device). Before 3.2, Metal had NO device-scope atomic barriers — threadgroup_barrier(mem_flags::mem_device) actually operated at threadgroup scope only.
 **Confidence**: high
@@ -95,6 +287,12 @@
 **Source**: Metal Best Practices Guide: Command Buffers
 **Evidence**: Metal Best Practices Guide: 'Submit the fewest possible command buffers per frame without underutilizing the GPU. Preferred: submit one command buffer per frame. Acceptable: one to two maximum.' Tech Talk: 'Batch more encoders together into each command buffer before making that call to commit.'
 **Tags**: best-practice,batching,command-buffer
+
+## Finding 687: MTLCommandBuffer tracks 6 status values: NotEnqueued(0), Enqueued(1), Committed(2), Scheduled(3), Completed(4), Error(5). When Error, the error property has NSError in MTLCommandBufferError domain. Best practice: (1) always use addCompletedHandler to check status/error, (2) enable .encoderExecutionStatus for production, (3) use commandBuffer.logs for shader diagnostics in dev. The ONLY documented recovery from fatal GPU error is to destroy and recreate the MTLCommandQueue.
+**Confidence**: verified
+**Source**: Metal Framework MTLCommandBuffer.h header
+**Evidence**: MTLCommandBuffer.h defines status progression: NotEnqueued->Enqueued->Committed->Scheduled->Completed|Error. Apple Developer Forums: "The only way to recover is mark a failure state, then destroy and recreate MTLCommandQueue next frame."
+**Tags**: error-handling,MTLCommandBufferStatus,lifecycle,recovery,best-practices
 
 ## Finding 133: The full Metal command submission path on Apple Silicon: CPU encodes commands via MTLCommandEncoder → commit() on MTLCommandBuffer → Metal driver populates shared memory work items → driver sends doorbell (0x83000000000002 for compute) to ASC coprocessor via RTKit mailbox → ASC firmware reads work queue ring buffer and interprets microsequence → GPU hardware executes compute shader → stamp objects increment, event IDs asserted back to CPU.
 **Confidence**: verified
@@ -126,6 +324,36 @@
 **Evidence**: Metal Programming Guide: 'Command buffer and command encoder objects are transient and designed for a single use. They are very inexpensive to allocate and deallocate.' Confirmed by wgpu profiling (kvark): driver coalesces encoders from same buffer.
 **Tags**: encoder,overhead,transient,coalescing
 
+## Finding 668: Metal 3 extended indirect command buffer support to include compute dispatches (not just render commands). A compute kernel can encode compute_command dispatches into an ICB, which another compute pass executes. This enables GPU-driven compute-to-compute chains where one kernel dynamically generates workload for the next, all without CPU involvement.
+**Confidence**: verified
+**Source**: Modern Rendering with Metal - WWDC19
+**Evidence**: WWDC content states: Metal 3 now supports encoding compute dispatches, allowing you to build your compute dispatches on the GPU too. Compute ICBs can be built once and reused, saving CPU cycles. Example: culling kernel encodes per-patch tessellation factor compute dispatches into ICB.
+**Tags**: GPU-driven,compute-dispatch,indirect-command-buffer,metal-3,compute-to-compute
+
+## Finding 671: The documented ICB maximum is 16,384 commands, but Apple's own sample code creates ICBs with 65,536 draw calls running without validation errors. The practical limit is governed by maxBufferLength and per-command memory footprint, not a hard 16,384 cap. For exceeding limits, execute multiple ICBs via separate executeCommandsInBuffer() calls.
+**Confidence**: verified
+**Source**: MultiDrawIndirect and Metal - Tellusim Technologies
+**Evidence**: Tellusim reported the 16,384 limit. WebGPU issue #2612 analyzed: maxBufferLength >= 40 + maxCommandCount * ((2 + 2 * maxVertexBufferBindCount + maxFragmentBufferBindCount) * 8). Apple sample "Encoding Indirect Command Buffers on the GPU" uses 65,536 commands.
+**Tags**: indirect-command-buffer,maxCommandCount,16384,limits,ICB
+
+## Finding 672: On Apple Silicon (M1), ICBs perform better for many small dispatches but worse for fewer large ones. Small draws (4/2 primitives): ICB 48M ops vs CPU loop 20M (2.4x faster). Large draws (>200 primitives): ICB 1.05B vs loop 1.49B (1.4x slower). ICBs gave 39% overall improvement in GravityMark benchmark. The crossover means ICBs are most beneficial for GPU-driven culling patterns with many small work items.
+**Confidence**: verified
+**Source**: MultiDrawIndirect and Metal - Tellusim Technologies
+**Evidence**: Tellusim GravityMark benchmark on M1. For comparison, AMD Radeon Vega 56 was 18% slower with ICBs but gained CPU availability.
+**Tags**: indirect-command-buffer,performance,M1,Apple-Silicon,benchmark
+
+## Finding 673: ICBs support two reuse patterns: (1) encode-once-execute-many — commands built once, executed repeatedly across frames without re-encoding (saves CPU+GPU), and (2) per-frame re-encoding — resetWithRange() called before compute kernels re-populate each frame (needed for dynamic workloads like culling). The atomic counter in the indirect range buffer is also reset each frame for pattern 2.
+**Confidence**: verified
+**Source**: MTLIndirectCommandBuffer - Apple Developer Documentation
+**Evidence**: resetWithRange() available since iOS 12 / macOS 10.14. ICB is a persistent GPU resource created via device.makeIndirectCommandBuffer(descriptor:maxCommandCount:options:).
+**Tags**: indirect-command-buffer,resetWithRange,reuse,patterns,compute
+
+## Finding 669: Using ICBs for GPU-side encoding eliminates CPU-GPU synchronization entirely. WWDC22 recommends: "Using indirect command buffer, you can move encoding of the next batch directly on the GPU, avoiding any need for synchronization." Concurrent dispatch (MTLDispatchTypeConcurrent) processing 3 images in parallel showed 70% faster performance vs sequential.
+**Confidence**: verified
+**Source**: Scale compute workloads across Apple GPUs - WWDC22
+**Evidence**: Solutions hierarchy for reducing sync overhead: (1) use MTLSharedEvents instead of CPU waits, (2) pipeline by encoding multiple batches ahead, (3) use ICBs for GPU-side encoding, (4) use concurrent dispatches to interleave independent work.
+**Tags**: GPU-driven,synchronization,indirect-command-buffer,concurrent-dispatch,pipelining
+
 ## Finding 149: Metal Indirect Command Buffers (ICBs) enable GPU-encoded compute dispatches. A compute kernel fills an ICB, then executeCommandsInBuffer runs the commands. Range indirection via executeCommands(in:indirectBuffer:indirectBufferOffset:) allows GPU-controlled selection of which commands and how many to execute. Limit: 16,384 commands per ICB.
 **Confidence**: verified
 **Source**: MTLIndirectCommandBuffer - Apple Developer Documentation
@@ -138,11 +366,23 @@
 **Evidence**: Metal execution model: only one encoder active per command buffer at a time, endEncoding() must be called before creating a new encoder. ICB pattern: Pass 1 (compute) writes ICB → Pass 2 (compute) executes ICB. Both pre-encoded by CPU.
 **Tags**: ICB,limitation,encoder,execution-model
 
+## Finding 670: MTLIndirectComputeCommand supports: setComputePipelineState(), setKernelBuffer(offset:at:), concurrentDispatchThreadgroups(threadsPerThreadgroup:), concurrentDispatchThreads(threadsPerThreadgroup:), setThreadgroupMemoryLength(), setBarrier(), clearBarrier(), and reset(). The ICB descriptor uses maxKernelBufferBindCount for max kernel buffers per command.
+**Confidence**: verified
+**Source**: MTLIndirectComputeCommand - Apple Developer Documentation
+**Evidence**: MTLIndirectCommandBufferDescriptor properties for compute: commandTypes (.concurrentDispatchThreads or .concurrentDispatchThreadgroups), inheritBuffers, inheritPipelineState, maxKernelBufferBindCount. When inheritPipelineState=false, each command must call setComputePipelineState() individually.
+**Tags**: indirect-command-buffer,compute,MTLIndirectComputeCommand,API
+
 ## Finding 148: dispatchThreadgroups(indirectBuffer:indirectBufferOffset:threadgroupsPerGrid:) reads the number of threadgroups from a GPU-accessible buffer, enabling GPU-generated grid sizes. The threadgroup size is still CPU-specified. Available since iOS 12/macOS 10.14.
 **Confidence**: verified
 **Source**: MTLComputeCommandEncoder - Apple Developer Documentation
 **Evidence**: Apple Metal documentation. The indirect buffer contains three uint32 values (threadgroupsPerGrid x, y, z). A compute kernel can write these values and the next dispatch reads them.
 **Tags**: indirect-dispatch,GPU-driven,grid-size
+
+## Finding 696: The ~25-30M iteration ceiling observed on M4 is best explained by the GPU watchdog's wall-clock time limit intersecting with per-iteration execution time, NOT a hardcoded iteration counter. Evidence: (1) firmware timeout is time-based per Asahi, (2) Metal compiler does NOT statically analyze loop counts for termination, (3) developers report "a few seconds" not fixed iteration count, (4) complex loop bodies hit the ceiling with fewer iterations. Three-tier timeout architecture: firmware (40-50ms per preemption), OS-level (5-60s), DRM scheduler (100s).
+**Confidence**: medium
+**Source**: Synthesis: Asahi GPU driver, WWDC 2020, wgpu issues, developer forums
+**Evidence**: Synthesis: Asahi firmware cl_kill_timeout_ms=50 for compute kill. DRM scheduler timeout 100s. Developer forums report ~5 seconds before recovery. wgpu confirms Metal treats infinite loops as UB (optimized away) not detected at compile time. WWDC 2020 categorizes timeouts as runtime events.
+**Tags**: timeout,iteration-ceiling,root-cause,watchdog,wall-clock,M4,empirical
 
 ## Finding 160: metal-cpp has zero measurable overhead vs Objective-C due to inlining of C++ function calls. However, it breaks ARC (Automatic Reference Counting), requiring manual retain/release. It registers ~1100 selectors at init time. C++ objects are NOT eligible for ARC.
 **Confidence**: verified
@@ -161,6 +401,12 @@
 **Source**: Recommend objc2-metal instead of metal - GitHub
 **Evidence**: GitHub issue #339 on metal-rs explains deprecation. objc2-metal provides Retained<T> for safe reference counting and complete Metal API coverage. LambdaClass demonstrated Metal FFT from Rust using the older metal-rs.
 **Tags**: Rust,objc2-metal,metal-rs,deprecated
+
+## Finding 695: macOS implements GPU recovery producing ".gpuRestart" kernel reports when GPU is reset after hang/timeout. Sequence: GPU hang detected -> gpuRestart event -> GPU reset attempted -> if recovery fails, watchdog timeouts on WindowServer follow (40-120 seconds) -> kernel panic and reboot. The firmware's agx_recovery task handles resets; "GPU faults seem to be quite poorly handled as a stop-the-world process."
+**Confidence**: high
+**Source**: Apple GPU (AGX) - Asahi Linux Documentation
+**Evidence**: Asahi documentation: firmware runs agx_recovery task, "GPU faults are quite poorly handled as stop-the-world." Apple Community forums document: gpuRestart -> watchdog timeouts -> kernel panic sequence.
+**Tags**: macOS,GPU-recovery,gpuRestart,watchdog,firmware,AGX,kernel-panic
 
 ## Finding 163: Multiple compute passes should be sequential compute encoders within a single command buffer. Each encoder can contain multiple kernel dispatches with different pipelines and bindings. Between encoders, Metal inserts implicit barriers — no explicit sync needed.
 **Confidence**: verified
@@ -228,6 +474,18 @@
 **Evidence**: Apple Developer Forums: 'In Apple GPUs, the case where concurrent dispatches improve overall compute performance is rare.' Apple's TBDR architecture already handles work distribution efficiently across GPU cores.
 **Tags**: concurrent,performance,Apple-GPU,TBDR
 
+## Finding 684: Shader Validation has HIGH performance and memory overhead — pipelines take longer to compile and ALL Metal commands go through validation. When enabled, maxTotalThreadsPerThreadgroup and threadExecutionWidth may return DIFFERENT values. Does NOT support binary function pointers or dynamic linking. On MTLGPUFamilyMac1/Apple5 and older, global memory access of pointers from argument buffers is NOT checked. Since Xcode 13, supports ICBs and dynamic libraries.
+**Confidence**: verified
+**Source**: Debug GPU-side errors in Metal - WWDC20
+**Evidence**: WWDC20 session 10616 warns about changed maxTotalThreadsPerThreadgroup values. ICB support enabled via MTL_SHADER_VALIDATION_GPUOPT_ENABLE_INDIRECT_COMMAND_BUFFERS=1.
+**Tags**: validation,shader-validation,performance-overhead,limitations,threadgroup
+
+## Finding 680: waitUntilCompleted blocks CPU until GPU finishes AND all completion handlers execute. Apple recommends MTLSharedEvent over waitUntilCompleted: "MTLSharedEvents have lower overhead and can help reduce timeline gaps." The recommended pattern for resource management is DispatchSemaphore with addCompletedHandler rather than blocking.
+**Confidence**: verified
+**Source**: Scale compute workloads across Apple GPUs - WWDC22
+**Evidence**: WWDC22 "Scale compute workloads across Apple GPUs" explicitly recommends SharedEvents over waitUntilCompleted. Completion handlers fire "immediately after GPU finishes" on Metal's internal serial dispatch queue (com.Metal.CompletionQueueDispatch). Handlers should "perform quickly" — expensive work deferred to another thread.
+**Tags**: synchronization,waitUntilCompleted,completedHandler,MTLSharedEvent,overhead
+
 ## Finding 141: Metal provides three sync levels: MTLFence synchronizes across passes (encoders) within the SAME command buffer. MTLEvent synchronizes across different command buffers within the same queue. MTLSharedEvent synchronizes across different queues or between CPU and GPU. MTLSharedEvent also enables cross-process synchronization.
 **Confidence**: verified
 **Source**: Resource synchronization - Apple Developer Documentation
@@ -239,4 +497,10 @@
 **Source**: memoryBarrier(scope:) - Apple Developer Documentation
 **Evidence**: Metal docs: memoryBarrier(scope:) 'Creates a memory barrier that enforces the order of write and read operations for specific resource types.' Available since macOS 10.14. Between encoders (endEncoding → new encoder), ordering is implicit.
 **Tags**: memory-barrier,concurrent,synchronization
+
+## Finding 676: Creating command buffers with commandBufferWithUnretainedReferences yields 2% CPU reduction by eliminating ARC overhead. Combined with untracked heap resources (hazardTracking = .untracked) and manual fences, this eliminates false sharing where Metal conservatively serializes access to heap sub-resources, improving GPU parallelism for concurrent compute dispatches.
+**Confidence**: verified
+**Source**: Go bindless with Metal 3 - WWDC22
+**Evidence**: WWDC22 benchmarked: unretainedReferences = 2% CPU savings. Untracked heaps solve false sharing: heap subresources appear as single resource to Metal, causing conservative scheduling. Solution: hazardTracking .untracked + MTLFence for ordering. Memory barriers after fragment stage are very high cost (similar to render pass split); Apple GPUs disable them entirely.
+**Tags**: unretained-references,untracked-heaps,false-sharing,compute,performance,fences
 

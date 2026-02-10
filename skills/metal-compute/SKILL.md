@@ -33,7 +33,7 @@ Metal 4 introduces significant architectural changes including unified encoders 
 
 ## Key Knowledge Areas
 
-The knowledge base contains 40 findings across these Metal compute topics:
+The knowledge base contains 84 findings across these Metal compute topics:
 
 - **Command Submission Architecture**: Full encode-commit-execute path, submission overhead (~2.5ms minimum), GPU power cycling behavior
 - **Command Buffer Patterns**: Batching strategies (1-2 buffers/frame), multi-pass compute within single buffer, serial vs concurrent queue dispatch
@@ -49,6 +49,16 @@ The knowledge base contains 40 findings across these Metal compute topics:
 - **Multi-Queue Submission**: When multiple MTLCommandQueues help (hiding bubbles, async upload/compute/readback)
 - **Language Bindings**: metal-cpp zero overhead, PyObjC bridge costs, Rust metal-rs deprecation
 - **Atomic Patterns**: CPU-GPU shared buffer ring buffers, memory ordering guarantees, coherent device buffers
+- **Argument Buffers & Bindless**: Tier 2 argument buffers, no MTLArgumentEncoder needed since Metal 3, mandatory residency for indirectly-accessed resources, unretained references and untracked heaps (2% CPU reduction) (Findings #664-#666, #676)
+- **Indirect Command Buffers (Compute)**: Metal 3 extended ICB to compute, MTLIndirectComputeCommand API, sync elimination, 16K documented limit (65K actual), reuse patterns, GPU-autonomous compute DAGs via ICB + indirect dispatch (Findings #668-#674)
+- **GPU-Driven Pipelines**: Fully GPU-driven multi-stage compute with zero CPU sync, GPU-side kernel chaining via MTLEvent (Metal 2.1) (Findings #667, #674)
+- **Metal 4 Argument Tables**: MTL4ArgumentTable replacing argument buffers, new binding model (Finding #675)
+- **MTLSharedEvent Depth**: Cross-process timeline signaling, <50us re-dispatch latency, MTLEvent for GPU-side sync without CPU, waitUntilCompleted vs MTLSharedEvent overhead comparison (Findings #677-#680, #692-#693)
+- **Metal Shader Validation**: MTL_SHADER_VALIDATION=1 environment variable, out-of-bounds detection, 18+ validation env vars, validation overhead characteristics (Findings #682-#684)
+- **GPU Error Recovery**: AGX firmware error classification, 10 MTLCommandBufferError codes, enhanced per-encoder diagnostics (encoderExecutionStatus), command buffer 6 status values, macOS .gpuRestart recovery mechanism (Findings #681, #685-#690, #695-#696)
+- **AGX Firmware Timeout**: Two compute timeout parameters, DRM scheduler 100-second Linux timeout, EventMsg::Timeout discriminant 4, kernel iteration ceiling root cause (watchdog wall-clock time) (Findings #688-#689, #694, #696)
+- **Binary Archives**: MTLBinaryArchive for compute pipeline caching, Fortnite benchmark results, compatibility constraints, miss detection, offline Metal 3 compilation, memory management, file size constraints (Findings #697-#702, #706-#707)
+- **Memory Ordering Limitations**: MSL atomic memory ordering is relaxed-only, no device-scoped barriers (only major API lacking this), CPU-GPU ring buffer ordering (atomics alone insufficient) (Findings #703-#705)
 
 ## How to Query Knowledge
 
@@ -61,7 +71,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/kb skill metal-compute
 ${CLAUDE_PLUGIN_ROOT}/scripts/kb detail <finding-id>
 ```
 
-The `search` command uses BM25-weighted FTS5 ranking, prioritizing claim text over evidence. The `skill` command returns all 40 metal-compute findings in table format.
+The `search` command uses BM25-weighted FTS5 ranking, prioritizing claim text over evidence. The `skill` command returns all 84 metal-compute findings in table format.
 
 ## Common Patterns & Quick Answers
 
@@ -94,6 +104,36 @@ A: No, true persistent kernels are not feasible due to GPU watchdog timeouts. Re
 
 **Q: How does MLX create Metal compute pipelines?**
 A: MLX calls device->newComputePipelineState() for simple kernels. mx.fast.metal_kernel() creates a NEW Metal library per kernel instantiation. (Findings #171-172, verified)
+
+**Q: How do indirect command buffers work for compute?**
+A: Metal 3 extended ICBs to compute dispatches. Use MTLIndirectComputeCommand to encode compute dispatches from the GPU. ICBs eliminate CPU-GPU sync for dispatch parameter updates. Documented limit is 16K commands, but actual capacity is 65K. ICBs can be reused across frames. Combine with indirect dispatch for fully GPU-autonomous compute DAGs. (Findings #668-#674)
+
+**Q: Can I build fully GPU-driven compute pipelines?**
+A: Yes. Combine ICBs with indirect dispatch and argument buffers for multi-stage compute with zero CPU sync. GPU writes dispatch parameters → next stage reads them via indirect dispatch. MTLEvent enables GPU-side kernel chaining (Metal 2.1) without returning to CPU. (Findings #667, #674)
+
+**Q: How do binary archives improve pipeline creation?**
+A: MTLBinaryArchive serializes compiled pipeline state objects to disk, eliminating recompilation on launch. Fortnite's Metal port uses binary archives extensively. Caveats: archives are device-specific, must handle cache misses gracefully (fall back to runtime compilation), and have file size constraints. Metal 3 added full offline compilation support. (Findings #697-#702, #706-#707)
+
+**Q: What validation tools are available for Metal shaders?**
+A: Set MTL_SHADER_VALIDATION=1 for out-of-bounds buffer/texture access detection. There are 18+ Metal validation environment variables covering different aspects. Validation adds measurable overhead, so disable for release builds. Enhanced command buffer errors with encoderExecutionStatus provide per-encoder diagnostics. (Findings #682-#684, #686)
+
+**Q: What are the GPU error codes and recovery mechanisms?**
+A: MTLCommandBufferError defines 10 error codes. AGX firmware classifies errors (timeout, fault, etc.). Enhanced errors via encoderExecutionStatus show which specific encoder failed. On macOS, GPU recovery generates .gpuRestart kernel reports. Command buffers have 6 lifecycle status values tracking from creation through completion or error. (Findings #685-#690, #695)
+
+**Q: Why is the Metal compiler's loop behavior important?**
+A: Metal treats infinite loops as undefined behavior and may optimize them to no-ops. The compiler aggressively unrolls loops with stack/threadgroup access. The ~25-30M iteration ceiling is caused by watchdog wall-clock time (not iteration count), so loop body complexity directly affects the limit. (Findings #691, #694, #696)
+
+**Q: What's the real root cause of the ~25-30M iteration ceiling?**
+A: The GPU watchdog monitors wall-clock time, not iteration count. Longer loop bodies hit the timeout with fewer iterations. AGX firmware has two compute timeout parameters. The DRM scheduler in Linux uses a 100-second timeout. There is NO public API to configure or extend the Metal timeout. (Findings #688, #696)
+
+**Q: How does Metal 4 change resource binding?**
+A: Metal 4 replaces argument buffers with MTL4ArgumentTable, a new binding model. Resources must be explicitly added to MTLResidencySet — setBuffer/setTexture no longer auto-retain. Unretained references and untracked heaps reduce CPU overhead by ~2%. (Findings #675, #676)
+
+**Q: What are the memory ordering limitations in Metal?**
+A: MSL atomics support only relaxed ordering — no acquire/release/seq_cst. Metal is the only major GPU API lacking device-scoped barriers. For CPU-GPU ring buffers, atomics alone are insufficient for ordering; use MTLSharedEvent or command buffer completion for reliable synchronization. (Findings #703-#705)
+
+**Q: How fast is MTLSharedEvent re-dispatch?**
+A: MTLSharedEvent re-dispatch latency is <50 microseconds, making it viable for fine-grained GPU-CPU coordination. Compare with waitUntilCompleted which has higher overhead due to completion handler mechanisms. MTLSharedEvent also supports cross-process signaling for multi-app GPU coordination. (Findings #677, #680, #692)
 
 ## Understanding Command Buffer Lifecycle
 
@@ -168,6 +208,30 @@ Use `/gpu-forge:investigate metal-compute "<specific-topic>"` to research new ar
 - metal-cpp: C++ binding headers and samples
 - Philip Turner's metal-benchmarks: Empirical overhead measurements
 
+## Finding ID Reference
+
+Key findings by topic area (investigation #23):
+- **Argument buffers & bindless**: #664, #665, #666
+- **GPU-driven pipelines**: #667
+- **Indirect command buffers (compute)**: #668, #669, #670, #671, #672, #673, #674
+- **Metal 4 argument tables**: #675
+- **Unretained references**: #676
+- **MTLSharedEvent depth**: #677, #678, #679, #680
+- **AGX firmware errors**: #681
+- **Shader validation**: #682, #683, #684
+- **Error codes & recovery**: #685, #686, #687
+- **Firmware timeout**: #688, #689, #690
+- **Compiler loop behavior**: #691
+- **MTLSharedEvent re-dispatch**: #692, #693
+- **Kernel iteration ceiling**: #694, #696
+- **GPU recovery mechanism**: #695
+- **Binary archives**: #697, #698, #699, #700, #701, #702
+- **Memory ordering limitations**: #703, #704, #705
+- **Offline compilation**: #706, #707
+
+Use `kb detail <id>` to retrieve full finding details including source URLs and confidence levels.
+
 ## Version History
 
+- 2026-02-10: Updated with 44 new findings from investigation #23 (84 total)
 - 2026-02-09: Initial skill creation with 40 findings from knowledge base

@@ -1,4 +1,100 @@
-# msl-kernels — All Findings (49)
+# msl-kernels — All Findings (95)
+
+## Finding 721: 16-bit ops have 2x throughput of 32-bit on Apple GPU: FADD16/FFMA16 achieve 1,1 throughput cycles (~2.17 latency) while FADD32/FFMA32 take 2,1 throughput cycles (~2.21 latency). IADD16 = 1,1 throughput; IMUL16 = 4,4 cycles. Register dependency: 16-bit chains incur 0.56-cycle penalty vs 0.84-cycle for 32-bit. The ~208KB register file with ~3072 max threads means 16-bit types directly halve register consumption, potentially doubling occupancy.
+**Confidence**: verified
+**Source**: metal-benchmarks - Apple GPU microarchitecture
+**Evidence**: metal-benchmarks: "FADD16, FFMA16: 1,1 throughput; FADD32, FFMA32: 2,1 throughput." "16-bit register dependencies: 0.56-cycle penalty vs 0.84-cycle for 32-bit."
+**Tags**: 16-bit,32-bit,throughput,alu,register-pressure,occupancy,performance
+
+## Finding 745: When simdgroup_matrix was introduced on A14, Apple reported: 37% average improvement for general matrix multiplication, 36% for CNN convolutions, 22% for full ML networks (Inception V3) — all over A13 (which lacked simdgroup_matrix). Basic 16x16 matmul pattern: 2 simdgroups, each computing 8x16 strip, K=16 loop with 2 iterations. Pattern: for k in 0..K step 8: simdgroup_load from threadgroup, simdgroup_multiply_accumulate, simdgroup_store.
+**Confidence**: verified
+**Source**: Discover Metal enhancements for A14 Bionic - Apple Tech Talk
+**Evidence**: Apple Tech Talk "Discover Metal enhancements for A14 Bionic": "General Matrix Multiplication: 37% improvement. CNN Convolutions: 36%. Inception V3: 22%."
+**Tags**: simdgroup_matrix,A14,37-percent,matmul,CNN,introduction
+
+## Finding 726: Standard float atomic add workaround in MSL: (1) atomic_load_explicit as uint, (2) as_type<float> reinterpret, (3) float operation, (4) as_type<uint> back, (5) atomic_compare_exchange_weak_explicit, (6) loop until success. Apple's "Modern Rendering with Metal" example validates this by reinterpreting threadgroup variables between atomic_uint* and float*. Alternative: fixed-point scaling (multiply by INT_MAX, use atomic_fetch_add on int, divide back).
+**Confidence**: verified
+**Source**: How to do atomic operations on real types - Apple Developer Forums
+**Evidence**: Apple Forums thread 69703 and gpuweb#2377 confirm Apple's own code uses the reinterpret pattern. Fixed-point alternative: "multiply by large number, atomic_fetch_add_explicit on int, divide at end."
+**Tags**: atomics,float,cas-loop,compare-exchange,as_type,workaround,pattern
+
+## Finding 743: At ISA level, Apple G13 (M1) implements ballot via icmp_ballot (integer comparison) and fcmp_ballot (float comparison) instructions. Each produces 32-bit result where each bit indicates which threads satisfied the condition, broadcast to all active threads. Quad-scope variants: icmp_quad_ballot, fcmp_quad_ballot for 4-thread quad groups. Execution mask managed via stack: pop_exec, if_icmp, while_icmp, jmp_exec_any, jmp_exec_none — per-thread activity counters.
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference (Dougall Johnson)
+**Evidence**: Dougall Johnson G13 docs: "icmp_ballot: Compares integer values across active threads, producing 32-bit result." Execution mask: "pop_exec: Decrements per-thread counter in r0l; threads inactive when counter reaches zero."
+**Tags**: G13,ISA,ballot,icmp_ballot,fcmp_ballot,execution-mask
+
+## Finding 722: Apple M1 (G13) GPU has classical threadgroup memory with 32 independent banks. Stride-2 access hits every second bank; stride-4 hits every fourth; stride-32 causes all threads to access same bank. Performance degradation proportional to bank conflicts, matching standard GPU banking pattern.
+**Confidence**: high
+**Source**: The mystery of Apple M3 on-chip shared memory
+**Evidence**: Microbenchmark study: "this is a classical shared memory with 32 independent banks." Using stride of 2 hits only every second bank so performance goes down. Penalty similar up to stride 32.
+**Tags**: m1,threadgroup-memory,bank-conflicts,32-banks,simd,performance
+
+## Finding 729: On Apple Family 9 GPUs (M3/A17 Pro+), threadgroup memory as software cache may be counterproductive. Dynamic Caching shares cache hierarchy with device/constant memory. If working set fits in cache, reading directly from device/constant buffers avoids copy latency. Apple: "if threadgroup memory is primarily a software-managed cache, it may be more performant to read directly from buffers instead."
+**Confidence**: verified
+**Source**: Learn performance best practices for Metal shaders - Apple Tech Talks
+**Evidence**: Apple Tech Talk 111373: "threadgroup, device, constant memory types are using the same cache hierarchy." "Operate directly with device or constant buffers to avoid latencies involved with copying to threadgroup memory."
+**Tags**: threadgroup-memory,dynamic-caching,m3,a17-pro,apple-family-9,cache-hierarchy
+
+## Finding 723: M3 (G15) GPU threadgroup memory exhibits fundamentally different banking from M1's classical 32-bank model. Store-only kernels show bank conflicts at strides 8, 16, 24, 32 but no penalty for even strides; load-accumulate shows penalty for even strides yet stride-32 performs well; additional semi-cyclical effects. Dynamic Caching has changed the underlying memory organization — standard padding techniques may need re-evaluation.
+**Confidence**: high
+**Source**: The mystery of Apple M3 on-chip shared memory
+**Evidence**: Researcher described M3 results as "a hot mess" with inconsistent patterns. "I have no idea how this memory is organised in the background."
+**Tags**: m3,threadgroup-memory,bank-conflicts,dynamic-caching,non-classical
+
+## Finding 737: MLX Steel decomposes GEMM into hierarchical tiles: block-level (BM x BN x BK, typically 32x32x16 or 64x64x16), distributed across WM x WN SIMD groups (typically 2x2 = 4 simdgroups = 128 threads). Each SIMD group handles TM x TN 8x8 tiles where TM=BM/(8*WM), TN=BN/(8*WN). For BM=BN=64: TM=TN=4, meaning 16 accumulator simdgroup_matrix objects per SIMD group. Inner K loop steps by 8 (kFragSize). Serpentine iteration order improves register reuse.
+**Confidence**: verified
+**Source**: MLX Steel GEMM MMA Implementation (mma.h)
+**Evidence**: MLX mma.h: TM = BM/(kFragSize*WM), TN = BN/(kFragSize*WN). Inner loop: for kk in 0..BK step kFragSize: simdgroup_barrier, Atile.load, Btile.load, tile_matmad. Serpentine: n_serp = (m%2) ? (N-1-n) : n.
+**Tags**: mlx,steel,gemm,tiling,simdgroup_matrix,BM,BN,BK,serpentine
+
+## Finding 738: MLX Steel adds explicit threadgroup memory padding for bank conflict avoidance: tgp_padding = 16/sizeof(T) — 4 elements for float32, 8 for float16/bfloat16. Non-transposed A allocation: BM * (BK + padding). Transposed A: BK * (BM + padding). Padding shifts successive rows so different SIMD lanes accessing same column but different rows hit different banks.
+**Confidence**: verified
+**Source**: MLX Steel GEMM Kernel Header (gemm.h)
+**Evidence**: MLX gemm.h: STEEL_CONST short tgp_padding_a = 16/sizeof(T); tgp_mem_size_a = transpose_a ? BK*(BM+tgp_padding_a) : BM*(BK+tgp_padding_a).
+**Tags**: mlx,steel,threadgroup-memory,padding,bank-conflicts,simdgroup_matrix
+
+## Finding 730: Complete MSL atomic functions (all memory_order_relaxed only): atomic_store_explicit, atomic_load_explicit, atomic_exchange_explicit, atomic_compare_exchange_weak_explicit, atomic_fetch_{add,sub,and,or,xor,min,max}_explicit. Work on atomic_int/atomic_uint in device and threadgroup address spaces. _explicit suffix mandatory. MSL requires explicit atomic types — cannot perform atomics on regular int/uint (unlike HLSL/GLSL/SPIR-V untyped atomics).
+**Confidence**: verified
+**Source**: Atomics proposal - gpuweb/gpuweb
+**Evidence**: gpuweb#1360: "Metal 1.0 supports: atomic_store/load/exchange/compare_exchange_weak, atomic_fetch_{and,or,add,max,min,sub,xor}_explicit." MSL spec ch02: atomic types "restricted solely to Metal atomic functions," a "subset of C++14 atomic and synchronization functions."
+**Tags**: atomics,function-list,c++14,explicit,complete-reference
+
+## Finding 724: MSL atomic functions exclusively support memory_order_relaxed — no acquire, release, or seq_cst available. Significant departure from C++ atomics and other GPU APIs (GLSL/SPIR-V/HLSL). Atomics guarantee only atomicity and modification order consistency — no synchronization with non-atomic memory ops. Thread synchronization must use threadgroup_barrier() instead.
+**Confidence**: verified
+**Source**: Atomics proposal - gpuweb/gpuweb
+**Evidence**: WebGPU atomics proposal (gpuweb#1360): "Atomic functions only support memory_order_relaxed (no synchronization with other memory operations)." "The biggest difference from SPIR-V is that atomic types are required."
+**Tags**: atomics,memory-order,relaxed-only,synchronization,msl-spec,limitation
+
+## Finding 749: MTLCompileOptions.mathMode (Metal 3) replaces Boolean fastMathEnabled with 3 values: safe (strict IEEE 754), relaxed (aggressive optimizations honoring INF/NaN — no signed zeros, allows reciprocal/reassociation, FP contract fast), fast (most aggressive, may violate IEEE 754 INF/NaN). Companion mathFloatingPointFunctions controls FP32 precision separately. preserveInvariance ensures consistent position calculations.
+**Confidence**: verified
+**Source**: MTLMathMode - Apple Developer Documentation
+**Evidence**: Apple docs: "mathMode allows selecting precision more granularly, replacing fastMathEnabled." MTLMathMode.relaxed: "aggressive, potentially lossy assumptions while honoring Inf/NaN."
+**Tags**: MTLCompileOptions,mathMode,fastMathEnabled,IEEE754,precision,compiler
+
+## Finding 750: MTLLibraryOptimizationLevel: default (runtime performance) or size (binary size). maxTotalThreadsPerThreadgroup on pipeline descriptor (or [[max_total_threads_per_threadgroup(N)]] MSL attribute) lets compiler spill registers more efficiently by knowing max thread count at compile time — reducing register pressure, improving occupancy. Apple recommends setting when possible for better generated code.
+**Confidence**: verified
+**Source**: Metal Compute on MacBook Pro - Tech Talks
+**Evidence**: Tech Talk 10580: "compiler can spill registers more efficiently when max thread count known at pipeline creation time. Enable via maxThreadsPerThreadgroup or max_total_threads_per_threadgroup attribute."
+**Tags**: MTLCompileOptions,optimizationLevel,maxTotalThreadsPerThreadgroup,occupancy
+
+## Finding 754: llama.cpp benchmarks: Metal 4 tensor_ops on M5 showed ~2.4x speedup over simdgroup_matrix on M4 Max (Llama 8B Q4_0: 540 vs 247 t/s prompt processing). Optimal: 128x64x64 tiles, 4 simdgroups, tensor_inline mode. Device-to-SRAM direct is faster than staging through threadgroup memory. Limitations: PSO creation 1-2s per pipeline with tensor ops; K-dimension splitting needed for K>=4096.
+**Confidence**: verified
+**Source**: metal: initial Metal4 tensor API support - llama.cpp
+**Evidence**: llama.cpp PR #16634: "M5: Llama 8B Q4_0 ~2.4x (540 vs 247 t/s). Qwen3 0.6B F16 ~1.6x (4936 vs 3073 t/s)." "128x64x64 tile best. Device->SRAM faster than device->threadgroup. PSO 1-2s compilation."
+**Tags**: metal4,tensor_ops,M5,performance,2.4x,llama-cpp,neural-accelerator
+
+## Finding 753: Metal 4 Metal Performance Primitives (MPP) introduces tensor_ops::matmul2d. Requires #include <metal_tensor> and <MetalPerformancePrimitives/MPP.h>. matmul2d_descriptor(M, N, K, left_transpose, right_transpose, reduced_precision). Three execution modes: execution_thread (divergent control flow), execution_simdgroups<N> (N cooperating simdgroups), execution_threadgroup. Tensors use tensor_inline for direct device memory access. K must be multiple of 32 in macOS 26.1; dynamic_length_v<int> works around this.
+**Confidence**: verified
+**Source**: example_matmul_metal4 - Metal 4 tensor matmul example
+**Evidence**: liuliu/example_matmul_metal4: "constexpr auto desc = matmul2d_descriptor(64, 32, dynamic_length_v<int>, false, false, false, mode::multiply); matmul2d<desc, execution_simdgroups<4>> op;"
+**Tags**: metal4,MPP,tensor_ops,matmul2d,execution_simdgroups,cooperative-tensors
+
+## Finding 728: Apple GPU deliberately trades slower inter-SIMD threadgroup communication for faster intra-SIMD shuffle: 256 bytes/cycle SIMD shuffle bandwidth — exactly 2x AMD/NVIDIA (128 B/cycle). Threadgroup memory capacity ~60KB per core (vs 64-100KB competitors). Design favors simd_shuffle-based algorithms over threadgroup memory staging. Bank size and shared BW/cycle remain "TBD" in benchmarks.
+**Confidence**: verified
+**Source**: metal-benchmarks: Apple GPU microarchitecture
+**Evidence**: metal-benchmarks: "SIMD Shuffle BW/Cycle: 256 B" for Apple 7/8 vs 128 B for all competitors. "Apple reduces threadgroup memory bandwidth, prioritizing fast intra-SIMD communication for power efficiency."
+**Tags**: simd-shuffle,threadgroup-memory,bandwidth,256-bytes,vs-nvidia,vs-amd
 
 ## Finding 178: The device address space is for read/write GPU buffers with no size restriction. Maps to DRAM via unified memory. Cache hierarchy: L1 (8KB/core) -> L2 (768KB-1MB) -> SLC (8-96MB) -> LPDDR. Per-core I/O bandwidth is 32 B/cycle. Cache line size 128 bytes. Use device when data differs per thread, size is dynamic, or writes are needed. Dynamic indexing REQUIRES device address space.
 **Confidence**: verified
@@ -126,6 +222,30 @@
 **Evidence**: CGO 2026 paper from NVIDIA. Key contribution: the aref IR abstraction decouples what data is communicated from how and when it moves. This enables automatic pipelining decisions that previously required expert manual optimization. Works by partitioning programs into producer and consumer warp groups with async data movement between them.
 **Tags**: warp-specialization,compiler,asynchronous-references,IR,pipelining,Triton,CGO
 
+## Finding 733: Standard technique for avoiding bank conflicts with 32 banks: pad shared memory arrays by 1 element per row. For TILE_DIM x TILE_DIM array, declare as threadgroup float tile[TILE_DIM][TILE_DIM + 1]. Offsets each row by one bank so column-major access hits 32 different banks. Directly applicable on M1 (classical 32-bank model). On M3+ with non-classical banking, standard padding may need re-evaluation.
+**Confidence**: high
+**Source**: Bank Conflicts in Shared Memory
+**Evidence**: ianbarber.blog: "With PAD as 1 (TILE_DIM as 32) we have 32x33 or 132 bytes, offsetting writes ensuring each thread gets its own bank." TechBoards confirms M1 classical 32 banks, M3 changed behavior.
+**Tags**: threadgroup-memory,bank-conflicts,padding,avoidance,optimization,m1,m3
+
+## Finding 711: Hardware bfloat16 support (ARM FEAT_BF16) present on M2+ but absent on M1 (hw.optional.arm.FEAT_BF16: 0 vs 1). On M5, Neural Accelerators support FP16 (~7.4 TFLOPS) and INT8 (~13.4 TOPS) but do NOT support bfloat16 — a notable gap. Unclear whether first-gen NA hardware lacks bfloat support or it's not yet exposed in Metal.
+**Confidence**: verified
+**Source**: Investigating the GPU Neural Accelerators on Apple A19/M5
+**Evidence**: Taras Zakharko benchmark: "a notable omission is the bfloat16 format — it is unclear whether the first-generation Neural Accelerator hardware lacks dedicated support."
+**Tags**: bfloat16,m2,m5,neural-accelerator,hardware-support,FEAT_BF16
+
+## Finding 710: bfloat (brain floating-point) introduced in MSL 3.1 (WWDC 2023, macOS Sonoma). 16-bit: 1 sign, 8 exponent, 7 mantissa bits — a truncated float32. Functions primarily as a STORAGE format: arithmetic requires explicit conversion to float or half, then back. Wider exponent range (same as float32) provides better gradient overflow/underflow protection for ML training than half's narrower range.
+**Confidence**: verified
+**Source**: Optimize machine learning for Metal apps - WWDC23
+**Evidence**: WWDC23 session 10050: "bfloat16 is a 16-bit floating point format for deep learning comprised of 1 sign bit, 8 exponent bits, and 7 mantissa bits." HN confirms: "vectors of bfloat are a storage format only; you're supposed to explicitly convert them to a wider type to do arithmetic."
+**Tags**: bfloat,bfloat16,msl-types,ml-training,storage-format,MSL-3.1
+
+## Finding 719: MSL common functions (metal_common header): clamp(x, minval, maxval) = min(max(x, minval), maxval), undefined if minval > maxval. mix(x, y, a) = x + (y-x)*a for linear interpolation. saturate(x) = clamp(x, 0, 1) as free instruction modifier. step(edge, x) = 0.0 if x < edge else 1.0. smoothstep(edge0, edge1, x) = cubic Hermite interpolation after clamping. Essential for compute: clamp for bounds checking, mix for blending without branching.
+**Confidence**: verified
+**Source**: MSL Specification Chapter 5 - Metal Standard Library
+**Evidence**: MSL specification chapter 5: "Common functions in metal_common: clamp, step, mix, smoothstep, saturate." Image processing examples show clamp for bounds: clamp(g.x - 1, 0, w - 1) for out-of-bounds prevention.
+**Tags**: clamp,mix,step,smoothstep,saturate,common-functions
+
 ## Finding 208: Metal compiler pipeline: (1) MSL source -> AIR (Apple Intermediate Representation) via modified clang/LLVM, (2) AIR stored in .metallib files, (3) AIR -> GPU binary at pipeline state creation (JIT on device). Step 1 can be offline (Xcode) or runtime (newLibraryWithSource:). Step 3 can be offline via Binary Archives (Metal 3+) to eliminate runtime JIT.
 **Confidence**: verified
 **Source**: WWDC22 - Target and optimize GPU binaries with Metal 3
@@ -149,6 +269,48 @@
 **Source**: Philip Turner's metal-benchmarks - Apple GPU microarchitecture
 **Evidence**: Philip Turner's metal-benchmarks exact measurements. Key: basic FP16 and FP32 ops have nearly identical latency (~2.2 cycles) but FP16 uses half register bandwidth.
 **Tags**: alu-latency,instruction-throughput,dispatch,scheduler,transcendentals
+
+## Finding 732: Metal supports dynamic threadgroup allocation at encoding time via setThreadgroupMemoryLength(_:index:) on MTLComputeCommandEncoder. Kernel declares dynamically-sized buffers with [[threadgroup(n)]] pointer parameters. Multiple buffers via different indices. Total of dynamic + static (queryable via staticThreadgroupMemoryLength) must not exceed maxThreadgroupMemoryLength.
+**Confidence**: verified
+**Source**: setThreadgroupMemoryLength - Apple Developer Documentation
+**Evidence**: Apple documentation for setThreadgroupMemoryLength(_:index:). gpuweb#2024: MSL uses [[threadgroup(n)]] pointers, sizes at "encoding time" — more flexible than WebGPU which fixes sizes at pipeline creation.
+**Tags**: threadgroup-memory,dynamic-allocation,setThreadgroupMemoryLength,encoding-time
+
+## Finding 714: fast_math is ON by default in Metal (Xcode "Enable Fast Math" = YES). Provides 50%+ performance gain over -fno-fast-math. Assumptions: no NaNs, no INFs, no signed zeros, allow reciprocal/reassociation, FP contract fast. Does NOT decrease intermediate precision, does NOT introduce new NaNs. metal::precise and metal::fast namespaces provide per-function granularity — e.g., metal::precise::sin() gives full precision even with global fast-math.
+**Confidence**: verified
+**Source**: Advanced Metal Shader Optimization - WWDC16
+**Evidence**: WWDC16 session 606: "Fast-math is on by default... can give 50% performance gain or more." "Does NOT decrease intermediate precision" and "Will NOT introduce new NaNs." MSL spec confirms metal::precise namespace for fine-grained control.
+**Tags**: fast-math,precise,compiler-flags,performance,precision,namespaces
+
+## Finding 717: On Apple A8+ and all M-series GPUs, saturate(x), -x (negate), and abs(x) are FREE instruction modifiers encoded in ALU instruction bits — zero additional cycles. The Apple GPU ISA encodes source modifiers for abs (modifier & 0b01) and negate (modifier & 0b10), plus a saturate bit on the destination. Always prefer saturate(x) over manual clamp(x, 0.0, 1.0).
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference
+**Evidence**: WWDC16 session 606: "These operations are free: float negate = -value; float absolute = abs(value); float saturated = saturate(value)." Dougall Johnson G13 docs: "Absolute Value (modifier & 0b01), Negate (modifier & 0b10), Saturation (S flag)."
+**Tags**: saturate,negate,abs,free-modifier,instruction-encoding,zero-cost
+
+## Finding 752: When SIMD group threads invoke different functions via function pointers, execution serializes — worst case 32 threads calling 32 functions = 32x slowdown. Mitigation: coherence reordering — write function indices/params to threadgroup memory, sort to group same-function threads, invoke in sorted order. Transforms worst-case serialization into full SIMD utilization. Function stitching (MTLFunctionStitchingGraph) generates functions from computation graphs at AIR level, skipping Metal frontend.
+**Confidence**: verified
+**Source**: Get to know Metal function pointers - WWDC20
+**Evidence**: WWDC20: coherence reordering pseudocode: "1. Write params and function indices to threadgroup memory. 2. Sort indices. 3. Invoke sorted. 4. Read results. Transforms serialization into full SIMD utilization." Function stitching: "Generate directly to AIR."
+**Tags**: visible-functions,SIMD-divergence,coherence-reordering,function-stitching
+
+## Finding 727: Apple explicitly identifies global (device memory) atomics as a primary performance bottleneck, especially on higher-core chips (M1 Pro/Max). With increasing GPU cores and bandwidth, bottleneck has shifted from ALU/bandwidth to global atomics. Apple recommends: "minimize atomic operations, or use techniques built around thread-group atomics instead." SIMD-scoped reductions (simd_sum, simd_max) should be used before any atomics.
+**Confidence**: verified
+**Source**: Metal Compute on MacBook Pro - Apple Tech Talks
+**Evidence**: Apple Tech Talk 10580: "primary bottlenecks have shifted from ALU or memory bandwidth to other areas. One of those is global atomics." "Moderate use of atomics won't be a problem."
+**Tags**: atomics,performance,global-atomics,bottleneck,optimization,m1-pro
+
+## Finding 720: Apple A8+ GPUs have 16-bit register units as native width. Key implications: (1) char/uchar do NOT save registers — no native 8-bit arithmetic, emulated with 16-bit, wastes ALU. (2) ushort for thread IDs — thread counts rarely exceed 65535, making all ID arithmetic faster and lower power. (3) half literal suffix required — "half result = input * 2.0f" promotes to float; use 2.0h. (4) uint for indexing prevents vectorized loads — compiler cannot assume overflow-free arithmetic.
+**Confidence**: verified
+**Source**: Advanced Metal Shader Optimization - WWDC16
+**Evidence**: WWDC16/606: "char has no native 8-bit arithmetic on A8+, only use if absolutely necessary." "For global thread IDs, you can usually use ushort." "half result = input * 2.0f creates float operation; use 2.0h." "uint indexing disables vectorized loads."
+**Tags**: integer-types,uchar,ushort,uint,register-width,16-bit,literal-suffix
+
+## Finding 716: MSL precision guarantees (ULP): float32 without fast-math: basic arithmetic correctly rounded; sin/cos 4-6 ULP; pow 16 ULP. With fast-math: tolerances relax (acos 5 ULP vs 4, pow stays 16 ULP, NaN/INF behavior undefined). Half-precision (float16): arithmetic correctly rounded, transcendentals only 1 ULP (much tighter than float32's 4-6 ULP), suggesting dedicated half-precision function units.
+**Confidence**: verified
+**Source**: MSL Specification Chapter 7 - Numerical Compliance
+**Evidence**: MSL specification chapter 7: Table 36 (Standard) lists per-function ULP. Table 37 (Fast Math) shows relaxed tolerances. Table 38 specifies half-precision: "Most arithmetic operations are correctly rounded. Transcendental functions achieve <=1 ulp."
+**Tags**: precision,ulp,fast-math,sin,cos,pow,half-precision,numerical-accuracy
 
 ## Finding 212: MSL 4.0 introduces <metal_tensor> header with native tensor types. Declared as tensor<device half, dextents<int, 2>> for device memory tensors. Local tensors from arrays: auto t = tensor(array, extents<int, WIDTH, 1>()). MTLTensor API: rank, extents, dataType, usage flags (ML/Compute/Render combinable). Created from MTLDevice (optimized layout) or MTLBuffer (explicit strides).
 **Confidence**: verified
@@ -210,6 +372,24 @@
 **Evidence**: WWDC16 session 606: 'Avoid uint offsets for device memory; use signed int instead.' 'Avoid char (8-bit) since native operations are 16-bit.' Metal Compute on MacBook Pro tech talk: 'wrapping behavior of uint disables vectorized loads.'
 **Tags**: uint,signed-int,addressing,char,8-bit,performance-pitfall,vectorization
 
+## Finding 725: MSL does not support native atomic operations on float or half types — even in MSL 4.0 / Metal 4. Supported atomic types: atomic_int, atomic_uint (Metal 1.0), atomic_bool and atomic<T> for int/uint/bool (MSL 2.0). Metal 3.1 texture atomics support only int, uint, ulong. Developers must use CAS loop workarounds with as_type bit reinterpretation.
+**Confidence**: verified
+**Source**: Atomics proposal - gpuweb/gpuweb
+**Evidence**: gpuweb#1360: Metal provides only "atomic_int" and "atomic_uint." Apple Forums thread 69703: "no native support for atomic operations on halfs or floats." MoltenVK #1939: Metal 3.1 texture atomics only "int, uint, ulong color types."
+**Tags**: atomics,float,half,limitations,cas-loop,workaround
+
+## Finding 712: float3 has size/alignment of 16 bytes (padded to float4), while packed_float3 is 12 bytes/4-byte aligned with no padding. Using float3 for concurrent loading into dense shared arrays causes data races — kernel assumes 12-byte copies but float3 reads/writes 16 bytes. Real bugs in Apache TVM (PR #7830) and Gaussian splatting CUDA-to-Metal ports. Fix: use packed_float3 or raw float arrays.
+**Confidence**: verified
+**Source**: Fix Metal accuracy problem caused by dtype3 vectors usage
+**Evidence**: TVM PR #7830: "Using float3 for loading data concurrently into dense array shared between threads can lead to data race, as float3 has size/alignment equal to 16 bytes while kernel assumes 12 bytes."
+**Tags**: packed-vector,float3,packed_float3,alignment,data-race,correctness
+
+## Finding 713: Packed vector types (packed_float2, packed_float3, packed_half4) guarantee contiguous memory layout without padding, matching PyTorch tensors and CPU structs. Recommended pattern: packed types in buffer structs for CPU-GPU data layout, construct aligned types (float3, half4) inside kernel for computation. Packed types have scalar alignment (4 bytes for float), aligned vectors use power-of-two (float3/float4 = 16 bytes).
+**Confidence**: high
+**Source**: Things April 2024: Gaussian splatting, Metal vs. CUDA
+**Evidence**: Apple Forums thread 64057: "A packed type guarantees all floats are next to each other in adjacent memory locations." WWDC16 session 606 demonstrates constructing float3 from packed_float3 inside shader.
+**Tags**: packed-vector,alignment,cpu-gpu-sharing,pytorch,data-layout
+
 ## Finding 217: Production MSL kernel pattern (MLX/llama.cpp): const device T* inputs, device T* outputs, const constant ParamStruct* uniforms, threadgroup T shared[], function constants for config, template functions with macro-stamped entry points, simd_sum() for reductions, threadgroup_barrier(mem_flags::mem_threadgroup) for sync. llama.cpp Q4_0 kernel on M2 Max: 292 GB/s out of 300 GB/s theoretical.
 **Confidence**: verified
 **Source**: MLX Metal kernel source - conv.metal
@@ -221,6 +401,12 @@
 **Source**: WWDC22: Scale Compute Workloads Across Apple GPUs
 **Evidence**: WWDC22 session 10159: 'Target occupancy: 1K to 2K concurrent threads per shader core for complex kernels.' metal-benchmarks: 'GPU cores identical to CPU cores in I/O bandwidth, only differ in compute power.'
 **Tags**: occupancy,threads-per-core,bandwidth,cpu-vs-gpu,roofline
+
+## Finding 718: MSL select(a, b, c) returns b when c is true, a when false. Compiles to Apple GPU's native FCMPSEL (compare-and-select) instruction: ~4.74 cycles float32, ~2.17 cycles float16. WWDC16 warns against manual branchless tricks: "A8+ GPUs have very fast select instructions... compiler can't see through this cleverness." Ternary operator (condition ? a : b) compiles to the same instruction.
+**Confidence**: verified
+**Source**: Advanced Metal Shader Optimization - WWDC16
+**Evidence**: G13 docs: FCMPSEL "if cc.compare(A, B): D = X; else: D = Y". metal-benchmarks: FCMPSEL32: 1,1 throughput, ~4.74 latency. FCMPSEL16: ~2.17 latency. WWDC16/606: "A8 and later GPUs have very fast select instructions."
+**Tags**: select,FCMPSEL,branchless,conditional,ternary,utility-function
 
 ## Finding 507: ShaDiv generates test programs with carefully designed control and data flow divergence patterns to stress GPU shader compiler back-ends (the stage after IR optimization that generates machine code). Found 14 bugs across Intel, NVIDIA, AMD, and ARM shader compilers, with 12 in the back-end specifically. Achieves 25% coverage increase in back-end components and finds 4x more back-end bugs than existing tools. Key finding: SIMT divergence handling is the most bug-prone area of shader compilers.
 **Confidence**: high
@@ -258,6 +444,30 @@
 **Evidence**: G13 reference: 'pop_exec decrements r0l by n; deactivates threads when value reaches zero. if_icmp/if_fcmp: conditional branching; pushes new mask level.'
 **Tags**: divergence,execution-mask,control-flow,isa,hardware,r0l
 
+## Finding 734: simd_ballot(bool expr) returns a simd_vote object (not raw integer like CUDA's __ballot_sync). simd_vote wraps __METAL_VOTE_T__ and provides .all() and .any() methods. Available when __HAVE_SIMDGROUP_BALLOT__ defined (Apple GPU family 4+, A11+). simd_active_threads_mask() returns simd_vote of active threads (Metal equivalent of CUDA __activemask). Companion: simd_all(bool) and simd_any(bool) return simple bool for unanimous/existential voting.
+**Confidence**: verified
+**Source**: Metal Standard Library Header - metal_simdgroup
+**Evidence**: From Metal standard library header metal_simdgroup: simd_ballot calls __metal_simd_ballot(expr, vote_t(0)). simd_active_threads_mask calls __metal_simd_active_threads_mask(vote_t(0)). simd_vote has explicit conversion to/from vote_t.
+**Tags**: simd_ballot,simd_vote,simd_active_threads_mask,simd_all,simd_any,A11
+
+## Finding 735: simd_is_helper_thread() returns bool, gated by __HAVE_SIMDGROUP_REDUCTION__. In fragment shaders, helper threads are invocations for pixels outside the primitive whose writes are discarded and atomics produce undefined results. In compute kernels, always returns false — compute dispatches have no helper invocations. Exists in compute for API uniformity only.
+**Confidence**: verified
+**Source**: Metal Standard Library Header - metal_simdgroup
+**Evidence**: Metal header: simd_is_helper_thread calls __metal_simd_is_helper_thread(). Apple docs: helper threads are fragment function invocations near primitive edges that produce no output.
+**Tags**: simd_is_helper_thread,fragment,compute,helper-invocation
+
+## Finding 742: simd_shuffle_and_fill_down/up(data, filling_data, delta, [modulo]) combines shuffle with data injection from a second source. Fill variants replace shifted-out positions with filling_data (unlike plain shuffle which retains originals). Optional modulo splits 32-thread SIMD into smaller logical vectors. Apple demonstrated 84% reduction in texture samples for 5x5 edge detection convolution. Use cases: sliding-window convolutions, image processing, ML inference with spatial locality.
+**Confidence**: verified
+**Source**: Discover advances in Metal for A15 Bionic - Apple Tech Talk
+**Evidence**: Apple Tech Talk "Discover advances in Metal for A15 Bionic": "84% reduction in number of samples per SIMD group" for 5x5 convolution. Header has two overloads each with optional modulo defaulting to __metal_get_simdgroup_size().
+**Tags**: simd_shuffle_and_fill,A15,convolution,sliding-window,84-percent,modulo
+
+## Finding 740: simd_shuffle_xor(T data, ushort mask) exchanges values between threads whose lane IDs differ by XOR with mask. Butterfly reduction: offsets 1,2,4,8,16 pair threads for combining — 5 steps for full 32-thread reduction. Complete shuffle variants: simd_shuffle (arbitrary), simd_shuffle_down/up (delta), simd_shuffle_xor (mask), simd_shuffle_rotate_down/up (__HAVE_SIMDGROUP_SHUFFLE_ROTATE__), simd_shuffle_and_fill_down/up (__HAVE_SIMDGROUP_SHUFFLE_AND_FILL__) with optional modulo parameter.
+**Confidence**: verified
+**Source**: Metal Standard Library Header - metal_simdgroup
+**Evidence**: Metal header: simd_shuffle_xor calls __metal_simd_shuffle_xor(data, mask). GitHub gist: for (uint offset=simd_size/2; offset>0; offset/=2) val += simd_shuffle_down(val, offset).
+**Tags**: simd_shuffle_xor,butterfly-reduction,complete-shuffle-list,fill-variants
+
 ## Finding 196: simdgroup_matrix<T, Rows, Cols> only supports 8x8 dimensions. Supported types: half, float, bfloat. Each 8x8 matrix has 64 elements distributed across 32 SIMD lanes (2 elements per thread, arranged as 1 row x 2 cols). Thread element coordinates computed from simd_lane_id. Introduced with A14 Bionic (Apple family 7).
 **Confidence**: verified
 **Source**: MLX STEEL GEMM MMA Implementation
@@ -282,6 +492,48 @@
 **Evidence**: Draw Things engineering blog: 'leverages the simdgroup_async_copy API (since A14), an undocumented hardware feature that overlaps compute and load instructions.'
 **Tags**: simdgroup-async-copy,undocumented,overlap-compute-load,flashattention,prefetch
 
+## Finding 739: MLX Steel handles non-8-aligned K dimensions via K_aligned_ flag. Last iteration uses load_safe() with clamped tile dimensions: lbk = remaining K elements. load_safe performs bounds-checked loading that zero-fills elements outside valid matrix region, ensuring correct simdgroup_multiply_accumulate results. Functionally equivalent to zero-padding inputs but done lazily at load time. M/N edges similarly use clamped tgp_bm/tgp_bn.
+**Confidence**: verified
+**Source**: MLX Steel GEMM Kernel Header (gemm.h)
+**Evidence**: MLX gemm.h: if (!K_aligned_) { tile_dims_A_last = transpose_a ? short2(tgp_bm, lbk) : short2(lbk, tgp_bm); loader_a.load_safe(tile_dims_A_last); }
+**Tags**: mlx,steel,edge-handling,non-aligned,K-dimension,load_safe,zero-padding
+
+## Finding 744: simdgroup_matrix<T,8,8> internal storage is vec<T,64> distributed across 32 threads — each thread holds (8*8)/32 = 2 elements, accessed via thread_elements(). Per-thread coordinate mapping (from MLX): qid=simd_lane_id/4; fm=(qid&4)+((simd_lane_id/2)%4); fn=(qid&2)*2+(simd_lane_id%2)*2. Diagonal init: __metal_simdgroup_matrix_8x8_init_diag(value). Filled init: make_filled_simdgroup_matrix<T,8,8>(value).
+**Confidence**: verified
+**Source**: Metal Standard Library Header - metal_simdgroup_matrix
+**Evidence**: metal_simdgroup_matrix header: typedef vec<T, Cols*Rows> type in _simdgroup_matrix_storage_type. thread_elements() returns reference to storage. MLX mma.h: kElemsPerFrag = (kFragRows*kFragCols)/32 = 2.
+**Tags**: simdgroup_matrix,storage,thread_elements,2-elements-per-thread,register-layout
+
+## Finding 736: simdgroup_load/store accept device and threadgroup pointers with: elements_per_row (stride in elements, default=Cols=8), matrix_origin (ulong2 offset within larger matrix), transpose_matrix (bool). No explicit alignment enforced at API level. Default bounds check mode is __METAL_SIMDGROUP_LOAD_STORE_BOUNDS_CHECK_NONE__ — out-of-bounds access is undefined behavior. Internal calls: __metal_simdgroup_matrix_8x8_load/store.
+**Confidence**: verified
+**Source**: Metal Standard Library Header - metal_simdgroup_matrix
+**Evidence**: From metal_simdgroup_matrix header: _simdgroup_load_impl uses BOUNDS_CHECK_NONE mode. Store accesses via a.thread_elements(). Both device and threadgroup overloads have identical signatures.
+**Tags**: simdgroup_matrix,load,store,elements_per_row,matrix_origin,alignment
+
+## Finding 741: On Apple 7/8 (M1/A15+), simdgroup_matrix achieves nearly identical RAW throughput for FP32 (101.7 Matrix FFMA/core-cycle) and FP16 (102.5). Apple reuses FP32 ALU pipelines rather than separate matrix hardware. Earlier gens: A11-A13 FP32=43.6, FP16=83.7. For M1 at 1.278 GHz with 8 cores: peak ~2617 GFLOPS for both — 100% of advertised FP32. Note: FP16 still has EFFECTIVE throughput advantage via halved register pressure → higher occupancy.
+**Confidence**: verified
+**Source**: metal-benchmarks: Apple GPU microarchitecture
+**Evidence**: metal-benchmarks: "Matrix FFMA16=102.5, Matrix FFMA32=101.7 for A15+/M1+. Matrix FFMA32=43.6 for A11-A13." "Apple's tensor core is simdgroup_matrix which decreases register pressure and improves ALU utilization in existing FP32 pipelines."
+**Tags**: simdgroup_matrix,throughput,FFMA,FP32,FP16,M1,A15,raw-vs-effective
+
+## Finding 748: MSL texture access qualifiers for compute: access::read (integer coordinate .read() only), access::write (.write() only), access::read_write (both), access::sample (filtered normalized coordinates via .sample() with sampler). Access qualifier restricts callable methods, giving compiler optimization info. .read() = nearest-neighbor integer coords; .sample() = bilinear/trilinear with normalized coords.
+**Confidence**: high
+**Source**: Fundamentals of Image Processing in Metal - Metal by Example
+**Evidence**: Metal by Example: "access template parameter describes access to texture data: read for reading only; write for destination; read_write for both." "We restrict the set of functions callable on these parameters."
+**Tags**: texture,access-qualifier,read,write,read_write,sample,compute
+
+## Finding 747: Apple Silicon performs automatic lossless compression on GPU-private textures, reducing bandwidth. Shared/managed textures: explicitly compress via optimizeContentsForGPUAccess() on blit encoder. Requires usage shaderRead or renderTarget. Decompression automatic and transparent. Combined with ASTC/BC lossy compression (4:1 to 36:1 ratios) for additional bandwidth savings.
+**Confidence**: verified
+**Source**: Metal Compute on MacBook Pro - Tech Talks
+**Evidence**: Tech Talk 10580: "Apple Silicon can perform lossless compression of a texture to further reduce memory bandwidth." "Private textures compressed by default; shared/managed textures via optimizeContentsForGPUAccess." "BC and ASTC have compression ratios from 4:1 through 36:1."
+**Tags**: texture,compression,lossless,bandwidth,ASTC,optimizeContentsForGPUAccess
+
+## Finding 746: Metal automatically twiddles (Morton-order / Z-order) texture data on upload, reordering texels for optimal random 2D access patterns. Improves cache efficiency for spatial locality compared to linearly-addressed buffers. Transparent to kernel — no shader code changes needed. Combined with separate L1 cache, textures can significantly outperform buffers for 2D access patterns.
+**Confidence**: verified
+**Source**: Metal Compute on MacBook Pro - Tech Talks
+**Evidence**: Tech Talk 10580: "Texture data can be twiddled, and Metal will do this automatically on upload. Twiddling means texels are ordered more optimally for random access pattern and can help improve cache efficiency, giving another performance gain over a regular buffer."
+**Tags**: texture,twiddling,morton-order,spatial-locality,cache,compute
+
 ## Finding 200: Textures have a dedicated L1 cache separate from buffer L1 cache, effectively doubling on-chip cache capacity when both used simultaneously. Textures benefit from lossless bandwidth compression (enabled by default for GPU-private textures) and automatic spatial locality optimization via texture twidling. Buffers get none of these hardware optimizations.
 **Confidence**: verified
 **Source**: Create image processing apps powered by Apple silicon - WWDC21
@@ -293,4 +545,28 @@
 **Source**: MLX Issue #2418: ASTC weight compression + hardware decoding
 **Evidence**: MLX issue #2418 proposes encoding model weights as ASTC textures. 'ASTC decoder is already baked into the texture-sampling path on all Apple Silicon.' 'Metal/MPS can sample .astc textures with one line of shader code.'
 **Tags**: astc,texture-compression,llm,quantization,hardware-decode,bandwidth
+
+## Finding 708: Metal threadgroup_barrier combines execution and memory synchronization inseparably — ALL threads in a threadgroup must execute the barrier or the kernel deadlocks. Cannot be placed in divergent code paths (e.g., inside if-statement where only some threads enter). Unlike Vulkan memoryBarrierBuffer which is a pure memory barrier. Intel and Apple GPUs deadlock; AMD GPUs sometimes continue (undefined behavior).
+**Confidence**: verified
+**Source**: memoryBarrierBuffer != threadgroup_barrier(mem_device) - MoltenVK
+**Evidence**: MoltenVK issue #973: kernel void with threadgroup_barrier inside conditional — threads not reaching barrier hang those that did. Proposes VK_KHR_portability_subset feature bit to document incompatibility. Critical for ring buffer implementations that might use barriers conditionally.
+**Tags**: threadgroup-barrier,deadlock,divergent-code,synchronization,Metal-vs-Vulkan
+
+## Finding 731: Maximum threadgroup memory per threadgroup (MTLDevice.maxThreadgroupMemoryLength): 32,768 bytes (32KB) on all Apple Silicon Macs (M1+, Apple Family 7+). Older mobile (A7-A10X, Family 1-3): 16,384 bytes (16KB). High usage directly reduces occupancy — the only way to increase occupancy is to reduce shared memory. M3+ can dynamically allocate more on-chip memory if registers/tile underutilized, but 32KB API limit remains.
+**Confidence**: verified
+**Source**: maxThreadgroupMemoryLength - Apple Developer Documentation
+**Evidence**: oscarbg/metal2caps: 16384 for iPad Air 1 (A7). 32768 confirmed for M-series. Tech Talk 10580: "With high thread-group memory usage, the only way to increase occupancy is to reduce shared memory used."
+**Tags**: threadgroup-memory,size-limits,occupancy,32kb,16kb
+
+## Finding 715: Apple GPU transcendental instruction latency: EXP2/LOG2 ~4 cycles (16-bit and 32-bit). RSQRT ~8 cycles. RECIP ~6 cycles (precise: ~10.5 cycles). SIN/COS ~14 cycles throughput, 23-27 cycle adjusted latency. Basic ALU (FADD/FMUL/FFMA) = 1-2 cycles. Transcendentals are 2-7x slower than basic arithmetic, with sin/cos most expensive.
+**Confidence**: verified
+**Source**: metal-benchmarks - Apple GPU microarchitecture
+**Evidence**: metal-benchmarks: EXP2_32: 4-cycle throughput, ~4.31 latency. RSQRT32: 8-cycle throughput, ~8.99 latency. RECIP16: 6-cycle, ~6.50. SIN32: 14.28-cycle throughput, ~23.04-27.35. Precise RECIP32: 10.46-cycle. FADD32/FMUL32: 2,1 throughput, ~2.20 latency.
+**Tags**: instruction-latency,transcendental,exp,log,rsqrt,sin,cos,alu-cycles
+
+## Finding 751: Metal visible function tables support 3 compilation models: (1) Single/AIR — statically linked, maximum LTO optimization, best runtime, largest binary, longest compile. (2) Separate/Binary — precompiled, faster pipeline creation, runtime call overhead, shared across pipelines. (3) Incremental — add new binary functions without pipeline recreation. [[function_groups("name")]] at call sites helps compiler optimize. Binary archives cache compiled functions.
+**Confidence**: verified
+**Source**: Get to know Metal function pointers - WWDC20
+**Evidence**: WWDC20-10013: "separately compiled pipeline has some runtime overhead calling binary functions. Fully specialized single-compilation offers best performance." WWDC21-10229: "AIR: slower compile, better runtime. Binary: faster compile, optimized dispatch."
+**Tags**: visible-functions,function-table,compilation-model,binary-archive
 

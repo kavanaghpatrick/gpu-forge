@@ -16,11 +16,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install jq sqlite
+          brew install jq
           brew tap bats-core/bats-core
-          brew install bats-core bats-support bats-assert
-          # Homebrew sqlite includes FTS5; prepend to PATH so it overrides system sqlite3
-          echo "$(brew --prefix sqlite)/bin" >> "$GITHUB_PATH"
+          brew install bats-core
 
       - name: Verify plugin structure
         run: |

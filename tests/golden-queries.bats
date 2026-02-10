@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 #
-# Golden Queries — 50 FTS5 search queries that verify the knowledge DB
+# Golden Queries — 72 FTS5 search queries that verify the knowledge DB
 # returns relevant results for every skill domain.
 #
 # Each test runs `kb search "<query>"` and asserts the output contains
@@ -15,7 +15,7 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# gpu-silicon (5 queries)
+# gpu-silicon (9 queries)
 # ---------------------------------------------------------------------------
 
 @test "golden: 'M4 GPU cores' returns gpu-silicon results" {
@@ -48,8 +48,32 @@ setup() {
   assert_output --partial "gpu-silicon"
 }
 
+@test "golden: 'register occupancy' returns gpu-silicon results" {
+  run "$KB" search "register occupancy"
+  assert_success
+  assert_output --partial "gpu-silicon"
+}
+
+@test "golden: 'register spill' returns gpu-silicon results" {
+  run "$KB" search "register spill"
+  assert_success
+  assert_output --partial "gpu-silicon"
+}
+
+@test "golden: 'uniform registers' returns gpu-silicon results" {
+  run "$KB" search "uniform registers"
+  assert_success
+  assert_output --partial "gpu-silicon"
+}
+
+@test "golden: 'dynamic register allocation' returns gpu-silicon results" {
+  run "$KB" search "dynamic register allocation"
+  assert_success
+  assert_output --partial "gpu-silicon"
+}
+
 # ---------------------------------------------------------------------------
-# unified-memory (4 queries)
+# unified-memory (8 queries)
 # ---------------------------------------------------------------------------
 
 @test "golden: 'SLC cache' returns unified-memory results" {
@@ -76,8 +100,32 @@ setup() {
   assert_output --partial "unified-memory"
 }
 
+@test "golden: 'GPU weakly ordered memory' returns unified-memory results" {
+  run "$KB" search "GPU weakly ordered memory"
+  assert_success
+  assert_output --partial "unified-memory"
+}
+
+@test "golden: 'UAT page table' returns unified-memory results" {
+  run "$KB" search "UAT page table"
+  assert_success
+  assert_output --partial "unified-memory"
+}
+
+@test "golden: 'DART IOMMU' returns unified-memory results" {
+  run "$KB" search "DART IOMMU"
+  assert_success
+  assert_output --partial "unified-memory"
+}
+
+@test "golden: 'GPU TLB entries' returns unified-memory results" {
+  run "$KB" search "GPU TLB entries"
+  assert_success
+  assert_output --partial "unified-memory"
+}
+
 # ---------------------------------------------------------------------------
-# metal-compute (5 queries)
+# metal-compute (10 queries)
 # ---------------------------------------------------------------------------
 
 @test "golden: 'MTLCommandQueue' returns metal-compute results" {
@@ -110,8 +158,38 @@ setup() {
   assert_output --partial "metal-compute"
 }
 
+@test "golden: 'binary archive' returns metal-compute results" {
+  run "$KB" search "binary archive"
+  assert_success
+  assert_output --partial "metal-compute"
+}
+
+@test "golden: 'ICB compute' returns metal-compute results" {
+  run "$KB" search "ICB compute"
+  assert_success
+  assert_output --partial "metal-compute"
+}
+
+@test "golden: 'Metal GPU driven compute' returns metal-compute results" {
+  run "$KB" search "Metal GPU driven compute"
+  assert_success
+  assert_output --partial "metal-compute"
+}
+
+@test "golden: 'shader validation' returns metal-compute results" {
+  run "$KB" search "shader validation"
+  assert_success
+  assert_output --partial "metal-compute"
+}
+
+@test "golden: 'MTLSharedEvent' returns metal-compute results" {
+  run "$KB" search "MTLSharedEvent"
+  assert_success
+  assert_output --partial "metal-compute"
+}
+
 # ---------------------------------------------------------------------------
-# msl-kernels (5 queries)
+# msl-kernels (10 queries)
 # ---------------------------------------------------------------------------
 
 @test "golden: 'address space device' returns msl-kernels results" {
@@ -140,6 +218,36 @@ setup() {
 
 @test "golden: 'half precision' returns msl-kernels results" {
   run "$KB" search "half precision"
+  assert_success
+  assert_output --partial "msl-kernels"
+}
+
+@test "golden: 'bank conflict' returns msl-kernels results" {
+  run "$KB" search "bank conflict"
+  assert_success
+  assert_output --partial "msl-kernels"
+}
+
+@test "golden: 'float atomic CAS' returns msl-kernels results" {
+  run "$KB" search "float atomic CAS"
+  assert_success
+  assert_output --partial "msl-kernels"
+}
+
+@test "golden: 'simd_ballot' returns msl-kernels results" {
+  run "$KB" search "simd_ballot"
+  assert_success
+  assert_output --partial "msl-kernels"
+}
+
+@test "golden: 'packed vector' returns msl-kernels results" {
+  run "$KB" search "packed vector"
+  assert_success
+  assert_output --partial "msl-kernels"
+}
+
+@test "golden: 'tensor_ops Metal 4' returns msl-kernels results" {
+  run "$KB" search "tensor_ops Metal 4"
   assert_success
   assert_output --partial "msl-kernels"
 }
@@ -349,7 +457,7 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# gpu-centric-arch (6 queries)
+# gpu-centric-arch (5 queries)
 # ---------------------------------------------------------------------------
 
 @test "golden: 'persistent kernel' returns gpu-centric-arch results" {

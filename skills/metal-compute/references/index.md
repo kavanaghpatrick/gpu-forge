@@ -2,5 +2,5 @@
 
 ## Available Reference Files
 
-- [all-findings.md](all-findings.md) — All 40 findings from the knowledge database
+- [all-findings.md](all-findings.md) — All 84 findings from the knowledge database
 

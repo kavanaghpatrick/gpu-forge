@@ -1,4 +1,4 @@
-# unified-memory — All Findings (75)
+# unified-memory — All Findings (104)
 
 ## Finding 128: Chips and Cheese found that M1 "is unable to keep CPU to GPU transfers on-die" or experiences very high latency for small transfers. Despite sharing the SLC, cross-domain (CPU->GPU) cache transfers do not appear to hit the SLC efficiently for small working sets. This suggests the SLC may serve each domain independently rather than enabling direct CPU-GPU cache sharing.
 **Confidence**: high
@@ -12,6 +12,12 @@
 **Evidence**: Characterizes intra- and inter-node memory operations on GH200 at Swiss NSSC Alps supercomputer. The unified address space provides transparent access but physical location determines actual bandwidth and latency. Highlights tradeoffs between placement convenience and performance.
 **Tags**: data-movement,memory-placement,grace-hopper,cache-coherent,numa-effects,bandwidth
 
+## Finding 657: GPU TLB details remain largely undocumented. Estimated ~2048 entries covering ~32 MB (with 16KB pages). Evidence: M1 Ultra reported "32MB bottleneck" consistent with this estimate. Chips and Cheese observed GPU latency increases beyond 400 ns at large working sets on M2 Pro, suggesting TLB misses. TLB invalidation involves "some shared memory and poking the firmware" (marked TODO by Asahi Linux).
+**Confidence**: medium
+**Source**: Apple's M1 Ultra comes with a 32MB TLB bottleneck
+**Evidence**: HN: "given 16KB pages, a TLB with 2,048 entries covers ~32 MB." Chips and Cheese: M2 Pro GPU latency "increasing beyond 400 ns at larger sizes." Asahi: "TODO: UAT TLB invalidation."
+**Tags**: GPU-TLB,2048-entries,32MB,undocumented,TLB-miss,invalidation
+
 ## Finding 99: GPU per-core caches: L1 Data=8 KB, Instruction Cache=12 KB, Threadgroup/Shared Memory=~60 KB. L2 cache is shared across all GPU cores (varies by variant: 768KB-1.5MB). SLC serves as effective L3 for GPU.
 **Confidence**: verified
 **Source**: Philip Turner - metal-benchmarks
@@ -24,6 +30,12 @@
 **Evidence**: Philip Turner metal-benchmarks provides per-core bandwidth measurements across cache levels. These show ~2x SLC bandwidth vs DRAM, consistent with SLC being a significant bandwidth amplifier.
 **Tags**: gpu-bandwidth,slc-bandwidth,dram-bandwidth,per-core
 
+## Finding 635: threadgroup_barrier() and simdgroup_barrier() accept mem_flags: mem_none (execution sync only), mem_threadgroup (flush threadgroup caches), mem_device (flush device memory caches). These barriers combine execution sync with memory fence — they CANNOT be separated in standard MSL. Critical limitation: threadgroup_barrier has workgroup scope ONLY — it cannot provide cross-threadgroup memory ordering. All threads in a threadgroup must execute the barrier or it deadlocks.
+**Confidence**: verified
+**Source**: memoryBarrierBuffer != threadgroup_barrier(mem_device)?
+**Evidence**: MoltenVK issue #973: "threadgroup_barrier in MSL is effectively OpenCL C 1.2's barrier intrinsic which only has a memory scope of Workgroup." "Requires all threads in a threadgroup to execute this function before any thread can continue."
+**Tags**: threadgroup-barrier,simdgroup-barrier,mem-flags,memory-fence,workgroup-scope
+
 ## Finding 505: GMLake introduces Virtual Memory Stitching (VMS) -- fusing non-contiguous physical memory blocks into contiguous virtual address ranges via GPU virtual memory page table manipulation. Reduces GPU memory usage by avg 9.2GB (up to 25GB) and fragmentation by 15-33% across 8 LLM models on A100. Operates transparently without modifying DL frameworks. This is the GPU equivalent of OS-level memory compaction.
 **Confidence**: high
 **Source**: GMLake: Efficient and Transparent GPU Memory Defragmentation for Large-scale DNN Training with Virtual Memory Stitching
@@ -35,6 +47,18 @@
 **Source**: GMLake: Efficient and Transparent GPU Memory Defragmentation for Large-scale DNN Training with Virtual Memory Stitching
 **Evidence**: GMLake leverages low-level GPU virtual memory management APIs to combine non-contiguous memory blocks via virtual address mapping. The VMS mechanism avoids physical memory compaction/copying. Transparent to existing models. Tested on 8 LLMs. Open-sourced.
 **Tags**: memory-fragmentation,virtual-memory,defragmentation,llm-training,memory-allocator
+
+## Finding 637: The Apple GPU uses a weakly-ordered memory model. Metal provides only relaxed atomic operations by default, making it the weakest GPU memory consistency backend (as measured by GPUHarbor cross-vendor testing). At the G13 ISA level, there are no explicit memory fence or acquire/release semantics beyond threadgroup_barrier and a wait instruction for load completion. The architecture relies on implicit ordering within SIMD-groups.
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference
+**Evidence**: GPUHarbor (ISSTA 2023): "Apple's Metal provides only relaxed atomic operations, making it the weakest backend." G13 ISA: no explicit fence/acquire/release. Wait instruction pauses execution "for loads" only.
+**Tags**: gpu-memory-model,weak-ordering,relaxed-atomics,no-acquire-release,gpuharbor
+
+## Finding 659: GPU virtual address space has defined regions: 0x015_00000000 for userspace allocations, 0xf80_00000000 for ASC firmware, 0xfa0_00000000 for kernel allocations. Upper address space (above 0xf80_00000000) in L0[1] enables shared VM regions. Firmware mappings are global; GPU-specific mappings are nonglobal to prevent cross-context visibility.
+**Confidence**: verified
+**Source**: HW:AGX - Asahi Linux Wiki
+**Evidence**: Asahi Linux AGX wiki: "Key allocations at 0x015_ for userspace, 0xf80_ for ASC firmware, 0xfa0_ for kernel." "Shared VM regions (above 0xf80_) in L0[1] with per-context allocations in L0[0]."
+**Tags**: GPU-VA,address-layout,userspace,firmware,kernel,global-vs-nonglobal
 
 ## Finding 482: GPU threads can manage their own page faults and memory migration without CPU/OS involvement, achieving up to 4x performance over traditional UVM for latency-bound applications
 **Confidence**: high
@@ -77,6 +101,36 @@
 **Source**: Creative Strategies - M5: Cache and Tensors
 **Evidence**: Multiple specification sources. Creative Strategies analysis. 9to5Mac confirms 30% bandwidth increase over M4.
 **Tags**: m5,cache,l1,l2,slc,bandwidth,specifications
+
+## Finding 639: Metal 4 introduces MTL4CommandAllocator, transferring command buffer memory management from the runtime to the application (similar to VkCommandPool). Command buffers become long-lived objects retained across frames. Allocators cannot be reused while encoded commands are in-flight; developers must maintain pools (typically triple-buffered) and call reset() after GPU completion.
+**Confidence**: high
+**Source**: Getting Started with Metal 4 - Metal by Example
+**Evidence**: Metal by Example: "command allocators move this responsibility onto the application." MoltenVK #2560: MTL4CommandAllocator functions "similarly to VkCommandPool."
+**Tags**: metal-4,command-allocator,triple-buffer,memory-management,VkCommandPool
+
+## Finding 640: Metal 4 introduces MTLResidencySet for explicit GPU residency control. Resources become resident via addAllocation() then commit(). Sets attach to command queues (persistent) or individual command buffers. A resource becomes non-resident only when not in ANY attached set (union semantics). MANDATORY for Metal 4 APIs. Best practice: "fewer residency sets with more resources each" for bulk processing efficiency.
+**Confidence**: verified
+**Source**: MTLResidencySet | Apple Developer Documentation
+**Evidence**: Apple docs: "Use residency sets to specify the resources that Metal should make resident." MoltenVK: "residency sets are now required to be used with any of the MTL4 stuff."
+**Tags**: metal-4,residency-set,gpu-resident,explicit-management,mandatory
+
+## Finding 641: Metal 4 placement sparse resources are allocated WITHOUT initial storage pages — memory is mapped dynamically from placement heaps on demand. Enables fine-grained streaming for massive worlds, dynamic quality scaling, and precise memory budget control. Mapping operations require MTL4CommandQueue. Metal events synchronize between legacy MTLCommandQueue and MTL4CommandQueue.
+**Confidence**: verified
+**Source**: Discover Metal 4 - WWDC25
+**Evidence**: WWDC25 "Discover Metal 4": "placement sparse resources are allocated without storage pages initially, with pages provided from a placement heap on-demand."
+**Tags**: metal-4,placement-sparse,placement-heap,streaming,virtual-memory
+
+## Finding 642: Metal 4 command buffers NO LONGER automatically retain references to resources. Developers must ensure resources survive until GPU completion. Combined with mandatory residency sets, this gives explicit lifetime control but requires careful management to avoid GPU use-after-free. This is a fundamental shift from Metal 3's automatic retention model.
+**Confidence**: high
+**Source**: Getting Started with Metal 4 - Metal by Example
+**Evidence**: Metal by Example: "Command buffers no longer retain references to resources by default." MoltenVK: "developers must ensure resource lifetime explicitly."
+**Tags**: metal-4,no-retain,resource-lifetime,explicit-management,use-after-free
+
+## Finding 643: Metal 4 removes automatic hazard tracking. Developers use explicit consumer barriers (block GPU stages until earlier passes finish) and producer barriers for synchronization. Also provides intra-pass barriers. This low-overhead barrier API maps directly to Vulkan/DirectX 12 barrier concepts, simplifying cross-API porting.
+**Confidence**: verified
+**Source**: Synchronizing passes with consumer barriers
+**Evidence**: Apple docs: Metal 4 introduces "a low-overhead Barrier API for stage-to-stage synchronization." Metal by Example: Metal 4 being "concurrent by default" means "it's much easier to introduce accidental hazards."
+**Tags**: metal-4,barriers,consumer-barrier,producer-barrier,no-hazard-tracking,explicit
 
 ## Finding 84: SLC sizes for M1 family: M1=8 MB, M1 Pro=24 MB, M1 Max=48 MB, M1 Ultra=96 MB. SLC scales roughly 3x from base to Pro, 2x from Pro to Max, 2x from Max to Ultra.
 **Confidence**: high
@@ -132,6 +186,12 @@
 **Evidence**: Creative Strategies M5 analysis: SRAM reads "generally single digit pJ" versus DRAM reads "hundreds of pJ." Apple deliberately chose larger SLC over smaller die size, "valuing efficiency above cost."
 **Tags**: slc,energy-efficiency,sram,dram,power
 
+## Finding 648: EXAM paper revealed SLC excludes the lowest 13 bits of physical address from set indexing, using bits from position 14 and above. This is complementary to L2 which uses bits 0-12. Using stride of 8192 bytes, researchers could bypass L2 and directly fill SLC. This dual-level indexing creates an effective caching strategy where L2 and SLC index on different address bits.
+**Confidence**: verified
+**Source**: EXAM: Exploiting Exclusive System-Level Cache in Apple M-Series SoCs
+**Evidence**: EXAM paper: "SLC excludes the lowest 13 bits of the physical address for indexing and uses bits from the 14th position and above." "Using stride of 8192 bytes, researchers could bypass the L2 cache and directly fill the SLC."
+**Tags**: slc,address-indexing,bits-14-plus,l2-complement,cache-architecture
+
 ## Finding 111: On Apple Silicon, tile memory (used for render targets during fragment shading) serves as threadgroup memory during compute kernel execution. Same physical on-chip SRAM serves dual purpose. Tile memory allocated via MTLStorageModeMemoryless is ephemeral per pass.
 **Confidence**: verified
 **Source**: Apple Developer Forums - GPU Hardware and Metal concerning Tile Memory
@@ -174,11 +234,23 @@
 **Evidence**: First comprehensive characterization of UPM architecture on MI300A. Examined latency, bandwidth, cache management, and developed porting strategies. Key finding: the unified memory model eliminates redundant copies and reduces memory footprint dramatically. 6 applications tested with detailed performance analysis.
 **Tags**: unified-memory,upm,mi300a,apu,memory-cost-reduction
 
+## Finding 656: DART and UAT are SEPARATE address translation mechanisms. DART is the general IOMMU for peripherals (USB, display, etc.) using 3-level page tables on M1 (4-level on M2 Pro/Max/Ultra). UAT is EXCLUSIVELY for the GPU (AGX) and its ASC coprocessor, using 4-level ARM64-format tables. The AGX does NOT use DART.
+**Confidence**: verified
+**Source**: Apple GPU (AGX) - Asahi Linux Documentation
+**Evidence**: Asahi Linux: "other ASCs use DART IOMMUs, but AGX specifically uses the UAT architecture." LWN: DART uses "three pagetable levels" on M1. Asahi 6.17: "DARTs on T602x SoCs support a larger address space, requiring four-level pagetables."
+**Tags**: DART,UAT,separate,IOMMU,AGX,3-level-vs-4-level
+
 ## Finding 104: Apple uses QoS (Quality of Service) properties at the thread level to guide scheduling decisions between P-cores and E-cores. QoS semantics help the scheduler decide when/where to execute tasks. For GPU bandwidth, macOS allocates dynamically based on demand - no fixed partitioning.
 **Confidence**: high
 **Source**: WWDC20: Explore the new system architecture of Apple silicon Macs
 **Evidence**: WWDC20 session 10686: "Set QoS on all work items - QoS properties are an indication to macOS of how work should be prioritized." Grand Central Dispatch uses QoS to route to appropriate cores. Memory bandwidth arbitration mechanism is not publicly documented.
 **Tags**: qos,quality-of-service,scheduling,bandwidth-arbitration
+
+## Finding 649: Apple reduced memory bandwidth from M2 Pro (~200 GB/s, 256-bit bus) to M3 Pro (150 GB/s, 192-bit bus). This was reversed in M4 Pro which returned to 256-bit at 273 GB/s with LPDDR5X-8533. The M3 Pro bandwidth reduction was controversial and impacted GPU-heavy workloads.
+**Confidence**: high
+**Source**: A Brief Look at Apple's M2 Pro iGPU - Chips and Cheese
+**Evidence**: Chips and Cheese: "Apple reduced bandwidth to 150 GB/s in the successor [M3 Pro], likely switching to a 192-bit memory bus." Apple confirms M4 Pro at 273 GB/s.
+**Tags**: M3-Pro,bandwidth-reduction,192-bit,M4-Pro,256-bit,273-GB-s
 
 ## Finding 101: STREAM benchmark measured bandwidth: M4 CPU=103 GB/s, M4 GPU=100 GB/s (theoretical peak 120 GB/s, ~85% utilization). M3 CPU=92 GB/s, GPU=92 GB/s. M2 CPU=78 GB/s, GPU=91 GB/s. M1 CPU=59 GB/s, GPU=60 GB/s.
 **Confidence**: verified
@@ -197,6 +269,12 @@
 **Source**: Hacker News - M4 Max memory discussion
 **Evidence**: HN discussion citing AnandTech: "benchmarks showed the M1 Max could only achieve approximately 50% of theoretical CPU bandwidth in real workloads, with GPU utilization even lower in 3D applications."
 **Tags**: bandwidth-utilization,real-world,m1-max
+
+## Finding 638: Known discrepancy in Apple Silicon cache line size: macOS sysctl reports 128 bytes, while some hardware measurements indicate 64 bytes. Expert hypothesis: Apple may implement dual-mode behavior where cleaning a logical 128-byte line addresses two physical 64-byte lines. The EXAM paper confirms SLC uses 128-byte lines matching L2. This affects compute kernel memory coalescing calculations.
+**Confidence**: high
+**Source**: Analyzing the memory ordering models of the Apple M1 (HN discussion)
+**Evidence**: HN discussion: "macOS sysctl reports 128 bytes" vs "Asahi Linux and hardware measurements indicate 64 bytes." EXAM paper confirms "System-level cache line size is 128 bytes, same as L2 caches."
+**Tags**: cache-line,128-byte,64-byte,discrepancy,coalescing
 
 ## Finding 54: Apple Silicon SLC uses HYBRID inclusiveness policy: inclusive wrt GPU cache but exclusive wrt CPU cache. When GPU accesses data first, subsequent CPU access hits SLC. CPU evictions do NOT necessarily remain in SLC. SLC uses 128-byte cache lines, indexes from physical address bit 14+, pseudo-random replacement. Hardware coherency ensures GPU reads shared data directly from CPU caches; GPU writes automatically invalidate corresponding CPU cache lines. No explicit cache flushing ever required.
 **Confidence**: verified
@@ -228,6 +306,12 @@
 **Evidence**: Apple Metal Shading Language Specification v3.2, memory model section. Apple Silicon hardware coherency means the attribute primarily affects compiler behavior rather than generating cache flushes.
 **Tags**: coherent-device,MSL,buffer-attribute,memory-model,Metal3.2
 
+## Finding 636: MSL 3.2 introduced device-scope memory coherency: coherent(device) qualifier for buffers, memory_coherence_device for textures, and atomic_thread_fence with thread_scope_device for cross-threadgroup memory ordering WITHOUT execution barriers. Usage requires: (1) buffer declared coherent(device), (2) sync via atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst), (3) device-scope atomics for visibility. Before MSL 3.2, cross-threadgroup communication required multiple kernel dispatches.
+**Confidence**: verified
+**Source**: Support for globally coherent buffers in MSL
+**Evidence**: SPIRV-Cross issue #2473: MSL 3.2 supports "coherent(device) qualifiers for buffers and memory_coherence_device for textures." "Threads must still be synchronized using device atomics and the new atomic_thread_fence with thread_scope_device." Documented in MSL Spec sections 6.15.2 and 6.15.3.
+**Tags**: msl-3.2,coherent-device,atomic-thread-fence,thread-scope-device,cross-threadgroup
+
 ## Finding 115: Apple Fabric is the on-chip interconnect connecting CPU, GPU, Neural Engine, media engines, and memory controllers. It contains ~12 ARM cores running their own firmware (resembling cut-down E-cores). Fabric handles memory arbitration, coherence, and I/O routing.
 **Confidence**: medium
 **Source**: Eclectic Light Company - Explainer: chipsets and Fabric
@@ -252,6 +336,12 @@
 **Evidence**: Metal by Example (A15 article) documents lossy compression API. EXAM paper demonstrates data-dependent GPU memory usage (white vs black iframes). A12/A14/A15 progression documented across multiple Apple sources.
 **Tags**: compression,lossless,lossy,bandwidth-amplification,texture,hardware
 
+## Finding 651: GPU hardware bandwidth compression applies to TEXTURES only, NOT general compute buffers. Lossless compression (since A12), lossy compression (since A15, 50% savings). Lossy-compressed textures "cannot be used with shader write operations" — precluding most compute use cases. GPU compute workloads using MTLBuffer do NOT benefit from hardware bandwidth compression.
+**Confidence**: high
+**Source**: Understanding Metal Enhancements in the A15 GPU
+**Evidence**: Metal by Example (A15 analysis): lossy-compressed textures "cannot be used with shader write operations, which precludes some compute use cases." WWDC: "lossy compression provides 50% memory savings."
+**Tags**: compression,textures-only,not-compute,lossy,lossless,A15,bandwidth
+
 ## Finding 78: MTLHazardTrackingModeUntracked disables Metal automatic dependency tracking for a resource, placing responsibility on the developer to prevent read/write hazards manually using MTLFence, MTLEvent, MTLSharedEvent, or memory barriers. Default for heap-allocated resources is untracked. The main benefit is eliminating "false sharing" where tracked resources on a heap cause GPU work to serialize even when sub-resources are independent. Apple engineer warning: "this API requires care as all tracking is done at the granularity of the heap." MTLFence is the lowest-overhead synchronization primitive for single-queue scenarios.
 **Confidence**: verified
 **Source**: WWDC22: Go bindless with Metal 3
@@ -270,6 +360,12 @@
 **Evidence**: Gregg Ant macOS memory management blog: "Frame buffers, shaders, textures, and render targets occupy RAM, thus the RAM is now pulling double-duty as the RAM and VRAM." Also notes Mac Studio 192GB as example of massive GPU-accessible memory. XDA Developers article on unified memory architecture confirms shared bandwidth.
 **Tags**: unified-memory,VRAM,GPU-memory,shared-bandwidth,Mac-Studio
 
+## Finding 650: TechInsights die analysis of M4 Max (TM5J94) shows four Micron DRAM dies mounted on the package alongside the SoC die. Four DRAM dies is consistent with 512-bit bus (32 x 16-bit controllers, 8 controllers per DRAM die).
+**Confidence**: high
+**Source**: Apple M4 Max SoC Floorplan Quick Look Analysis
+**Evidence**: TechInsights: "the Apple 3185 M4 Max SoC comprises a TSMC manufactured TM5J94 processor die mounted alongside four Micron DRAM memory chips."
+**Tags**: M4-Max,die-shot,TechInsights,4-DRAM-dies,Micron,512-bit
+
 ## Finding 125: All memory is coherent between CPU and GPU on Apple Silicon without explicit cache flushing. Asahi Linux team confirms: "We have not used a single cache management instruction yet and everything still works." No PCIe bus overhead - CPU/GPU access same physical DRAM.
 **Confidence**: verified
 **Source**: Asahi Linux - Tales of the M1 GPU
@@ -281,6 +377,12 @@
 **Source**: macOS Memory Management - Gregg Ant
 **Evidence**: Gregg Ant blog on macOS memory management confirms VM compression since Mavericks. WWDC21 session 10153 details lossless bandwidth compression for GPU. Metal by Example "Understanding Metal Enhancements in A15 Bionic GPU" discusses lossy compression. Apple documentation for optimizeContentsForGPUAccess confirms the API.
 **Tags**: memory-compression,VM-compression,lossless-compression,lossy-compression,bandwidth
+
+## Finding 663: macOS VM compression (since Mavericks) compresses inactive pages in RAM before SSD swap. However, NO evidence that Metal GPU buffers (.shared or .private) are subject to VM compression. GPU buffers with MTLPurgeableState can be EVICTED (deallocated) under pressure but are not compressed. Metal texture compression is for bandwidth only, not memory capacity.
+**Confidence**: medium
+**Source**: How Memory Works in macOS
+**Evidence**: No Apple documentation mentions GPU buffer compression. VM compressor targets inactive process pages. Metal by Example confirms lossy compression exists only for texture render targets, not compute buffers.
+**Tags**: VM-compression,GPU-buffers-exempt,purgeable,eviction-not-compression
 
 ## Finding 60: M4 base chip has 128-bit memory bus with 2 channels (64-bit per channel) using LPDDR5X-7500 (3750 MHz), delivering 120 GB/s bandwidth.
 **Confidence**: high
@@ -336,6 +438,12 @@
 **Evidence**: Apple Developer documentation for MTLDevice.maxBufferLength: "The largest amount of memory, in bytes, that a GPU device can allocate to a buffer instance." Metal Feature Set Tables PDF contains per-family specifications. The property must be queried at runtime for accurate values.
 **Tags**: maxBufferLength,buffer-size,memory-limit
 
+## Finding 662: GPU memory allocation capped at ~75% of physical memory via recommendedMaxWorkingSetSize. Observed: 128GB system = ~96GB GPU, 64GB = ~48GB. Can be overridden with "sudo sysctl iogpu.wired_limit_mb=<desired_MB>" (unsupported). When exceeded: partial offload to CPU or macOS VM swapping with severe performance degradation. No GPU-specific OOM kill — general jetsam/memory pressure system applies.
+**Confidence**: high
+**Source**: Apple silicon limitations with usage on local LLM
+**Evidence**: Greg's Tech Notes: "Apple Silicon Macs enforce a 75% unified memory cap for GPU operations." "Users can increase allocation via: sudo sysctl iogpu.wired_limit_mb=<desired_MB>."
+**Tags**: memory-limits,75-percent,sysctl-override,iogpu.wired_limit_mb,swap,jetsam
+
 ## Finding 79: MTLPurgeableState has four states: keepCurrent (query without changing), nonVolatile (normal, cannot be purged), volatile (can be purged under memory pressure, contents become undefined), empty (already purged/discarded). Use setPurgeableState(.volatile) to hint that a resource can be reclaimed. Before re-reading a volatile resource, check setPurgeableState(.nonVolatile) return value - if it returns .empty, contents were purged. Known issue: Metal heap allocations may not always be released back to macOS even when marked volatile, as reported in developer forums.
 **Confidence**: high
 **Source**: Apple Developer: MTLPurgeableState
@@ -347,6 +455,12 @@
 **Source**: Analyzing the memory ordering models of the Apple M1
 **Evidence**: ScienceDirect paper "Analyzing the memory ordering models of the Apple M1" confirms TSO for CPU. Metal documentation requires explicit sync for cross-domain ordering.
 **Tags**: memory-ordering,TSO,MTLFence,MTLEvent,synchronization
+
+## Finding 632: TSO (Total Store Ordering, used by Rosetta 2) is on average 8.94% slower than ARM's native weak memory ordering across multi-threaded workloads. Stores and ldadds are "generally and sometimes drastically slower" under TSO. The performance gap varies by workload — some SPEC2017 benchmarks show minimal difference while others show significant degradation.
+**Confidence**: verified
+**Source**: Analyzing the memory ordering models of the Apple M1
+**Evidence**: Wrenger et al. "Analyzing the memory ordering models of the Apple M1": "Based on various workloads...TSO is, on average, 8.94% slower than ARM's weaker memory ordering."
+**Tags**: tso,arm,weak-ordering,rosetta2,performance,8.94-percent
 
 ## Finding 70: Apple places LPDDR5X SDRAM directly on the package substrate (not PoP or memory-down on logic board). Uses bespoke 64 and 128-Gbit x128 packages with at least 8 dies. This enables extreme channel density impossible with board-level implementations.
 **Confidence**: high
@@ -378,6 +492,12 @@
 **Evidence**: Asahi Linux: "GPU faults seem to be quite poorly handled as a stop-the-world process." Also: "If firmware crashes, the only way to recover is to fully reboot." The firmware-mediated architecture means no direct kernel-GPU fault handling path.
 **Tags**: page-fault,firmware,ASC,fault-recovery,GPU-halt
 
+## Finding 652: 16KB page size enables larger VIPT (Virtually Indexed, Physically Tagged) L1 caches without increasing associativity: "Apple got to bump their L1 D to 128KiB without needing to go above 8-way associativity." Also provides 4x more TLB coverage per entry vs 4KB pages, reducing address translation overhead for GPU workloads accessing large datasets.
+**Confidence**: high
+**Source**: Apple Silicon 16kb page size benefits
+**Evidence**: TechBoards: "Apple got to bump their L1 D to 128KiB without needing to go above 8-way associativity." "16KB pages cover more memory range per TLB entry compared to 4KB pages."
+**Tags**: 16KB-page,VIPT,L1-cache,TLB-coverage,address-translation
+
 ## Finding 81: The constant CPU-GPU virtual address offset enables novel programming patterns: (1) SYCL USM-style shared pointers with zero-cost GPU-side address translation, (2) CPU pointers captured in GPU kernel lambdas get translated at encoding time, (3) indirect pointer chasing works because offset is uniform across allocations, (4) enables GPU-accessible linked data structures (lists, trees) with CPU pointers, (5) CPU malloc'd memory can be made GPU-accessible via heap mapping. Trade-offs: 1 cycle penalty per access for shared pointers, higher for system allocations.
 **Confidence**: high
 **Source**: Philip Turner - metal-usm Project
@@ -389,6 +509,12 @@
 **Source**: Shared Virtual Memory: Its Design and Performance Implications for Diverse Applications
 **Evidence**: ICS 2024 paper. Tested on AMD GPUs deployed in supercomputers (Frontier-class). Quantitative analysis shows SVM prefetching grabs up to 64 pages per fault, which is efficient when memory is available but catastrophic under oversubscription. The prefetch-evict feedback loop is a novel finding not previously documented.
 **Tags**: shared-virtual-memory,demand-paging,prefetching,oversubscription,thrashing,AMD
+
+## Finding 633: On Apple Silicon, storageModeShared resources need NO data synchronization (no didModifyRange, no synchronize calls) — only temporal synchronization is required (ensure CPU and GPU don't access simultaneously). The managed storage mode with explicit sync calls is only needed for Intel/AMD discrete GPU Macs with separate video memory. On UMA, it's purely about timing, not data coherency.
+**Confidence**: verified
+**Source**: Metal Best Practices Guide: Resource Options
+**Evidence**: Apple Best Practices: "data don't have to be moved around between main, GPU or any other dedicated memory." Resource management on Apple Silicon is "about synchronizing the access between the CPU and GPU to happen safely at the right time, rather than duplicating or shadowing data."
+**Tags**: storage-mode,shared,managed,synchronization,no-didModifyRange,temporal-sync
 
 ## Finding 73: On Apple Silicon (UMA), .shared and .private storage modes both allocate from the same physical unified memory pool. The key difference is access permissions: .shared allows CPU+GPU access, .private allows GPU-only access. For compute workloads, .private textures get automatic lossless bandwidth compression, while .shared buffers do not. Apple documentation states .shared is the default recommended choice for Apple GPUs, and .private should only be used when the CPU never accesses the resource.
 **Confidence**: verified
@@ -420,6 +546,12 @@
 **Evidence**: Metal Best Practices Guide "Resource Options" section provides detailed guidelines: "Managed mode defines a synchronized memory pair for a resource, with one copy in system memory and another in video memory." It specifies didModifyRange: for CPU writes and synchronizeResource: for GPU writes. Also notes that shared mode is "buffers only" on macOS (Intel) and textures cannot use shared mode.
 **Tags**: storage-mode,managed,Intel,discrete-GPU,synchronization
 
+## Finding 634: Metal provides three synchronization levels: (1) MTLFence — within a single command buffer, synchronizes across passes (lightest); (2) MTLEvent — across command buffers within a device, provides cross-queue ordering; (3) MTLSharedEvent — across multiple CPUs, GPUs, and processes (heaviest). Fences cannot control inter-queue ordering. Events provide cross-queue sequencing. SharedEvents enable CPU-GPU and cross-process signaling with counter values.
+**Confidence**: verified
+**Source**: MTLFence | Apple Developer Documentation
+**Evidence**: Apple docs: MTLFence "synchronizes access across different passes within a command buffer." MTLEvent "synchronizes within a single Metal device." MTLSharedEvent "synchronizes across multiple CPUs, GPUs, and processes."
+**Tags**: MTLFence,MTLEvent,MTLSharedEvent,synchronization,command-buffer,cross-queue
+
 ## Finding 490: First comprehensive characterization of Unified Physical Memory (UPM) on AMD MI300A APUs shows that UPM-based unified memory model matches or outperforms explicitly managed memory while reducing memory costs by up to 44%. Detailed analysis of memory latency, bandwidth, coherence overhead, TLB management, and Infinity Cache utilization. Page fault handling and allocation overhead are key bottlenecks.
 **Confidence**: high
 **Source**: Dissecting CPU-GPU Unified Physical Memory on AMD MI300A APUs
@@ -431,6 +563,30 @@
 **Source**: Asahi Linux - Apple GPU (AGX) Documentation
 **Evidence**: Asahi Linux AGX documentation: GPU MMU called UAT uses ARM64 page table format. Firmware configures GPU TTBR to share page tables with its own ARM64 address space. 40-bit VA space with 16KB pages.
 **Tags**: UAT,page-tables,ARM64,virtual-memory,address-translation
+
+## Finding 653: UAT page table detail: 4 levels with L0 (2 entries), L1 (8 entries), L2 (2048 entries), L3 (2048 entries). 40-bit GPU virtual addresses, top-bit sign-extended to 64. Pages always 16 KB — GPU MMU does NOT support huge pages (unlike the ASC coprocessor which does). ASC firmware sets page table bases as TTBR0/TTBR1 registers, identical to ARM64 MMU behavior.
+**Confidence**: verified
+**Source**: HW:AGX - Asahi Linux Wiki
+**Evidence**: Asahi Linux AGX docs and kernel patches: "The UAT implements a 4-level hierarchical page table structure: L0 has 2 entries, L1 has 8, L2 has 2048, L3 has 2048." "Only 16K page mode is supported. The coprocessor MMU supports huge pages but the GPU MMU does not."
+**Tags**: UAT,page-table,4-level,40-bit,16KB,no-huge-pages,TTBR
+
+## Finding 654: UAT address space split: TTBR0 (lower half, 0x000000000-0x7ffffffff) for per-GPU-VM user mappings, TTBR1 (upper half, sign-extended) for global firmware. Up to 63 simultaneous GPU contexts via TTBAT (Translation Table Base Address Table) containing 64 TTB0/TTB1 pairs. Context 0 reserved for kernel. Shared VM regions in L0[1], per-context in L0[0].
+**Confidence**: verified
+**Source**: iommu/io-pgtable: Add Apple UAT variant format
+**Evidence**: Asahi Linux kernel patch by Asahi Lina: "TTBR0 covers the low half of the address space and is per-GPU-VM. TTBR1 is global." "The driver manages contexts through a TTBAT containing 64 TTB0/TTB1 pairs."
+**Tags**: UAT,TTBR0,TTBR1,TTBAT,63-contexts,address-space-split
+
+## Finding 655: UAT PTE format diverges from standard ARM64: GPU_ACCESS bit (bit 55) enables an entirely different permission model. Three permission schemes: firmware-only (IOMMU_PRIV), GPU-only (IOMMU_NOEXEC), shared GPU/firmware. AP[1:0], PXN, UXN bits reinterpreted through SPRR (System Protection and Region Registers). Three cacheability modes: MMIO, Normal-NC (cache-coherent), and Normal.
+**Confidence**: verified
+**Source**: iommu/io-pgtable: Add Apple UAT variant format
+**Evidence**: Asahi Linux UAT patch: "permissions are interpreted differently from traditional ARM PTEs." "GPU_ACCESS (bit 55): Enables GPU access." "Shareability always set to NS (non-shareable)."
+**Tags**: UAT,PTE,GPU-ACCESS-bit-55,SPRR,permissions,cache-modes
+
+## Finding 658: UAT supports max Output Address Size (OAS) of 42 bits (4 TB physical) and max Input Address Size (IAS) of 48 bits. In practice, driver uses IAS=36 to "drop down one level of page tables, so the driver can install a PTE in the top-level page table directly." M1 Pro/Max DART supports 42-bit physical address space "by shifting the paddr and extending its mask inside the PTE."
+**Confidence**: verified
+**Source**: iommu/io-pgtable: Add Apple UAT variant format
+**Evidence**: Asahi Linux UAT kernel patch: "IAS (Input Address Size): Maximum 48 bits. OAS (Output Address Size): Maximum 42 bits." "The implementation uses IAS=36 to drop down one level."
+**Tags**: UAT,42-bit-OAS,48-bit-IAS,physical-address,address-width
 
 ## Finding 56: On Apple Silicon, CPU and GPU virtual addresses are always offset by a CONSTANT integer, enabling trivial translation. The metal-usm project exploits this: allocate large virtual memory range, find base CPU address and base GPU VA, delta between any allocation's CPU and GPU address matches. Enables: (1) CPU pointers usable from GPU with simple offset, (2) USM (Unified Shared Memory) SYCL-style programming, (3) zero-cost address translation during command encoding. Offset changes when heap reallocates but stays constant within a session.
 **Confidence**: verified
@@ -449,4 +605,22 @@
 **Source**: Confirmed Apple Silicon 16KB page size via sysctl
 **Evidence**: Hacker News discussion with confirmed sysctl output: "hw.pagesize: 16384" on M1. Box64 project notes ARM64 Apple Silicon 16K page size requirement. K3s issue #7335 confirms 16K page kernel. Apple kernel source (xnu) defines ARM64 page parameters dynamically.
 **Tags**: zero-copy,page-size,16KB,ARM64,Apple-Silicon,alignment
+
+## Finding 660: makeBuffer(bytesNoCopy:) requires BOTH start address AND length to be page-aligned (16KB on ARM64). Use posix_memalign() with vm_page_size or getpagesize(). Common error: "newBufferWithBytesNoCopy: pointer is not PAGE_SIZE byte aligned." Specifying only start alignment is insufficient — the allocation must be a multiple of page size in total bytes.
+**Confidence**: verified
+**Source**: makeBuffer(bytesNoCopy:) - Apple Developer Documentation
+**Evidence**: Apple Developer Forums: "Your allocated buffer storage needs to be perfectly page-aligned — both the start and the end. Specifying alignment of the start is not enough; you also need to allocate a multiple of the page size."
+**Tags**: makeBuffer,bytesNoCopy,page-aligned,16KB,posix_memalign,both-start-end
+
+## Finding 661: Complete zero-copy pipeline on Apple Silicon: CVPixelBufferPool (backed by IOSurface) → CVPixelBuffer → CVMetalTextureCache → MTLTexture → GPU compute/render → media engine encode. All stages share the SAME physical memory via IOSurface. CVMetalTextureCache simplifies IOSurface-to-MTLTexture binding and reference counting. Enables camera→GPU→encode with zero memory copies.
+**Confidence**: verified
+**Source**: Create image processing apps powered by Apple silicon - WWDC21
+**Evidence**: WWDC21 session 10153: "Both CVPixelBuffer and the Metal textures are backed by the same underlying IOSurface copy in system memory, enabling seamless data movement between GPU and media engine block with no memory copies."
+**Tags**: zero-copy,CVPixelBuffer,CVMetalTextureCache,IOSurface,media-engine,pipeline
+
+## Finding 709: On Apple Silicon, MTLStorageModeShared buffers achieve near-zero memory transfer overhead. Ingonyama benchmarked 1GB arrays on M1 Pro: total 46.55ms with transfer overhead of only 0.0004ms (0.0009%). CUDA on RTX 4080: 599.2ms with 97.77% on PCIe transfers. While CUDA raw compute is faster (13ms vs 46ms), transfer overhead makes Metal 12.8x faster end-to-end for mixed CPU-GPU workloads.
+**Confidence**: verified
+**Source**: ingonyama-zk/metal-poc - Zero cost memory transfer in Metal
+**Evidence**: ingonyama-zk/metal-poc: GPU elementwise power (parallel) + CPU binary search (sequential). Metal: 0.0004ms transfer + 46.545ms compute. CUDA: 585.844ms transfer + 13.357ms compute.
+**Tags**: unified-memory,zero-copy,benchmark,CPU-GPU,shared-buffer,performance
 
