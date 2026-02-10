@@ -10,7 +10,7 @@ created: 2026-02-10
 
 Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count or computes emission threadgroups. Accept hardcoded values, skip tests.
 
-- [ ] 1.1 Add DispatchArgs and GpuEmissionParams structs to types.rs and types.h
+- [x] 1.1 Add DispatchArgs and GpuEmissionParams structs to types.rs and types.h
   - **Do**:
     1. In `particle-system/src/types.rs`, add `DispatchArgs` struct: `#[repr(C)] pub struct DispatchArgs { pub threadgroups_per_grid: [u32; 3] }` with Default impl `[0,1,1]`
     2. Add `GpuEmissionParams` struct: `#[repr(C)] pub struct GpuEmissionParams { pub emission_count: u32, pub actual_burst_count: u32, pub _pad0: u32, pub _pad1: u32 }` with Default

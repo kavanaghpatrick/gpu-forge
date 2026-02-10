@@ -52,6 +52,25 @@ struct DrawArgs {
     uint baseInstance;    // first instance (0)
 };
 
+// Indirect dispatch arguments for dispatchThreadgroups(indirectBuffer:).
+// Layout: 3 x uint = 12 bytes, matching Metal's indirect dispatch buffer format.
+// Written by prepare_dispatch kernel on GPU each frame.
+struct DispatchArgs {
+    uint threadgroupsPerGridX;
+    uint threadgroupsPerGridY;
+    uint threadgroupsPerGridZ;
+};
+
+// GPU-computed emission parameters written by prepare_dispatch kernel.
+// Layout: 4 x uint = 16 bytes (16-byte aligned for GPU buffer access).
+// Consumed by emission_kernel to know how many particles to emit.
+struct GpuEmissionParams {
+    uint emission_count;
+    uint actual_burst_count;
+    uint _pad0;
+    uint _pad1;
+};
+
 // Counter header for dead/alive list buffers.
 // Layout: first 16 bytes of buffer.
 //   offset 0:  count (uint, atomic counter)

@@ -150,6 +150,50 @@ pub struct CounterHeader {
 #[allow(dead_code)]
 pub const COUNTER_HEADER_SIZE: usize = std::mem::size_of::<CounterHeader>();
 
+/// Indirect dispatch arguments for `dispatchThreadgroups(indirectBuffer:)`.
+///
+/// Layout: 3 x u32 = 12 bytes, matching Metal's indirect dispatch buffer format.
+/// Written by `prepare_dispatch` kernel on GPU each frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct DispatchArgs {
+    pub threadgroups_per_grid: [u32; 3],
+}
+
+impl Default for DispatchArgs {
+    fn default() -> Self {
+        Self {
+            threadgroups_per_grid: [0, 1, 1],
+        }
+    }
+}
+
+/// GPU-computed emission parameters written by `prepare_dispatch` kernel.
+///
+/// Layout: 4 x u32 = 16 bytes (16-byte aligned for GPU buffer access).
+/// Consumed by `emission_kernel` to know how many particles to emit.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct GpuEmissionParams {
+    pub emission_count: u32,
+    pub actual_burst_count: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
+impl Default for GpuEmissionParams {
+    fn default() -> Self {
+        Self {
+            emission_count: 0,
+            actual_burst_count: 0,
+            _pad0: 0,
+            _pad1: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +258,62 @@ mod tests {
         assert_eq!(args.instance_count, 0);
         assert_eq!(args.vertex_start, 0);
         assert_eq!(args.base_instance, 0);
+    }
+
+    #[test]
+    fn test_dispatch_args_layout() {
+        // DispatchArgs: 3 x u32 = 12 bytes, 4-byte aligned
+        assert_eq!(
+            mem::size_of::<DispatchArgs>(),
+            12,
+            "DispatchArgs must be 12 bytes (3 x u32)"
+        );
+        assert_eq!(
+            mem::align_of::<DispatchArgs>(),
+            4,
+            "DispatchArgs must be 4-byte aligned"
+        );
+
+        // Verify field offsets: threadgroups_per_grid[0] at 0, [1] at 4, [2] at 8
+        let args = DispatchArgs::default();
+        let base = &args as *const DispatchArgs as *const u8;
+        unsafe {
+            let x = base as *const u32;
+            assert_eq!(*x, 0, "threadgroups_per_grid[0] default should be 0");
+
+            let y = base.add(4) as *const u32;
+            assert_eq!(*y, 1, "threadgroups_per_grid[1] default should be 1");
+
+            let z = base.add(8) as *const u32;
+            assert_eq!(*z, 1, "threadgroups_per_grid[2] default should be 1");
+        }
+    }
+
+    #[test]
+    fn test_gpu_emission_params_layout() {
+        // GpuEmissionParams: 4 x u32 = 16 bytes
+        assert_eq!(
+            mem::size_of::<GpuEmissionParams>(),
+            16,
+            "GpuEmissionParams must be 16 bytes (4 x u32)"
+        );
+
+        // Verify field offsets: emission_count at 0, actual_burst_count at 4, _pad0 at 8, _pad1 at 12
+        let params = GpuEmissionParams::default();
+        let base = &params as *const GpuEmissionParams as *const u8;
+        unsafe {
+            let emission_count = base as *const u32;
+            assert_eq!(*emission_count, 0, "emission_count offset 0");
+
+            let actual_burst = base.add(4) as *const u32;
+            assert_eq!(*actual_burst, 0, "actual_burst_count offset 4");
+
+            let pad0 = base.add(8) as *const u32;
+            assert_eq!(*pad0, 0, "_pad0 offset 8");
+
+            let pad1 = base.add(12) as *const u32;
+            assert_eq!(*pad1, 0, "_pad1 offset 12");
+        }
     }
 }
 
