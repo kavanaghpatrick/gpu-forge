@@ -437,7 +437,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Commit**: `refactor(buffers): improve error handling and safety documentation`
   - _Design: Error Handling_
 
-- [ ] 5.3 [VERIFY] Quality checkpoint: full test suite after refactoring
+- [x] 5.3 [VERIFY] Quality checkpoint: full test suite after refactoring
   - **Do**: Run full build and test suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass, no regressions from refactoring
