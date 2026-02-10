@@ -384,7 +384,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - _Requirements: NFR-4, NFR-5_
   - _Design: Section 11.2, 11.5_
 
-- [ ] 4.4 [VERIFY] Quality checkpoint: all tests including new GPU integration
+- [x] 4.4 [VERIFY] Quality checkpoint: all tests including new GPU integration
   - **Do**: Run full test suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass (unit + GPU integration, old + new)
