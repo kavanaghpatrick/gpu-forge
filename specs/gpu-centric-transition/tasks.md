@@ -131,13 +131,13 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: NFR-5_
   - _Design: Section 11.2_
 
-- [ ] 1.9 [VERIFY] Quality checkpoint: full test suite
+- [x] 1.9 [VERIFY] Quality checkpoint: full test suite
   - **Do**: Run full build and complete test suite including GPU integration tests
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass (61+ unit tests + 4 GPU integration tests), zero regressions
   - **Commit**: `chore(gpu-centric): pass Phase 1 quality checkpoint` (only if fixes needed)
 
-- [ ] 1.10 POC Checkpoint — verify indirect dispatch works end-to-end
+- [x] 1.10 POC Checkpoint — verify indirect dispatch works end-to-end
   - **Do**:
     1. Run `cargo build` to confirm compilation
     2. Run `cargo test` to confirm all tests pass
