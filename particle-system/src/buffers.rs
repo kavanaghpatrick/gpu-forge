@@ -198,4 +198,25 @@ impl ParticlePool {
             std::ptr::write(ptr, Uniforms::default());
         }
     }
+
+    /// Get (read_list, write_list) based on ping-pong flag.
+    ///
+    /// - `ping_pong = false`: read from A (contains last frame's survivors), write to B
+    /// - `ping_pong = true`:  read from B (contains last frame's survivors), write to A
+    ///
+    /// The read list holds previous survivors + receives new emissions.
+    /// The write list receives this frame's survivors from the update kernel.
+    pub fn get_ping_pong_lists(
+        &self,
+        ping_pong: bool,
+    ) -> (
+        &ProtocolObject<dyn MTLBuffer>,
+        &ProtocolObject<dyn MTLBuffer>,
+    ) {
+        if ping_pong {
+            (&self.alive_list_b, &self.alive_list_a)
+        } else {
+            (&self.alive_list_a, &self.alive_list_b)
+        }
+    }
 }

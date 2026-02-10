@@ -192,7 +192,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-7, AC-5.1 through AC-5.6, AC-7.1 through AC-7.3_
   - _Design: Physics Update Kernel_
 
-- [ ] 1.10 Alive list compaction and ping-pong swap
+- [x] 1.10 Alive list compaction and ping-pong swap
   - **Do**:
     1. Create `shaders/compact.metal`: implement simplified compaction
        - POC approach: use atomic append instead of prefix scan (simpler, works at 1M scale)

@@ -31,6 +31,8 @@ struct App {
     pool: Option<ParticlePool>,
     frame_ring: FrameRing,
     frame_number: u32,
+    /// Ping-pong flag: false = A is read/B is write; true = B is read/A is write.
+    ping_pong: bool,
 }
 
 impl App {
@@ -41,6 +43,7 @@ impl App {
             pool: None,
             frame_ring: FrameRing::new(),
             frame_number: 0,
+            ping_pong: false,
         }
     }
 
@@ -57,12 +60,16 @@ impl App {
         // Acquire a frame slot (blocks if all 3 are in use)
         self.frame_ring.acquire();
 
-        // --- Reset alive list counters to 0 at frame start (CPU write) ---
+        // --- Ping-pong: determine read and write lists ---
+        // read_list: contains last frame's survivors; emission appends new particles here
+        // write_list: update kernel writes this frame's survivors here; render uses this
+        let (read_list, write_list) = pool.get_ping_pong_lists(self.ping_pong);
+
+        // --- Reset ONLY the write list counter to 0 at frame start (CPU write) ---
+        // The read list still holds last frame's survivors — do NOT reset it.
         unsafe {
-            let alive_a_ptr = pool.alive_list_a.contents().as_ptr() as *mut CounterHeader;
-            (*alive_a_ptr).count = 0;
-            let alive_b_ptr = pool.alive_list_b.contents().as_ptr() as *mut CounterHeader;
-            (*alive_b_ptr).count = 0;
+            let write_ptr = write_list.contents().as_ptr() as *mut CounterHeader;
+            (*write_ptr).count = 0;
         }
 
         // --- Update uniforms ---
@@ -118,17 +125,17 @@ impl App {
         self.frame_ring.register_completion_handler(&command_buffer);
 
         // --- Emission compute pass ---
+        // Emission appends new particles to the READ list (alongside last frame's survivors).
         if let Some(compute_encoder) = command_buffer.computeCommandEncoder() {
             compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
 
-            // Set buffers matching emission_kernel signature:
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list,
+            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
             // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
             // buffer(6) = colors, buffer(7) = sizes
             unsafe {
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 2);
+                compute_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 3);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 4);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
@@ -148,21 +155,19 @@ impl App {
         }
 
         // --- Physics update compute pass ---
-        // Reads from alive_list_a (emission output), writes survivors to alive_list_b,
-        // writes dead particles back to dead_list.
+        // Reads from read_list (last frame's survivors + this frame's new emissions).
+        // Writes survivors to write_list, writes dead particles back to dead_list.
         // POC shortcut: dispatch ceil(pool_size / 256) threadgroups; guard in shader.
         if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
             update_encoder.setComputePipelineState(&gpu.update_pipeline);
 
-            // Set buffers matching update_physics_kernel signature:
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list_a (input),
-            // buffer(3) = alive_list_b (output), buffer(4) = positions, buffer(5) = velocities,
-            // buffer(6) = lifetimes, buffer(7) = colors, buffer(8) = sizes
+            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = read_list (input),
+            // buffer(3) = write_list (output), buffer(4-8) = SoA data
             unsafe {
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 2);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_b), 0, 3);
+                update_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
+                update_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 3);
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 4);
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 5);
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 6);
@@ -182,11 +187,11 @@ impl App {
         }
 
         // --- Sync alive count to indirect args (GPU compute, single thread) ---
-        // Now reads from alive_list_b (update kernel output) instead of alive_list_a
+        // Reads from write_list (update kernel output = this frame's survivors).
         if let Some(sync_encoder) = command_buffer.computeCommandEncoder() {
             sync_encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
             unsafe {
-                sync_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_b), 0, 0);
+                sync_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 0);
                 sync_encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
             }
             sync_encoder.dispatchThreadgroups_threadsPerThreadgroup(
@@ -209,11 +214,9 @@ impl App {
         encoder.setRenderPipelineState(&gpu.render_pipeline);
         encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
 
-        // Bind vertex buffers matching render.metal vertex_main signature:
-        // buffer(0) = alive_list_b (survivors from update), buffer(1) = positions,
-        // buffer(2) = colors, buffer(3) = sizes, buffer(4) = uniforms
+        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniforms
         unsafe {
-            encoder.setVertexBuffer_offset_atIndex(Some(&pool.alive_list_b), 0, 0);
+            encoder.setVertexBuffer_offset_atIndex(Some(write_list), 0, 0);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.colors), 0, 2);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.sizes), 0, 3);
@@ -234,6 +237,9 @@ impl App {
         // Present drawable and commit
         command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
         command_buffer.commit();
+
+        // Flip ping-pong: next frame swaps read/write roles
+        self.ping_pong = !self.ping_pong;
 
         // Advance frame ring index and frame number
         self.frame_ring.advance();
