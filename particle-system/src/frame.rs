@@ -62,7 +62,7 @@ impl FrameRing {
         // Update FPS counter
         self.fps_frame_count += 1;
         let fps_elapsed = now.duration_since(self.fps_last_update);
-        if fps_elapsed.as_secs_f32() >= 1.0 {
+        if fps_elapsed.as_secs_f32() >= 0.5 {
             self.fps = (self.fps_frame_count as f32 / fps_elapsed.as_secs_f32()) as u32;
             self.fps_frame_count = 0;
             self.fps_last_update = now;

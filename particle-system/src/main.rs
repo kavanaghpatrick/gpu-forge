@@ -364,12 +364,12 @@ impl App {
                 // Read alive count from the write list (this frame's survivors)
                 // Safe because GPU is done with this buffer (single buffering)
                 let alive_count = pool.read_alive_count(write_list);
-                let pool_size = pool.pool_size;
+                let alive_k = alive_count as f64 / 1_000.0;
+                let pool_m = pool.pool_size as f64 / 1_000_000.0;
+                let fps = self.frame_ring.fps;
+                let frame_ms = if fps > 0 { 1000.0 / fps as f64 } else { 0.0 };
                 let title = format!(
-                    "GPU Particles - {}/{} - {} FPS",
-                    alive_count,
-                    pool_size,
-                    self.frame_ring.fps,
+                    "GPU Particles | {alive_k:.0}K/{pool_m:.0}M | {fps} FPS | {frame_ms:.1}ms",
                 );
                 window.set_title(&title);
             }

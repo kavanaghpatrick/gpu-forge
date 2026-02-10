@@ -419,7 +419,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-21, FR-22, AC-7.7, AC-8.1_
   - _Design: Vertex Shader billboard, lifetime interpolation_
 
-- [ ] 2.10 FPS/particle HUD in window title
+- [x] 2.10 FPS/particle HUD in window title
   - **Do**:
     1. In `src/frame.rs`: read alive list counter from GPU buffer (CPU read via SharedStorage pointer)
     2. Update window title every 0.5 seconds: "GPU Particles | {alive}K/{pool}M | {fps} FPS | {frame_ms:.1}ms"
