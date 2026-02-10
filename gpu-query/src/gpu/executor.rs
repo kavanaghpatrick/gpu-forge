@@ -19,9 +19,10 @@ use crate::gpu::encode;
 use crate::gpu::pipeline::{filter_pso_key, ColumnTypeCode, PsoCache};
 use crate::gpu::pipeline::CompareOp as GpuCompareOp;
 use crate::gpu::types::{AggParams, CsvParseParams, FilterParams};
-use crate::io::catalog::{self, TableEntry};
+use crate::io::catalog::TableEntry;
 use crate::io::format_detect::FileFormat;
 use crate::io::mmap::MmapFile;
+use crate::io::parquet::{self, ColumnData};
 use crate::sql::physical_plan::PhysicalPlan;
 use crate::sql::types::{AggFunc, CompareOp, Value};
 use crate::storage::columnar::ColumnarBatch;
@@ -216,7 +217,7 @@ impl QueryExecutor {
         }
     }
 
-    /// Execute a table scan: mmap file -> GPU CSV parse -> ColumnarBatch.
+    /// Execute a table scan: mmap file -> GPU CSV/Parquet parse -> ColumnarBatch.
     fn execute_scan(
         &self,
         table: &str,
@@ -228,33 +229,118 @@ impl QueryExecutor {
             .find(|e| e.name.eq_ignore_ascii_case(table))
             .ok_or_else(|| format!("Table '{}' not found in catalog", table))?;
 
-        if entry.format != FileFormat::Csv {
-            return Err(format!(
-                "Only CSV files are supported in POC (got {:?})",
-                entry.format
-            ));
+        match entry.format {
+            FileFormat::Csv => {
+                let csv_meta = entry
+                    .csv_metadata
+                    .as_ref()
+                    .ok_or_else(|| format!("No CSV metadata for table '{}'", table))?;
+
+                // Build runtime schema: infer types from first data rows
+                let schema = infer_schema_from_csv(&entry.path, csv_meta)?;
+
+                // Memory-map the file
+                let mmap = MmapFile::open(&entry.path)
+                    .map_err(|e| format!("Failed to mmap '{}': {}", entry.path.display(), e))?;
+
+                // Run GPU CSV parse pipeline
+                let batch = self.gpu_parse_csv(&mmap, &schema, csv_meta.delimiter);
+
+                Ok(ScanResult {
+                    _mmap: mmap,
+                    batch,
+                    schema,
+                    delimiter: csv_meta.delimiter,
+                })
+            }
+            FileFormat::Parquet => {
+                self.execute_parquet_scan(&entry.path)
+            }
+            other => {
+                Err(format!(
+                    "File format {:?} not yet supported for table '{}'",
+                    other, table
+                ))
+            }
+        }
+    }
+
+    /// Execute a Parquet scan: read metadata -> read column data -> upload to GPU buffers.
+    fn execute_parquet_scan(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<ScanResult, String> {
+        let meta = parquet::read_metadata(path)?;
+        let columns_data = parquet::read_columns(path, &meta, None)?;
+
+        let schema = meta.schema.clone();
+        let row_count = meta.row_count;
+        let max_rows = std::cmp::max(row_count, 1);
+
+        // Allocate ColumnarBatch and upload data
+        let mut batch = ColumnarBatch::allocate(&self.device.device, &schema, max_rows);
+        batch.row_count = row_count;
+
+        // Upload column data into the ColumnarBatch buffers
+
+        for (col_name, col_data) in &columns_data {
+            let col_idx = schema
+                .column_index(col_name)
+                .ok_or_else(|| format!("Column '{}' not found in schema", col_name))?;
+            let col_def = &schema.columns[col_idx];
+
+            match col_def.data_type {
+                DataType::Int64 => {
+                    // Find the local int column index
+                    let local_idx = schema.columns[..col_idx]
+                        .iter()
+                        .filter(|c| c.data_type == DataType::Int64)
+                        .count();
+
+                    if let ColumnData::Int64(ref values) = col_data {
+                        // Write directly to the int_buffer at the correct offset
+                        let offset = local_idx * max_rows;
+                        unsafe {
+                            let ptr = batch.int_buffer.contents().as_ptr() as *mut i64;
+                            for (i, &v) in values.iter().enumerate() {
+                                *ptr.add(offset + i) = v;
+                            }
+                        }
+                    }
+                }
+                DataType::Float64 => {
+                    let local_idx = schema.columns[..col_idx]
+                        .iter()
+                        .filter(|c| c.data_type == DataType::Float64)
+                        .count();
+
+                    if let ColumnData::Float64(ref values) = col_data {
+                        // Metal uses float32, so downcast
+                        let offset = local_idx * max_rows;
+                        unsafe {
+                            let ptr = batch.float_buffer.contents().as_ptr() as *mut f32;
+                            for (i, &v) in values.iter().enumerate() {
+                                *ptr.add(offset + i) = v as f32;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Skip unsupported types (Varchar, etc.)
+                }
+            }
         }
 
-        let csv_meta = entry
-            .csv_metadata
-            .as_ref()
-            .ok_or_else(|| format!("No CSV metadata for table '{}'", table))?;
-
-        // Build runtime schema: infer types from first data rows
-        let schema = infer_schema_from_csv(&entry.path, csv_meta)?;
-
-        // Memory-map the file
-        let mmap = MmapFile::open(&entry.path)
-            .map_err(|e| format!("Failed to mmap '{}': {}", entry.path.display(), e))?;
-
-        // Run GPU CSV parse pipeline
-        let batch = self.gpu_parse_csv(&mmap, &schema, csv_meta.delimiter);
+        // We need a dummy mmap for the ScanResult. Create a minimal one.
+        // Since Parquet data is already in GPU buffers, the mmap is just a placeholder.
+        let mmap = MmapFile::open(path)
+            .map_err(|e| format!("Failed to mmap '{}': {}", path.display(), e))?;
 
         Ok(ScanResult {
             _mmap: mmap,
             batch,
             schema,
-            delimiter: csv_meta.delimiter,
+            delimiter: b',',
         })
     }
 

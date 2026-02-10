@@ -106,7 +106,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
 
 After POC validated, build the full query engine with all formats and operators.
 
-- [ ] 2.1 Parquet reader (CPU metadata + GPU decode)
+- [x] 2.1 Parquet reader (CPU metadata + GPU decode)
   - **Do**: Create `src/io/parquet.rs` reading Parquet footer, schema, row group descriptors via `parquet` crate. mmap column chunk byte ranges. Create `shaders/parquet_decode.metal` with `parquet_decode_plain_int64`, `parquet_decode_plain_double`, `parquet_decode_dictionary` kernels. Column pruning: only load queried columns.
   - **Files**: `gpu-query/src/io/parquet.rs`, `gpu-query/shaders/parquet_decode.metal`
   - **Done when**: Can query Parquet files with SELECT/WHERE/aggregate; column pruning reduces I/O
