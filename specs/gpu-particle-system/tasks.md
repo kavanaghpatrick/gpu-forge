@@ -738,7 +738,7 @@ Continuous PR validation until all completion criteria met.
   - **Done when**: All CI checks green
   - **Commit**: `fix(particle): address CI failures` (if needed)
 
-- [ ] 5.2 Address review comments
+- [x] 5.2 Address review comments
   - **Do**:
     1. Check for review comments: `gh pr view --comments`
     2. Address each comment with code changes
