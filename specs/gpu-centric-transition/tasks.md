@@ -459,7 +459,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Done when**: Build, all tests, clippy, and feature-gated build all pass
   - **Commit**: `fix(gpu-centric): address clippy/lint issues` (if fixes needed)
 
-- [ ] 6.2 Create PR and verify CI
+- [x] 6.2 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current` (should be `feat/gpu-particle-system` or similar)
     2. If on default branch, STOP and alert user
