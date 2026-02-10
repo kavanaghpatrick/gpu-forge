@@ -53,8 +53,8 @@ pub struct Uniforms {
     pub frame_number: u32,
     /// Global particle size multiplier
     pub particle_size_scale: f32,
-    /// Number of particles to emit this frame
-    pub emission_count: u32,
+    /// Base emission rate (particles per frame, before GPU clamping)
+    pub base_emission_rate: u32,
     /// Total pool capacity
     pub pool_size: u32,
     /// Pressure gradient interaction strength (default: 0.001)
@@ -92,7 +92,7 @@ impl Default for Uniforms {
             _pad_grid_max: 0.0,
             frame_number: 0,
             particle_size_scale: 1.0,
-            emission_count: 10000,
+            base_emission_rate: 10000,
             pool_size: 1_000_000,
             interaction_strength: 0.001,
             mouse_attraction_radius: 5.0,

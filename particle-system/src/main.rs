@@ -144,7 +144,7 @@ impl App {
             (*uniforms_ptr).mouse_world_pos = mouse_world_pos;
             (*uniforms_ptr).dt = self.frame_ring.dt;
             (*uniforms_ptr).frame_number = self.frame_number;
-            (*uniforms_ptr).emission_count = emission_count;
+            (*uniforms_ptr).base_emission_rate = base_emission;
             (*uniforms_ptr).pool_size = pool.pool_size as u32;
             // Set grid bounds for density field
             (*uniforms_ptr).grid_bounds_min = [-10.0, -10.0, -10.0];

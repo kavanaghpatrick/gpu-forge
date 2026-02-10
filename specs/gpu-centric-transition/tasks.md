@@ -23,7 +23,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-3, FR-4, NFR-6_
   - _Design: Section 4.2, 3.2_
 
-- [ ] 1.2 Rename emission_count to base_emission_rate in Uniforms
+- [x] 1.2 Rename emission_count to base_emission_rate in Uniforms
   - **Do**:
     1. In `types.rs`: rename field `emission_count` to `base_emission_rate` in Uniforms struct + Default impl
     2. In `types.h`: rename `uint emission_count` to `uint base_emission_rate` at offset 200

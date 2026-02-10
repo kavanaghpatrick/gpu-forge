@@ -31,7 +31,7 @@ struct Uniforms {
     float3   grid_bounds_max;       // offset 176 (16 bytes)
     uint     frame_number;          // offset 192 (4 bytes)
     float    particle_size_scale;   // offset 196 (4 bytes)
-    uint     emission_count;        // offset 200 (4 bytes)
+    uint     base_emission_rate;    // offset 200 (4 bytes)
     uint     pool_size;             // offset 204 (4 bytes)
     float    interaction_strength;  // offset 208 (4 bytes)
     float    mouse_attraction_radius;   // offset 212 (4 bytes)

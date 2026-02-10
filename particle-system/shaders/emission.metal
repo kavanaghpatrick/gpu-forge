@@ -45,7 +45,7 @@ kernel void emission_kernel(
     uint                   tid            [[thread_position_in_grid]]
 ) {
     // Guard: only emit up to emission_count particles
-    if (tid >= uniforms.emission_count) return;
+    if (tid >= uniforms.base_emission_rate) return;
 
     // Unique seed per thread per frame for PRNG
     uint seed = tid * 1099087573u + uniforms.frame_number * 2654435761u;

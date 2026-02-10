@@ -39,7 +39,7 @@ struct Uniforms {
     _pad_grid_max: f32,
     frame_number: u32,
     particle_size_scale: f32,
-    emission_count: u32,
+    base_emission_rate: u32,
     pool_size: u32,
     interaction_strength: f32,
     mouse_attraction_radius: f32,
@@ -80,7 +80,7 @@ impl Default for Uniforms {
             _pad_grid_max: 0.0,
             frame_number: 0,
             particle_size_scale: 1.0,
-            emission_count: 100,
+            base_emission_rate: 100,
             pool_size: 1000,
             interaction_strength: 0.001,
             mouse_attraction_radius: 5.0,
@@ -235,11 +235,11 @@ impl EmissionBuffers {
         let colors = alloc_buffer(device, pool_size * 8); // half4 = 8 bytes
         let sizes = alloc_buffer(device, pool_size * 4); // half padded = 4 bytes
 
-        // Initialize uniforms with emission_count and pool_size
+        // Initialize uniforms with base_emission_rate and pool_size
         unsafe {
             let ptr = buffer_ptr(&uniforms) as *mut Uniforms;
             let mut u = Uniforms::default();
-            u.emission_count = 100;
+            u.base_emission_rate = 100;
             u.pool_size = pool_size as u32;
             u.burst_count = 0;
             std::ptr::write(ptr, u);
@@ -557,7 +557,7 @@ impl PhysicsBuffers {
         unsafe {
             let ptr = buffer_ptr(&uniforms) as *mut Uniforms;
             let mut u = Uniforms::default();
-            u.emission_count = 100;
+            u.base_emission_rate = 100;
             u.pool_size = pool_size as u32;
             u.dt = 0.016;
             u.gravity = -9.81;
