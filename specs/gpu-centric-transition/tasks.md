@@ -38,7 +38,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-2_
   - _Design: Section 12.1_
 
-- [ ] 1.3 Create prepare_dispatch.metal kernel
+- [x] 1.3 Create prepare_dispatch.metal kernel
   - **Do**:
     1. Create `particle-system/shaders/prepare_dispatch.metal` with `#include "types.h"`
     2. Implement `kernel void prepare_dispatch(...)` per design Section 3.2:
