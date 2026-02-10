@@ -289,7 +289,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-18, AC-6.3, AC-6.4, AC-6.6, AC-6.7_
   - _Design: Physics Update Kernel - grid density forces_
 
-- [ ] 2.3 [VERIFY] Quality checkpoint: build + run test
+- [x] 2.3 [VERIFY] Quality checkpoint: build + run test
   - **Do**: Build, clippy, brief run test
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build --release 2>&1 | tail -5`
   - **Done when**: Clean build
