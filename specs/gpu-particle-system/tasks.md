@@ -295,7 +295,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - **Done when**: Clean build
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.4 3D perspective camera with orbit controls
+- [x] 2.4 3D perspective camera with orbit controls
   - **Do**:
     1. Create `src/camera.rs`: `OrbitCamera` struct
        - Fields: azimuth, elevation, distance, target (center point), fov, aspect, near, far

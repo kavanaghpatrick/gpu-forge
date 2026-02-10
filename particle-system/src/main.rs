@@ -1,6 +1,8 @@
 mod buffers;
+mod camera;
 mod frame;
 mod gpu;
+mod input;
 mod types;
 
 use std::sync::Arc;
@@ -16,13 +18,15 @@ use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use buffers::ParticlePool;
+use camera::OrbitCamera;
 use frame::FrameRing;
 use gpu::GpuState;
+use input::InputState;
 use types::{CounterHeader, Uniforms};
 
 struct App {
@@ -33,6 +37,10 @@ struct App {
     frame_number: u32,
     /// Ping-pong flag: false = A is read/B is write; true = B is read/A is write.
     ping_pong: bool,
+    /// 3D orbit camera for perspective viewing
+    camera: OrbitCamera,
+    /// Mouse/keyboard input state tracker
+    input: InputState,
 }
 
 impl App {
@@ -44,6 +52,8 @@ impl App {
             frame_ring: FrameRing::new(),
             frame_number: 0,
             ping_pong: false,
+            camera: OrbitCamera::default(),
+            input: InputState::default(),
         }
     }
 
@@ -74,7 +84,8 @@ impl App {
 
         // --- Update uniforms ---
         let emission_count: u32 = 10000;
-        let (view_mat, proj_mat) = types::default_camera_matrices();
+        let view_mat = self.camera.view_matrix();
+        let proj_mat = self.camera.projection_matrix();
         unsafe {
             let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
             (*uniforms_ptr).view_matrix = view_mat;
@@ -342,6 +353,12 @@ impl ApplicationHandler for App {
             _ => panic!("Unsupported platform - expected AppKit window handle"),
         }
 
+        // Set camera aspect ratio from window size
+        let size = window.inner_size();
+        if size.height > 0 {
+            self.camera.aspect = size.width as f32 / size.height as f32;
+        }
+
         // Allocate particle buffers (1M particles)
         let pool = ParticlePool::new(&gpu.device, 1_000_000);
         self.pool = Some(pool);
@@ -368,6 +385,33 @@ impl ApplicationHandler for App {
                         height: height as f64,
                     });
                 }
+                // Update camera aspect ratio
+                if height > 0 {
+                    self.camera.aspect = width as f32 / height as f32;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some((dx, dy)) = self.input.update_cursor(position.x, position.y) {
+                    self.camera.orbit(dx, dy);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                match button {
+                    MouseButton::Left => {
+                        self.input.left_held = state == ElementState::Pressed;
+                    }
+                    MouseButton::Right => {
+                        self.input.right_held = state == ElementState::Pressed;
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll_amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.1,
+                };
+                self.camera.zoom(scroll_amount);
             }
             WindowEvent::RedrawRequested => {
                 self.render();
