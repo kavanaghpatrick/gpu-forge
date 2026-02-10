@@ -315,7 +315,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: FR-16, FR-17_
   - _Design: Section 7.2, 7.3_
 
-- [ ] 3.7 [VERIFY] Quality checkpoint: full build with and without debug-telemetry
+- [x] 3.7 [VERIFY] Quality checkpoint: full build with and without debug-telemetry
   - **Do**: Run full build and test suite in both configurations
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -5 && cargo test --features debug-telemetry 2>&1 | tail -5`
   - **Done when**: All tests pass in both configurations
