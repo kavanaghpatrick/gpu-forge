@@ -133,6 +133,10 @@ impl App {
         };
 
         // Write uniforms to the per-frame slot in the uniform ring buffer
+        // SAFETY: uniform_ring buffer is 768 bytes (3 x 256). uniform_offset is computed from
+        // frame_index (0-2) * 256, so the write stays within bounds. The frame slot is not
+        // accessed by the GPU until the command buffer is committed. StorageModeShared
+        // guarantees CPU-visible pointer. Uniforms is repr(C) with correct alignment.
         unsafe {
             let ring_base = pool.uniform_ring.contents().as_ptr() as *mut u8;
             let uniforms_ptr = ring_base.add(uniform_offset) as *mut Uniforms;
@@ -179,6 +183,8 @@ impl App {
 
         // Create render pass descriptor with dark background
         let render_pass_desc = MTLRenderPassDescriptor::renderPassDescriptor();
+        // SAFETY: objectAtIndexedSubscript(0) is always valid — MTLRenderPassDescriptor
+        // always has at least one color attachment slot.
         let color_attachment = unsafe {
             render_pass_desc.colorAttachments().objectAtIndexedSubscript(0)
         };
@@ -237,6 +243,9 @@ impl App {
         encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
 
         // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniform_ring + lifetimes
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool.
+        // Buffers remain valid for the lifetime of the command buffer (Retained keeps them alive).
+        // uniform_offset is within the uniform_ring buffer bounds (frame_index * 256 < 768).
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(write_list), 0, 0);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
@@ -247,6 +256,9 @@ impl App {
         }
 
         // Indirect draw: triangle strip, 4 vertices per instance, instanceCount from indirect_args
+        // SAFETY: indirect_args buffer contains valid MTLDrawPrimitivesIndirectArguments (DrawArgs).
+        // Written by sync_indirect_args kernel in the same command buffer, so it's always
+        // populated before the render pass executes. Buffer offset 0 is correctly aligned.
         unsafe {
             encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
                 MTLPrimitiveType::TriangleStrip,
@@ -312,6 +324,8 @@ impl ApplicationHandler for App {
         let handle = window.window_handle().expect("Failed to get window handle");
         match handle.as_raw() {
             RawWindowHandle::AppKit(appkit_handle) => {
+                // SAFETY: ns_view is a valid NSView obtained from winit's window handle.
+                // This runs on the main thread during resumed() as required by AppKit.
                 unsafe {
                     gpu.attach_layer_to_view(appkit_handle.ns_view);
                 }

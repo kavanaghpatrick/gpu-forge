@@ -426,7 +426,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Commit**: `refactor(main): extract compute dispatch encoding into helper methods`
   - _Design: Architecture section_
 
-- [ ] 5.2 Add error handling for buffer allocation failures
+- [x] 5.2 Add error handling for buffer allocation failures
   - **Do**:
     1. In `buffers.rs`: ensure all new buffer allocations (emission_dispatch_args, gpu_emission_params, update_dispatch_args, uniform_ring) have clear panic messages matching existing pattern
     2. In `gpu.rs`: ensure prepare_dispatch pipeline creation has clear panic message

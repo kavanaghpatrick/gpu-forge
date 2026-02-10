@@ -182,6 +182,9 @@ impl ParticlePool {
 
     /// Initialize dead list: counter = pool_size, indices = [0, 1, 2, ..., pool_size-1].
     fn init_dead_list(&self) {
+        // SAFETY: Buffer is allocated with correct size (COUNTER_HEADER_SIZE + pool_size * 4)
+        // and alignment via alloc_buffer. We have exclusive CPU access during init (no GPU
+        // work submitted yet). StorageModeShared guarantees CPU-visible pointer.
         unsafe {
             let ptr = buffer_ptr(&self.dead_list);
 
@@ -208,6 +211,9 @@ impl ParticlePool {
 
     /// Initialize an alive list: counter = 0, indices zeroed.
     fn init_alive_list(&self, buffer: &ProtocolObject<dyn MTLBuffer>) {
+        // SAFETY: Buffer is allocated with correct size (COUNTER_HEADER_SIZE + pool_size * 4)
+        // via alloc_buffer. Exclusive CPU access during init (no GPU work submitted yet).
+        // StorageModeShared guarantees CPU-visible pointer.
         unsafe {
             let ptr = buffer_ptr(buffer);
 
@@ -234,6 +240,8 @@ impl ParticlePool {
 
     /// Initialize indirect args: vertexCount=4, instanceCount=0, vertexStart=0, baseInstance=0.
     fn init_indirect_args(&self) {
+        // SAFETY: Buffer is allocated with size >= size_of::<DrawArgs>() (32 bytes).
+        // Exclusive CPU access during init. Pointer is correctly aligned for DrawArgs (4-byte align).
         unsafe {
             let ptr = buffer_ptr(&self.indirect_args) as *mut DrawArgs;
             std::ptr::write(ptr, DrawArgs::default());
@@ -242,6 +250,8 @@ impl ParticlePool {
 
     /// Initialize emission dispatch args to default DispatchArgs (0 threadgroups X, 1 Y, 1 Z).
     fn init_emission_dispatch_args(&self) {
+        // SAFETY: Buffer is allocated with size == size_of::<DispatchArgs>() (12 bytes).
+        // Exclusive CPU access during init. Pointer aligned for u32 (4-byte align).
         unsafe {
             let ptr = buffer_ptr(&self.emission_dispatch_args) as *mut DispatchArgs;
             std::ptr::write(ptr, DispatchArgs::default());
@@ -250,6 +260,8 @@ impl ParticlePool {
 
     /// Initialize GPU emission params to default (all zeros).
     fn init_gpu_emission_params(&self) {
+        // SAFETY: Buffer is allocated with size == size_of::<GpuEmissionParams>() (16 bytes).
+        // Exclusive CPU access during init. Pointer aligned for u32 (4-byte align).
         unsafe {
             let ptr = buffer_ptr(&self.gpu_emission_params) as *mut GpuEmissionParams;
             std::ptr::write(ptr, GpuEmissionParams::default());
@@ -259,6 +271,8 @@ impl ParticlePool {
     /// Initialize update dispatch args with bootstrap value: threadgroups = ceil(pool_size / 256).
     /// This ensures the first frame dispatches enough threads to cover the full pool (design R6).
     fn init_update_dispatch_args(&self) {
+        // SAFETY: Buffer is allocated with size == size_of::<DispatchArgs>() (12 bytes).
+        // Exclusive CPU access during init. Pointer aligned for u32 (4-byte align).
         unsafe {
             let ptr = buffer_ptr(&self.update_dispatch_args) as *mut DispatchArgs;
             std::ptr::write(
@@ -272,6 +286,9 @@ impl ParticlePool {
 
     /// Initialize uniform ring buffer with default Uniforms in all 3 slots.
     fn init_uniform_ring(&self) {
+        // SAFETY: Buffer is allocated with size == 3 * size_of::<Uniforms>() (768 bytes).
+        // Each slot offset is computed by uniforms_offset() ensuring no overlap.
+        // Exclusive CPU access during init. Uniforms is repr(C) with correct alignment.
         unsafe {
             let base = buffer_ptr(&self.uniform_ring) as *mut u8;
             for i in 0..3 {
@@ -284,6 +301,8 @@ impl ParticlePool {
     /// Initialize debug telemetry buffer to all zeros (32 bytes).
     #[cfg(feature = "debug-telemetry")]
     fn init_debug_telemetry(&self) {
+        // SAFETY: Buffer is allocated with size == 32 bytes.
+        // Exclusive CPU access during init. write_bytes zeroes raw memory safely.
         unsafe {
             let ptr = buffer_ptr(&self.debug_telemetry) as *mut u8;
             std::ptr::write_bytes(ptr, 0, 32);
@@ -323,6 +342,10 @@ impl ParticlePool {
         let new_alive_list_b = alloc_buffer(&self.device, new_sizes.counter_list, "alive_list_b");
 
         // Copy existing particle data (CPU-side memcpy via SharedStorage pointer access)
+        // SAFETY: All GPU work is drained via semaphore before grow() is called (main.rs
+        // acquires all MAX_FRAMES_IN_FLIGHT slots). Source and destination buffers are
+        // non-overlapping (newly allocated). Copy sizes are bounded by old_sizes which
+        // are <= new buffer sizes. StorageModeShared guarantees CPU-visible pointers.
         unsafe {
             // SoA buffers: copy old_size * bytes_per_particle
             ptr::copy_nonoverlapping(
@@ -407,6 +430,8 @@ impl ParticlePool {
         );
 
         // Initialize dispatch buffers: emission to zero, update to bootstrap value for new pool_size
+        // SAFETY: Buffers are freshly allocated with correct sizes for their respective types.
+        // All GPU work drained before grow(). Pointers aligned for u32 (4-byte align).
         unsafe {
             let ptr = buffer_ptr(&new_emission_dispatch_args) as *mut DispatchArgs;
             std::ptr::write(ptr, DispatchArgs::default());
@@ -425,6 +450,7 @@ impl ParticlePool {
         #[cfg(feature = "debug-telemetry")]
         {
             let new_debug_telemetry = alloc_buffer(&self.device, 32, "debug_telemetry");
+            // SAFETY: Freshly allocated 32-byte buffer. GPU work drained. write_bytes zeroes raw memory.
             unsafe {
                 std::ptr::write_bytes(new_debug_telemetry.contents().as_ptr() as *mut u8, 0, 32);
             }
@@ -452,6 +478,9 @@ impl ParticlePool {
 
     /// Read the alive count from the given alive list buffer (CPU readback via SharedStorage).
     pub fn read_alive_count(&self, buffer: &ProtocolObject<dyn MTLBuffer>) -> u32 {
+        // SAFETY: Buffer contains a CounterHeader at offset 0 (written during init or by GPU).
+        // GPU work is synchronized via semaphore before CPU reads (SharedStorage coherency).
+        // Pointer is valid and correctly aligned for CounterHeader (4-byte align).
         unsafe {
             let header = buffer.contents().as_ptr() as *const CounterHeader;
             (*header).count
@@ -463,6 +492,9 @@ impl ParticlePool {
     /// This avoids reading from the alive list counter directly, supporting
     /// GPU-centric architecture where indirect_args is the source of truth.
     pub fn read_alive_count_from_indirect(&self) -> u32 {
+        // SAFETY: indirect_args buffer contains DrawArgs at offset 0 (written by sync_indirect_args
+        // kernel). GPU work is synchronized via semaphore before CPU reads. Pointer is valid and
+        // correctly aligned for DrawArgs (4-byte align). StorageModeShared ensures coherency.
         unsafe {
             let draw_args = self.indirect_args.contents().as_ptr() as *const DrawArgs;
             (*draw_args).instance_count

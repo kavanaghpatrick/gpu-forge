@@ -133,6 +133,9 @@ impl GpuState {
         render_desc.setFragmentFunction(Some(&fragment_fn));
 
         // Configure color attachment 0: BGRA8Unorm with alpha blending
+        // SAFETY: objectAtIndexedSubscript(0) is always valid — MTLRenderPipelineDescriptor
+        // always has at least one color attachment slot. The returned reference is valid for
+        // the lifetime of render_desc.
         let color_attachment = unsafe {
             render_desc.colorAttachments().objectAtIndexedSubscript(0)
         };
@@ -191,6 +194,9 @@ impl GpuState {
         // Cast CAMetalLayer to AnyObject for setLayer:
         let layer_obj = layer_ref as *const CAMetalLayer as *const AnyObject;
 
+        // SAFETY: view is a valid NSView pointer (guaranteed by caller's safety contract).
+        // CAMetalLayer cast to AnyObject is safe for Objective-C message passing.
+        // setWantsLayer: and setLayer: are standard NSView methods available on macOS.
         unsafe {
             // [view setWantsLayer:YES]
             let _: () = msg_send![view, setWantsLayer: true];

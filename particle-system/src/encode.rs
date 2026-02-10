@@ -33,8 +33,9 @@ pub fn encode_prepare_dispatch(
         encoder.setLabel(Some(ns_string!("Prepare Dispatch")));
         encoder.setComputePipelineState(&gpu.prepare_dispatch_pipeline);
 
-        // Safety: buffer pointers are valid for the lifetime of the command buffer.
-        // All buffers are StorageModeShared and allocated by ParticlePool.
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool,
+        // kept alive for the lifetime of the command buffer. uniform_offset is within
+        // bounds (frame_index * 256 < 768). StorageModeShared ensures GPU-visible pointers.
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 1);
@@ -73,7 +74,9 @@ pub fn encode_emission(
         encoder.setLabel(Some(ns_string!("Emission")));
         encoder.setComputePipelineState(&gpu.emission_pipeline);
 
-        // Safety: buffer pointers are valid for the lifetime of the command buffer.
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool,
+        // kept alive for the lifetime of the command buffer. uniform_offset is within
+        // bounds (frame_index * 256 < 768). StorageModeShared ensures GPU-visible pointers.
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
             encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
@@ -87,6 +90,9 @@ pub fn encode_emission(
         }
 
         // Indirect dispatch: threadgroup count from prepare_dispatch kernel output
+        // SAFETY: emission_dispatch_args is a valid MTLBuffer containing DispatchArgs
+        // (3 x u32). Written by prepare_dispatch kernel earlier in the same command buffer,
+        // so it's populated before this dispatch executes. Offset 0 is correctly aligned.
         unsafe {
             encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
                 &pool.emission_dispatch_args,
@@ -113,7 +119,8 @@ pub fn encode_grid_clear(
     if let Some(encoder) = cmd_buf.computeCommandEncoder() {
         encoder.setLabel(Some(ns_string!("Grid Clear")));
         encoder.setComputePipelineState(&gpu.grid_clear_pipeline);
-        // Safety: grid_density buffer is valid for the lifetime of the command buffer.
+        // SAFETY: grid_density is a valid Retained<MTLBuffer> (262144 * 4 bytes), kept alive
+        // for the lifetime of the command buffer. StorageModeShared ensures GPU-visible pointer.
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 0);
         }
@@ -145,7 +152,9 @@ pub fn encode_grid_populate(
     if let Some(encoder) = cmd_buf.computeCommandEncoder() {
         encoder.setLabel(Some(ns_string!("Grid Populate")));
         encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
-        // Safety: buffer pointers are valid for the lifetime of the command buffer.
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool,
+        // kept alive for the lifetime of the command buffer. uniform_offset is within
+        // bounds (frame_index * 256 < 768). StorageModeShared ensures GPU-visible pointers.
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
             encoder.setBuffer_offset_atIndex(Some(read_list), 0, 1);
@@ -153,6 +162,9 @@ pub fn encode_grid_populate(
             encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
         }
         // Indirect dispatch: threadgroup count from sync_indirect_args output (update_dispatch_args)
+        // SAFETY: update_dispatch_args is a valid MTLBuffer containing DispatchArgs (3 x u32).
+        // Written by sync_indirect_args in the previous frame (or bootstrapped on first frame).
+        // Offset 0 is correctly aligned.
         unsafe {
             encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
                 &pool.update_dispatch_args,
@@ -185,7 +197,9 @@ pub fn encode_update(
         encoder.setLabel(Some(ns_string!("Physics Update")));
         encoder.setComputePipelineState(&gpu.update_pipeline);
 
-        // Safety: buffer pointers are valid for the lifetime of the command buffer.
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool,
+        // kept alive for the lifetime of the command buffer. uniform_offset is within
+        // bounds (frame_index * 256 < 768). StorageModeShared ensures GPU-visible pointers.
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
             encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
@@ -200,6 +214,9 @@ pub fn encode_update(
         }
 
         // Indirect dispatch: threadgroup count from sync_indirect_args output (update_dispatch_args)
+        // SAFETY: update_dispatch_args is a valid MTLBuffer containing DispatchArgs (3 x u32).
+        // Written by sync_indirect_args in the previous frame (or bootstrapped on first frame).
+        // Offset 0 is correctly aligned.
         unsafe {
             encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
                 &pool.update_dispatch_args,
@@ -228,7 +245,9 @@ pub fn encode_sync_indirect(
     if let Some(encoder) = cmd_buf.computeCommandEncoder() {
         encoder.setLabel(Some(ns_string!("Compaction")));
         encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
-        // Safety: buffer pointers are valid for the lifetime of the command buffer.
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool,
+        // kept alive for the lifetime of the command buffer. StorageModeShared ensures
+        // GPU-visible pointers. Offsets are 0 (start of each buffer).
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(write_list), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
