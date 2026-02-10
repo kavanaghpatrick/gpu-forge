@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod autocomplete;
+pub mod dashboard;
 pub mod editor;
 pub mod event;
 pub mod gradient;

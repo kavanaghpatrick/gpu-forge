@@ -234,7 +234,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-34, AC-4.7_
   - _Design: TUI Rendering Architecture_
 
-- [ ] 3.4 GPU status dashboard and metrics
+- [x] 3.4 GPU status dashboard and metrics
   - **Do**: Create `src/gpu/metrics.rs` collecting GPU metrics (Metal Counters API [KB #258] for utilization and timestamps, `device.currentAllocatedSize` for memory). Create `src/tui/dashboard.rs` with GPU status panel: utilization bar (gradient green->yellow->red), scan throughput, memory used, sparkline history (ratatui Sparkline widget).
   - **Files**: `gpu-query/src/gpu/metrics.rs`, `gpu-query/src/tui/dashboard.rs`
   - **Done when**: GPU utilization bar and sparkline update after each query; metrics accurate

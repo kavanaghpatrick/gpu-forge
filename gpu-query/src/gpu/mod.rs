@@ -3,5 +3,6 @@
 pub mod device;
 pub mod encode;
 pub mod executor;
+pub mod metrics;
 pub mod pipeline;
 pub mod types;
