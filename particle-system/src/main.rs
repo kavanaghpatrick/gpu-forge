@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
+use objc2_foundation::ns_string;
 use objc2_metal::{
     MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLComputeCommandEncoder, MTLLoadAction, MTLPrimitiveType, MTLRenderCommandEncoder,
@@ -196,6 +197,7 @@ impl App {
                 return;
             }
         };
+        command_buffer.setLabel(Some(ns_string!("Frame")));
 
         // Register completion handler that signals the semaphore
         self.frame_ring.register_completion_handler(&command_buffer);
@@ -203,6 +205,7 @@ impl App {
         // --- Emission compute pass ---
         // Emission appends new particles to the READ list (alongside last frame's survivors).
         if let Some(compute_encoder) = command_buffer.computeCommandEncoder() {
+            compute_encoder.setLabel(Some(ns_string!("Emission")));
             compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
 
             // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
@@ -234,6 +237,7 @@ impl App {
         // Zero all 262144 cells in the grid density buffer.
         // Must run BEFORE grid_populate and update so update kernel reads fresh grid data.
         if let Some(grid_clear_encoder) = command_buffer.computeCommandEncoder() {
+            grid_clear_encoder.setLabel(Some(ns_string!("Grid Clear")));
             grid_clear_encoder.setComputePipelineState(&gpu.grid_clear_pipeline);
             unsafe {
                 grid_clear_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 0);
@@ -251,6 +255,7 @@ impl App {
         // Reads from read_list (last frame's survivors + this frame's new emissions).
         // Must run BEFORE update so the update kernel can read the density field.
         if let Some(grid_pop_encoder) = command_buffer.computeCommandEncoder() {
+            grid_pop_encoder.setLabel(Some(ns_string!("Grid Populate")));
             grid_pop_encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
             unsafe {
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
@@ -273,6 +278,7 @@ impl App {
         // Reads grid_density for pressure gradient force.
         // Writes survivors to write_list, writes dead particles back to dead_list.
         if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
+            update_encoder.setLabel(Some(ns_string!("Physics Update")));
             update_encoder.setComputePipelineState(&gpu.update_pipeline);
 
             // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = read_list (input),
@@ -304,6 +310,7 @@ impl App {
         // --- Sync alive count to indirect args (GPU compute, single thread) ---
         // Reads from write_list (update kernel output = this frame's survivors).
         if let Some(sync_encoder) = command_buffer.computeCommandEncoder() {
+            sync_encoder.setLabel(Some(ns_string!("Compaction")));
             sync_encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
             unsafe {
                 sync_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 0);
@@ -324,6 +331,7 @@ impl App {
                 return;
             }
         };
+        encoder.setLabel(Some(ns_string!("Render")));
 
         // Set render pipeline and depth stencil state
         encoder.setRenderPipelineState(&gpu.render_pipeline);

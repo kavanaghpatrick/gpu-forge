@@ -637,7 +637,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Done when**: All tests pass, clean build
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 4.4 Metal profiler signpost labels
+- [x] 4.4 Metal profiler signpost labels
   - **Do**:
     1. In `src/frame.rs`: add os_signpost labels around each compute dispatch and render pass
        - Use `objc2_foundation` or raw C calls to `os_signpost_interval_begin/end`
