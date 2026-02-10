@@ -683,7 +683,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Done when**: All commands pass with zero errors/warnings
   - **Commit**: `chore(particle): pass full local CI` (if fixes needed)
 
-- [ ] 4.7 Create PR and verify CI
+- [x] 4.7 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current`
     2. If on default branch, STOP and alert user
