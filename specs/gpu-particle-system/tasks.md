@@ -375,7 +375,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - **Done when**: Clean build, no clippy warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.8 Progressive pool scaling (1M to 10M)
+- [x] 2.8 Progressive pool scaling (1M to 10M)
   - **Do**:
     1. In `src/buffers.rs`: implement `ParticlePool::grow(new_size)`:
        - Allocate new SoA buffers at new_size

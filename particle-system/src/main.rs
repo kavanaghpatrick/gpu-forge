@@ -19,6 +19,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::PhysicalKey;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -58,17 +59,23 @@ impl App {
     }
 
     fn render(&mut self) {
-        let gpu = match &self.gpu {
-            Some(g) => g,
-            None => return,
-        };
-        let pool = match &self.pool {
-            Some(p) => p,
-            None => return,
-        };
+        if self.gpu.is_none() || self.pool.is_none() {
+            return;
+        }
 
         // Acquire a frame slot (blocks until GPU finishes previous frame)
         self.frame_ring.acquire();
+
+        // --- Handle pending pool grow (safe here: GPU is idle after acquire with single buffering) ---
+        if let Some(new_size) = self.input.pending_grow.take() {
+            if let Some(pool) = &mut self.pool {
+                pool.grow(new_size);
+            }
+        }
+
+        // Borrow gpu and pool after potential grow
+        let gpu = self.gpu.as_ref().unwrap();
+        let pool = self.pool.as_ref().unwrap();
 
         // --- Ping-pong: determine read and write lists ---
         // read_list: contains last frame's survivors; emission appends new particles here
@@ -350,11 +357,17 @@ impl App {
         self.frame_ring.advance();
         self.frame_number = self.frame_number.wrapping_add(1);
 
-        // Update window title with FPS approximately once per second
+        // Update window title with FPS, alive count, and pool size approximately once per second
         if self.frame_ring.should_update_fps() {
             if let Some(window) = &self.window {
+                // Read alive count from the write list (this frame's survivors)
+                // Safe because GPU is done with this buffer (single buffering)
+                let alive_count = pool.read_alive_count(write_list);
+                let pool_size = pool.pool_size;
                 let title = format!(
-                    "GPU Particles - {} FPS",
+                    "GPU Particles - {}/{} - {} FPS",
+                    alive_count,
+                    pool_size,
                     self.frame_ring.fps,
                 );
                 window.set_title(&title);
@@ -409,6 +422,7 @@ impl ApplicationHandler for App {
 
         // Allocate particle buffers (1M particles)
         let pool = ParticlePool::new(&gpu.device, 1_000_000);
+        println!("Pool size: {}M particles", pool.pool_size / 1_000_000);
         self.pool = Some(pool);
 
         self.gpu = Some(gpu);
@@ -465,6 +479,13 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.1,
                 };
                 self.camera.zoom(scroll_amount);
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    if let PhysicalKey::Code(key_code) = event.physical_key {
+                        self.input.handle_pool_key(key_code);
+                    }
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.render();

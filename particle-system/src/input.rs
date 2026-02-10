@@ -70,6 +70,8 @@ pub struct InputState {
     pub burst_requested: bool,
     /// World-space position for the burst emission
     pub burst_world_pos: [f32; 3],
+    /// Pending pool grow size (set by keyboard, consumed at frame boundary)
+    pub pending_grow: Option<usize>,
 }
 
 impl Default for InputState {
@@ -83,6 +85,7 @@ impl Default for InputState {
             right_held: false,
             burst_requested: false,
             burst_world_pos: [0.0, 0.0, 0.0],
+            pending_grow: None,
         }
     }
 }
@@ -92,6 +95,24 @@ impl InputState {
     #[allow(dead_code)]
     pub fn cursor_position(&self) -> (f64, f64) {
         (self.cursor_x, self.cursor_y)
+    }
+
+    /// Handle a key press for pool scaling.
+    /// Keys: 1 -> 1M, 2 -> 2M, 5 -> 5M, 0 -> 10M.
+    /// Sets `pending_grow` which is consumed at the frame boundary.
+    pub fn handle_pool_key(&mut self, key_code: winit::keyboard::KeyCode) {
+        use winit::keyboard::KeyCode;
+        let target = match key_code {
+            KeyCode::Digit1 => Some(1_000_000),
+            KeyCode::Digit2 => Some(2_000_000),
+            KeyCode::Digit5 => Some(5_000_000),
+            KeyCode::Digit0 => Some(10_000_000),
+            _ => None,
+        };
+        if let Some(size) = target {
+            self.pending_grow = Some(size);
+            println!("Pool grow requested: {}M", size / 1_000_000);
+        }
     }
 
     /// Update cursor position and return drag delta if right button is held.
