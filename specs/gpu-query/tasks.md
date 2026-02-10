@@ -207,7 +207,7 @@ After POC validated, build the full query engine with all formats and operators.
 
 ## Phase 3: Dashboard TUI
 
-- [ ] 3.1 ratatui setup with gradient rendering
+- [x] 3.1 ratatui setup with gradient rendering
   - **Do**: Create `src/tui/mod.rs`, `src/tui/app.rs` (AppState model), `src/tui/event.rs` (event loop with crossterm), `src/tui/gradient.rs` (gradient color interpolation for true-color), `src/tui/themes.rs` (gradient palette definitions: thermal GPU bar, glow throughput). Set up 60fps render loop.
   - **Files**: `gpu-query/src/tui/mod.rs`, `gpu-query/src/tui/app.rs`, `gpu-query/src/tui/event.rs`, `gpu-query/src/tui/gradient.rs`, `gpu-query/src/tui/themes.rs`
   - **Done when**: TUI renders empty dashboard with gradient-colored title bar; event loop runs at 60fps

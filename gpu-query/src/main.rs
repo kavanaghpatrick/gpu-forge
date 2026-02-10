@@ -9,10 +9,13 @@ fn main() {
         std::process::exit(code);
     }
 
-    // Interactive/dashboard mode placeholder -- will be implemented in Phase 3
+    // Interactive dashboard mode
     if args.dashboard {
-        eprintln!("Dashboard mode not yet implemented. Use -e \"SQL\" for non-interactive mode.");
-        std::process::exit(1);
+        if let Err(e) = gpu_query::tui::run_dashboard(args.directory.clone(), &args.theme) {
+            eprintln!("Dashboard error: {}", e);
+            std::process::exit(1);
+        }
+        std::process::exit(0);
     }
 
     // Default: show usage
