@@ -187,7 +187,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-18_
   - _Design: Persistent Engine, Command buffer strategy_
 
-- [ ] 2.10 Query optimizer (column pruning + predicate pushdown)
+- [x] 2.10 Query optimizer (column pruning + predicate pushdown)
   - **Do**: Create `src/sql/optimizer.rs` with logical plan transformations: (a) column pruning -- only load columns referenced in SELECT/WHERE/GROUP BY/ORDER BY, (b) predicate pushdown -- move WHERE filters before aggregation, (c) constant folding. Wire into planner pipeline.
   - **Files**: `gpu-query/src/sql/optimizer.rs`
   - **Done when**: `SELECT sum(amount) FROM wide_table WHERE region = 'EU'` only loads amount + region columns

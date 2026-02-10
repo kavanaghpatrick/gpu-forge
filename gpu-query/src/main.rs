@@ -36,6 +36,9 @@ fn main() {
             std::process::exit(1);
         });
 
+    // Optimize logical plan (column pruning, predicate pushdown, constant folding)
+    let logical_plan = gpu_query::sql::optimizer::optimize(logical_plan);
+
     // Convert to physical plan
     let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan)
         .unwrap_or_else(|e| {
