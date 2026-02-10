@@ -32,6 +32,42 @@ use crate::storage::columnar::ColumnarBatch;
 use crate::storage::dictionary::Dictionary;
 use crate::storage::schema::{ColumnDef, DataType, RuntimeSchema};
 
+/// Default batch size threshold in bytes for GPU watchdog safety.
+/// Files larger than this are split into multiple command buffers.
+/// KB #441: 1GB batch limit for GPU watchdog timeout prevention.
+/// Using 512MB to leave safety margin.
+pub const BATCH_SIZE_BYTES: usize = 512 * 1024 * 1024; // 512 MB
+
+/// Partial aggregate result from processing one batch/chunk of data.
+#[derive(Debug, Clone)]
+pub struct BatchPartialResult {
+    /// Per-function partial values.
+    pub partials: Vec<PartialAggregate>,
+}
+
+/// A single partial aggregate value from one batch.
+#[derive(Debug, Clone)]
+pub enum PartialAggregate {
+    /// COUNT: partial count
+    Count(u64),
+    /// SUM of INT64: partial sum
+    SumInt64(i64),
+    /// SUM of FLOAT64: partial sum
+    SumFloat(f64),
+    /// MIN of INT64: partial min
+    MinInt64(i64),
+    /// MAX of INT64: partial max
+    MaxInt64(i64),
+    /// MIN of FLOAT64: partial min
+    MinFloat(f64),
+    /// MAX of FLOAT64: partial max
+    MaxFloat(f64),
+    /// AVG: (sum, count) partial
+    AvgInt64(i64, u64),
+    /// AVG float: (sum, count) partial
+    AvgFloat(f64, u64),
+}
+
 /// Result of executing a query.
 pub struct QueryResult {
     /// Column names in result.
@@ -2111,6 +2147,507 @@ impl QueryExecutor {
 
         Ok(sum)
     }
+
+    /// Check if a file requires batched execution based on its size.
+    /// Returns true if file_size exceeds the batch threshold.
+    pub fn needs_batching(file_size: usize, batch_threshold: usize) -> bool {
+        file_size > batch_threshold
+    }
+
+    /// Execute a batched aggregate query on a large CSV file.
+    ///
+    /// Splits the file into chunks at newline boundaries, processes each chunk
+    /// independently through the GPU pipeline (parse -> filter -> aggregate),
+    /// then merges partial results on CPU.
+    ///
+    /// This avoids GPU watchdog timeouts on files >1GB by ensuring each
+    /// command buffer processes at most `batch_threshold` bytes.
+    fn execute_batched_aggregate(
+        &mut self,
+        table: &str,
+        catalog: &[TableEntry],
+        functions: &[(AggFunc, String)],
+        filter_info: Option<(&CompareOp, &str, &Value)>,
+        batch_threshold: usize,
+    ) -> Result<QueryResult, String> {
+        let entry = catalog
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(table))
+            .ok_or_else(|| format!("Table '{}' not found in catalog", table))?;
+
+        let csv_meta = entry
+            .csv_metadata
+            .as_ref()
+            .ok_or_else(|| format!("Batched execution only supports CSV files currently"))?;
+
+        let schema = infer_schema_from_csv(&entry.path, csv_meta)?;
+
+        // mmap the full file
+        let mmap = MmapFile::open(&entry.path)
+            .map_err(|e| format!("Failed to mmap '{}': {}", entry.path.display(), e))?;
+
+        let file_size = mmap.file_size();
+        let file_bytes = unsafe {
+            std::slice::from_raw_parts(mmap.as_ptr() as *const u8, file_size)
+        };
+
+        // Split into chunks at newline boundaries
+        let chunk_ranges = split_into_chunks(file_bytes, batch_threshold);
+
+        let mut all_partials: Vec<BatchPartialResult> = Vec::new();
+
+        for (chunk_start, chunk_end) in &chunk_ranges {
+            let chunk_size = chunk_end - chunk_start;
+            if chunk_size == 0 {
+                continue;
+            }
+
+            // Parse this chunk as a CSV (treating it as a standalone CSV without header
+            // except for the first chunk which has the header)
+            let is_first_chunk = *chunk_start == 0;
+
+            // Run GPU CSV parse on this chunk
+            let batch = self.gpu_parse_csv_chunk(
+                &mmap,
+                &schema,
+                csv_meta.delimiter,
+                *chunk_start,
+                chunk_size,
+                is_first_chunk,
+            );
+
+            if batch.row_count == 0 {
+                continue;
+            }
+
+            // Build dictionaries for VARCHAR columns if needed for filtering
+            // For batched execution, we need to build dict per-chunk
+            let mut batch = batch;
+            if needs_varchar_dict(&schema, filter_info, functions) {
+                build_csv_dictionaries_for_chunk(
+                    file_bytes,
+                    csv_meta,
+                    &schema,
+                    &mut batch,
+                    *chunk_start,
+                    chunk_size,
+                    is_first_chunk,
+                )?;
+            }
+
+            let scan_result = ScanResult {
+                _mmap: MmapFile::open(&entry.path).map_err(|e| {
+                    format!("Failed to mmap '{}': {}", entry.path.display(), e)
+                })?,
+                batch,
+                schema: schema.clone(),
+                delimiter: csv_meta.delimiter,
+            };
+
+            // Apply filter if present
+            let filter_result = if let Some((compare_op, column, value)) = filter_info {
+                Some(self.execute_filter(&scan_result, compare_op, column, value)?)
+            } else {
+                None
+            };
+
+            // Compute partial aggregates for this chunk
+            let partial = self.compute_partial_aggregates(
+                &scan_result,
+                filter_result.as_ref(),
+                functions,
+            )?;
+
+            all_partials.push(partial);
+        }
+
+        // Merge all partial results
+        let merged = merge_partial_results(&all_partials, functions);
+
+        // Format final result
+        let mut columns = Vec::new();
+        let mut values = Vec::new();
+
+        for (i, (func, col_name)) in functions.iter().enumerate() {
+            let label = match func {
+                AggFunc::Count => {
+                    if col_name == "*" {
+                        "count(*)".to_string()
+                    } else {
+                        format!("count({})", col_name)
+                    }
+                }
+                AggFunc::Sum => format!("sum({})", col_name),
+                AggFunc::Avg => format!("avg({})", col_name),
+                AggFunc::Min => format!("min({})", col_name),
+                AggFunc::Max => format!("max({})", col_name),
+            };
+            columns.push(label);
+            values.push(format_partial_result(&merged[i]));
+        }
+
+        Ok(QueryResult {
+            columns,
+            rows: vec![values],
+            row_count: 1,
+        })
+    }
+
+    /// Run GPU CSV parse on a chunk of the file (sub-range of bytes).
+    ///
+    /// Similar to `gpu_parse_csv` but operates on a byte range within the mmap.
+    /// For non-first chunks, has_header=0 since the header is only in the first chunk.
+    fn gpu_parse_csv_chunk(
+        &self,
+        mmap: &MmapFile,
+        schema: &RuntimeSchema,
+        delimiter: u8,
+        chunk_start: usize,
+        chunk_size: usize,
+        is_first_chunk: bool,
+    ) -> ColumnarBatch {
+        let max_rows = 1_048_576u32; // 1M rows max per chunk
+
+        let data_buffer = mmap.as_metal_buffer(&self.device.device);
+
+        let params = CsvParseParams {
+            file_size: chunk_size as u32,
+            num_columns: schema.num_columns() as u32,
+            delimiter: delimiter as u32,
+            has_header: if is_first_chunk { 1 } else { 0 },
+            max_rows,
+            _pad0: 0,
+        };
+
+        // Allocate output buffers for pass 1
+        let row_count_buffer =
+            encode::alloc_buffer(&self.device.device, std::mem::size_of::<u32>());
+        unsafe {
+            let ptr = row_count_buffer.contents().as_ptr() as *mut u32;
+            *ptr = 0;
+        }
+
+        let row_offsets_buffer = encode::alloc_buffer(
+            &self.device.device,
+            (max_rows as usize + 1) * std::mem::size_of::<u32>(),
+        );
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
+
+        let detect_pipeline =
+            encode::make_pipeline(&self.device.library, "csv_detect_newlines");
+        let parse_pipeline =
+            encode::make_pipeline(&self.device.library, "csv_parse_fields");
+
+        // ---- Pass 1: Detect newlines within the chunk ----
+        // We dispatch threads only for the chunk range.
+        // The kernel scans bytes [0, file_size) in the buffer, so we need to
+        // adjust: we pass the buffer with offset = chunk_start, and file_size = chunk_size.
+        //
+        // Actually, the csv_detect_newlines kernel uses thread_position_in_grid as byte offset
+        // and checks against params.file_size. Since we're dispatching chunk_size threads,
+        // but the data buffer starts at offset 0 of the full mmap, we need to offset.
+        //
+        // Simpler approach: create a sub-buffer view or adjust dispatch.
+        // For Metal, we can set the data buffer with offset = chunk_start.
+
+        let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&detect_pipeline);
+            unsafe {
+                // data buffer offset by chunk_start so kernel sees chunk bytes at indices [0, chunk_size)
+                encoder.setBuffer_offset_atIndex(Some(&data_buffer), chunk_start, 0);
+                encoder.setBuffer_offset_atIndex(Some(&row_count_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&row_offsets_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+            }
+
+            let threads_per_tg = detect_pipeline.maxTotalThreadsPerThreadgroup().min(256);
+            let grid_size = objc2_metal::MTLSize {
+                width: chunk_size,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = objc2_metal::MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        let newline_count = unsafe {
+            let ptr = row_count_buffer.contents().as_ptr() as *const u32;
+            *ptr
+        };
+
+        let mut sorted_offsets = unsafe {
+            let ptr = row_offsets_buffer.contents().as_ptr() as *const u32;
+            std::slice::from_raw_parts(ptr, newline_count as usize).to_vec()
+        };
+        sorted_offsets.sort();
+
+        // Data rows and row start offsets:
+        // For first chunk (has_header=1): same as standard csv_parse --
+        //   sorted_offsets are positions-after-newlines; first element is start of first data row
+        //   num_data_rows = newline_count - 1 (first newline ends header)
+        // For subsequent chunks (has_header=0):
+        //   First data row starts at offset 0 of the chunk (not captured by newline detection)
+        //   Prepend 0 to sorted_offsets, num_data_rows = newline_count
+        let (num_data_rows, data_row_offsets) = if is_first_chunk {
+            let n = (newline_count as usize).saturating_sub(1);
+            (n, sorted_offsets.clone())
+        } else {
+            // Prepend 0 for the first row that starts at offset 0 of the chunk
+            let mut offsets = Vec::with_capacity(sorted_offsets.len() + 1);
+            offsets.push(0u32);
+            offsets.extend_from_slice(&sorted_offsets);
+            (newline_count as usize, offsets)
+        };
+
+        if num_data_rows == 0 {
+            let mut batch =
+                ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+            batch.row_count = 0;
+            return batch;
+        }
+
+        let data_row_offsets_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &data_row_offsets);
+
+        let data_row_count_buffer =
+            encode::alloc_buffer(&self.device.device, std::mem::size_of::<u32>());
+        unsafe {
+            let ptr = data_row_count_buffer.contents().as_ptr() as *mut u32;
+            *ptr = num_data_rows as u32;
+        }
+
+        let mut batch =
+            ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+
+        let gpu_schemas = schema.to_gpu_schemas();
+        let schemas_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
+
+        let parse_params = CsvParseParams {
+            file_size: chunk_size as u32,
+            num_columns: schema.num_columns() as u32,
+            delimiter: delimiter as u32,
+            has_header: if is_first_chunk { 1 } else { 0 },
+            max_rows,
+            _pad0: 0,
+        };
+        let parse_params_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &[parse_params]);
+
+        // ---- Pass 2: Parse fields ----
+        let cmd_buf2 = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf2
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&parse_pipeline);
+            unsafe {
+                // data buffer offset by chunk_start
+                encoder.setBuffer_offset_atIndex(Some(&data_buffer), chunk_start, 0);
+                encoder.setBuffer_offset_atIndex(Some(&data_row_offsets_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&data_row_count_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&batch.int_buffer), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(&batch.float_buffer), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(&parse_params_buffer), 0, 5);
+                encoder.setBuffer_offset_atIndex(Some(&schemas_buffer), 0, 6);
+            }
+
+            let threads_per_tg = parse_pipeline.maxTotalThreadsPerThreadgroup().min(256);
+            let tg_count = (num_data_rows + threads_per_tg - 1) / threads_per_tg;
+
+            let grid = objc2_metal::MTLSize {
+                width: tg_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg = objc2_metal::MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+            encoder.endEncoding();
+        }
+        cmd_buf2.commit();
+        cmd_buf2.waitUntilCompleted();
+
+        batch.row_count = num_data_rows;
+        batch
+    }
+
+    /// Compute partial aggregate results for a single chunk.
+    ///
+    /// Returns a `BatchPartialResult` with one `PartialAggregate` per function.
+    fn compute_partial_aggregates(
+        &self,
+        scan: &ScanResult,
+        filter: Option<&FilterResult>,
+        functions: &[(AggFunc, String)],
+    ) -> Result<BatchPartialResult, String> {
+        let row_count = scan.batch.row_count as u32;
+
+        let default_mask;
+        let mask_buffer = if let Some(f) = filter {
+            &f.bitmask_buffer
+        } else {
+            default_mask = build_all_ones_mask(&self.device.device, row_count as usize);
+            &default_mask
+        };
+
+        let mut partials = Vec::new();
+
+        for (func, col_name) in functions {
+            let partial = match func {
+                AggFunc::Count => {
+                    let count = self.run_aggregate_count(mask_buffer, row_count)?;
+                    PartialAggregate::Count(count)
+                }
+                AggFunc::Sum => {
+                    let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                    match col_def.data_type {
+                        DataType::Int64 => {
+                            let local_idx = self.int_local_idx(scan, col_idx);
+                            let sum = self.run_aggregate_sum_int64(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            )?;
+                            PartialAggregate::SumInt64(sum)
+                        }
+                        DataType::Float64 => {
+                            let local_idx = self.float_local_idx(scan, col_idx);
+                            let sum = self.run_aggregate_sum_float(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            )?;
+                            PartialAggregate::SumFloat(sum as f64)
+                        }
+                        _ => return Err(format!("SUM on {:?} not supported", col_def.data_type)),
+                    }
+                }
+                AggFunc::Avg => {
+                    let count = self.run_aggregate_count(mask_buffer, row_count)?;
+                    let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                    match col_def.data_type {
+                        DataType::Int64 => {
+                            let local_idx = self.int_local_idx(scan, col_idx);
+                            let sum = self.run_aggregate_sum_int64(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            )?;
+                            PartialAggregate::AvgInt64(sum, count)
+                        }
+                        DataType::Float64 => {
+                            let local_idx = self.float_local_idx(scan, col_idx);
+                            let sum = self.run_aggregate_sum_float(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            )?;
+                            PartialAggregate::AvgFloat(sum as f64, count)
+                        }
+                        _ => return Err(format!("AVG on {:?} not supported", col_def.data_type)),
+                    }
+                }
+                AggFunc::Min => {
+                    let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                    match col_def.data_type {
+                        DataType::Int64 => {
+                            let local_idx = self.int_local_idx(scan, col_idx);
+                            let min = self.run_aggregate_min_int64(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            )?;
+                            PartialAggregate::MinInt64(min)
+                        }
+                        DataType::Float64 => {
+                            let local_idx = self.float_local_idx(scan, col_idx);
+                            let vals = self.read_masked_floats(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            );
+                            let min = vals.iter().cloned().fold(f32::INFINITY, f32::min);
+                            PartialAggregate::MinFloat(min as f64)
+                        }
+                        _ => return Err(format!("MIN on {:?} not supported", col_def.data_type)),
+                    }
+                }
+                AggFunc::Max => {
+                    let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                    match col_def.data_type {
+                        DataType::Int64 => {
+                            let local_idx = self.int_local_idx(scan, col_idx);
+                            let max = self.run_aggregate_max_int64(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            )?;
+                            PartialAggregate::MaxInt64(max)
+                        }
+                        DataType::Float64 => {
+                            let local_idx = self.float_local_idx(scan, col_idx);
+                            let vals = self.read_masked_floats(
+                                &scan.batch, mask_buffer, row_count, local_idx,
+                            );
+                            let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                            PartialAggregate::MaxFloat(max as f64)
+                        }
+                        _ => return Err(format!("MAX on {:?} not supported", col_def.data_type)),
+                    }
+                }
+            };
+            partials.push(partial);
+        }
+
+        Ok(BatchPartialResult { partials })
+    }
+
+    /// Execute a query with automatic batching for large files.
+    ///
+    /// Detects when the source CSV file exceeds `batch_threshold` bytes and
+    /// transparently splits into multiple GPU command buffers for watchdog safety.
+    ///
+    /// Currently supports batched execution for aggregate queries on CSV files.
+    /// Other query types fall through to the standard execution path.
+    pub fn execute_with_batching(
+        &mut self,
+        plan: &PhysicalPlan,
+        catalog: &[TableEntry],
+        batch_threshold: usize,
+    ) -> Result<QueryResult, String> {
+        // Check if this is an aggregate query on a large CSV file
+        if let PhysicalPlan::GpuAggregate {
+            functions,
+            group_by,
+            input,
+        } = plan
+        {
+            // Only batch non-grouped aggregates on simple scan or filtered scan
+            if group_by.is_empty() {
+                if let Some((table, filter_info, file_size)) =
+                    extract_scan_info(input, catalog)
+                {
+                    if Self::needs_batching(file_size, batch_threshold) {
+                        return self.execute_batched_aggregate(
+                            table,
+                            catalog,
+                            functions,
+                            filter_info,
+                            batch_threshold,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Fall through to standard execution for non-batched queries
+        self.execute(plan, catalog)
+    }
 }
 
 /// Column values for row materialization (ORDER BY).
@@ -2503,5 +3040,643 @@ fn extract_json_string_value(s: &str) -> String {
         let end = s.find(|c: char| c == ',' || c == '}' || c == ']' || c.is_whitespace())
             .unwrap_or(s.len());
         s[..end].to_string()
+    }
+}
+
+// ============================================================================
+// Batched execution helpers
+// ============================================================================
+
+/// Split a file's bytes into chunks of approximately `batch_size` bytes,
+/// aligned to newline boundaries.
+///
+/// Returns a Vec of (start, end) byte ranges. Each chunk ends at a newline
+/// character, so CSV rows are never split across chunks.
+pub fn split_into_chunks(file_bytes: &[u8], batch_size: usize) -> Vec<(usize, usize)> {
+    if file_bytes.is_empty() {
+        return vec![];
+    }
+
+    if file_bytes.len() <= batch_size {
+        return vec![(0, file_bytes.len())];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < file_bytes.len() {
+        let tentative_end = std::cmp::min(start + batch_size, file_bytes.len());
+
+        if tentative_end >= file_bytes.len() {
+            // Last chunk: take everything remaining
+            chunks.push((start, file_bytes.len()));
+            break;
+        }
+
+        // Find the nearest newline at or after tentative_end (scanning forward)
+        // to avoid splitting a CSV row.
+        let actual_end = find_newline_boundary(file_bytes, tentative_end);
+        chunks.push((start, actual_end));
+        start = actual_end;
+    }
+
+    chunks
+}
+
+/// Find the nearest newline boundary at or after `pos`.
+///
+/// Scans forward from `pos` to find '\n'. If none found, returns the end of the data.
+/// The returned position is the byte AFTER the newline (start of next row).
+fn find_newline_boundary(data: &[u8], pos: usize) -> usize {
+    for i in pos..data.len() {
+        if data[i] == b'\n' {
+            return i + 1; // Position after the newline
+        }
+    }
+    data.len()
+}
+
+/// Extract scan information from a physical plan for batching decision.
+///
+/// Returns (table_name, optional_filter_info, file_size) if the plan is a
+/// simple scan or filtered scan on a CSV file.
+fn extract_scan_info<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &[TableEntry],
+) -> Option<(&'a str, Option<(&'a CompareOp, &'a str, &'a Value)>, usize)> {
+    match plan {
+        PhysicalPlan::GpuScan { table, .. } => {
+            let entry = catalog.iter().find(|e| e.name.eq_ignore_ascii_case(table))?;
+            if entry.format != FileFormat::Csv {
+                return None;
+            }
+            let file_size = std::fs::metadata(&entry.path).ok()?.len() as usize;
+            Some((table.as_str(), None, file_size))
+        }
+        PhysicalPlan::GpuFilter {
+            compare_op,
+            column,
+            value,
+            input,
+        } => {
+            if let PhysicalPlan::GpuScan { table, .. } = input.as_ref() {
+                let entry = catalog.iter().find(|e| e.name.eq_ignore_ascii_case(table))?;
+                if entry.format != FileFormat::Csv {
+                    return None;
+                }
+                let file_size = std::fs::metadata(&entry.path).ok()?.len() as usize;
+                Some((
+                    table.as_str(),
+                    Some((compare_op, column.as_str(), value)),
+                    file_size,
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Check if any function or filter requires VARCHAR dictionary support.
+fn needs_varchar_dict(
+    schema: &RuntimeSchema,
+    filter_info: Option<(&CompareOp, &str, &Value)>,
+    _functions: &[(AggFunc, String)],
+) -> bool {
+    if schema.count_type(DataType::Varchar) == 0 {
+        return false;
+    }
+
+    // Check if filter targets a VARCHAR column
+    if let Some((_, col_name, _)) = filter_info {
+        if let Some(idx) = schema.column_index(col_name) {
+            if schema.columns[idx].data_type == DataType::Varchar {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Build dictionaries for VARCHAR columns from a chunk of CSV data (CPU-side).
+///
+/// Similar to `build_csv_dictionaries` but operates on a byte range within the file.
+fn build_csv_dictionaries_for_chunk(
+    file_bytes: &[u8],
+    csv_meta: &crate::io::csv::CsvMetadata,
+    schema: &RuntimeSchema,
+    batch: &mut ColumnarBatch,
+    chunk_start: usize,
+    chunk_size: usize,
+    is_first_chunk: bool,
+) -> Result<(), String> {
+    let varchar_count = schema.count_type(DataType::Varchar);
+    if varchar_count == 0 {
+        return Ok(());
+    }
+
+    let delimiter = csv_meta.delimiter as char;
+    let chunk = &file_bytes[chunk_start..chunk_start + chunk_size];
+    let chunk_str = std::str::from_utf8(chunk).map_err(|e| format!("Invalid UTF-8 in chunk: {}", e))?;
+
+    let varchar_cols: Vec<(usize, usize)> = schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.data_type == DataType::Varchar)
+        .enumerate()
+        .map(|(local_idx, (global_idx, _))| (global_idx, local_idx))
+        .collect();
+
+    let mut col_values: Vec<Vec<String>> = vec![Vec::new(); varchar_count];
+
+    let mut first_line = true;
+    for line in chunk_str.lines() {
+        if first_line && is_first_chunk {
+            // Skip header
+            first_line = false;
+            continue;
+        }
+        first_line = false;
+
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let fields: Vec<&str> = trimmed.split(delimiter).collect();
+
+        for &(global_idx, local_idx) in &varchar_cols {
+            let field = fields.get(global_idx).map(|s| s.trim()).unwrap_or("");
+            col_values[local_idx].push(field.to_string());
+        }
+    }
+
+    for &(global_idx, local_idx) in &varchar_cols {
+        let values = &col_values[local_idx];
+
+        if let Some(dict) = Dictionary::build(values) {
+            let encoded = dict.encode_column(values);
+
+            let offset = local_idx * batch.max_rows;
+            unsafe {
+                let ptr = batch.string_dict_buffer.contents().as_ptr() as *mut u32;
+                for (i, &code) in encoded.iter().enumerate() {
+                    *ptr.add(offset + i) = code;
+                }
+            }
+
+            batch.dictionaries[global_idx] = Some(dict);
+        }
+    }
+
+    Ok(())
+}
+
+/// Merge partial aggregate results from multiple batches into final values.
+///
+/// Implements correct merge semantics for each aggregate function:
+/// - COUNT: sum of partial counts
+/// - SUM: sum of partial sums
+/// - AVG: total_sum / total_count
+/// - MIN: minimum of partial minimums
+/// - MAX: maximum of partial maximums
+pub fn merge_partial_results(
+    partials: &[BatchPartialResult],
+    functions: &[(AggFunc, String)],
+) -> Vec<PartialAggregate> {
+    let num_functions = functions.len();
+    let mut merged = Vec::with_capacity(num_functions);
+
+    for i in 0..num_functions {
+        let func = &functions[i].0;
+        let func_partials: Vec<&PartialAggregate> =
+            partials.iter().map(|p| &p.partials[i]).collect();
+
+        let result = match func {
+            AggFunc::Count => {
+                let total: u64 = func_partials
+                    .iter()
+                    .map(|p| match p {
+                        PartialAggregate::Count(c) => *c,
+                        _ => 0,
+                    })
+                    .sum();
+                PartialAggregate::Count(total)
+            }
+            AggFunc::Sum => {
+                // Determine type from first partial
+                if let Some(first) = func_partials.first() {
+                    match first {
+                        PartialAggregate::SumInt64(_) => {
+                            let total: i64 = func_partials
+                                .iter()
+                                .map(|p| match p {
+                                    PartialAggregate::SumInt64(s) => *s,
+                                    _ => 0,
+                                })
+                                .sum();
+                            PartialAggregate::SumInt64(total)
+                        }
+                        PartialAggregate::SumFloat(_) => {
+                            let total: f64 = func_partials
+                                .iter()
+                                .map(|p| match p {
+                                    PartialAggregate::SumFloat(s) => *s,
+                                    _ => 0.0,
+                                })
+                                .sum();
+                            PartialAggregate::SumFloat(total)
+                        }
+                        _ => PartialAggregate::SumInt64(0),
+                    }
+                } else {
+                    PartialAggregate::SumInt64(0)
+                }
+            }
+            AggFunc::Avg => {
+                if let Some(first) = func_partials.first() {
+                    match first {
+                        PartialAggregate::AvgInt64(_, _) => {
+                            let total_sum: i64 = func_partials
+                                .iter()
+                                .map(|p| match p {
+                                    PartialAggregate::AvgInt64(s, _) => *s,
+                                    _ => 0,
+                                })
+                                .sum();
+                            let total_count: u64 = func_partials
+                                .iter()
+                                .map(|p| match p {
+                                    PartialAggregate::AvgInt64(_, c) => *c,
+                                    _ => 0,
+                                })
+                                .sum();
+                            PartialAggregate::AvgInt64(total_sum, total_count)
+                        }
+                        PartialAggregate::AvgFloat(_, _) => {
+                            let total_sum: f64 = func_partials
+                                .iter()
+                                .map(|p| match p {
+                                    PartialAggregate::AvgFloat(s, _) => *s,
+                                    _ => 0.0,
+                                })
+                                .sum();
+                            let total_count: u64 = func_partials
+                                .iter()
+                                .map(|p| match p {
+                                    PartialAggregate::AvgFloat(_, c) => *c,
+                                    _ => 0,
+                                })
+                                .sum();
+                            PartialAggregate::AvgFloat(total_sum, total_count)
+                        }
+                        _ => PartialAggregate::AvgInt64(0, 0),
+                    }
+                } else {
+                    PartialAggregate::AvgInt64(0, 0)
+                }
+            }
+            AggFunc::Min => {
+                if let Some(first) = func_partials.first() {
+                    match first {
+                        PartialAggregate::MinInt64(_) => {
+                            let min = func_partials
+                                .iter()
+                                .filter_map(|p| match p {
+                                    PartialAggregate::MinInt64(v) => Some(*v),
+                                    _ => None,
+                                })
+                                .min()
+                                .unwrap_or(i64::MAX);
+                            PartialAggregate::MinInt64(min)
+                        }
+                        PartialAggregate::MinFloat(_) => {
+                            let min = func_partials
+                                .iter()
+                                .filter_map(|p| match p {
+                                    PartialAggregate::MinFloat(v) => Some(*v),
+                                    _ => None,
+                                })
+                                .fold(f64::INFINITY, f64::min);
+                            PartialAggregate::MinFloat(min)
+                        }
+                        _ => PartialAggregate::MinInt64(i64::MAX),
+                    }
+                } else {
+                    PartialAggregate::MinInt64(i64::MAX)
+                }
+            }
+            AggFunc::Max => {
+                if let Some(first) = func_partials.first() {
+                    match first {
+                        PartialAggregate::MaxInt64(_) => {
+                            let max = func_partials
+                                .iter()
+                                .filter_map(|p| match p {
+                                    PartialAggregate::MaxInt64(v) => Some(*v),
+                                    _ => None,
+                                })
+                                .max()
+                                .unwrap_or(i64::MIN);
+                            PartialAggregate::MaxInt64(max)
+                        }
+                        PartialAggregate::MaxFloat(_) => {
+                            let max = func_partials
+                                .iter()
+                                .filter_map(|p| match p {
+                                    PartialAggregate::MaxFloat(v) => Some(*v),
+                                    _ => None,
+                                })
+                                .fold(f64::NEG_INFINITY, f64::max);
+                            PartialAggregate::MaxFloat(max)
+                        }
+                        _ => PartialAggregate::MaxInt64(i64::MIN),
+                    }
+                } else {
+                    PartialAggregate::MaxInt64(i64::MIN)
+                }
+            }
+        };
+        merged.push(result);
+    }
+
+    merged
+}
+
+/// Format a partial aggregate result into a display string.
+fn format_partial_result(partial: &PartialAggregate) -> String {
+    match partial {
+        PartialAggregate::Count(c) => c.to_string(),
+        PartialAggregate::SumInt64(s) => s.to_string(),
+        PartialAggregate::SumFloat(s) => format_float(*s),
+        PartialAggregate::MinInt64(v) => v.to_string(),
+        PartialAggregate::MaxInt64(v) => v.to_string(),
+        PartialAggregate::MinFloat(v) => format_float(*v),
+        PartialAggregate::MaxFloat(v) => format_float(*v),
+        PartialAggregate::AvgInt64(sum, count) => {
+            if *count == 0 {
+                "NULL".to_string()
+            } else {
+                format_float(*sum as f64 / *count as f64)
+            }
+        }
+        PartialAggregate::AvgFloat(sum, count) => {
+            if *count == 0 {
+                "NULL".to_string()
+            } else {
+                format_float(*sum / *count as f64)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn test_split_into_chunks_small_file() {
+        let data = b"header\nrow1\nrow2\nrow3\n";
+        let chunks = split_into_chunks(data, 1024);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], (0, data.len()));
+    }
+
+    #[test]
+    fn test_split_into_chunks_exact_boundary() {
+        let data = b"header\nrow1\nrow2\nrow3\n";
+        // Batch size = full file size: should be 1 chunk
+        let chunks = split_into_chunks(data, data.len());
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], (0, data.len()));
+    }
+
+    #[test]
+    fn test_split_into_chunks_multiple() {
+        // Create data with known newline positions
+        let data = b"header\nrow1,100\nrow2,200\nrow3,300\nrow4,400\n";
+        // Batch size = 15 bytes forces multiple chunks
+        let chunks = split_into_chunks(data, 15);
+        assert!(chunks.len() >= 2, "Expected at least 2 chunks, got {}", chunks.len());
+
+        // Verify all chunks cover the full file
+        assert_eq!(chunks.first().unwrap().0, 0);
+        assert_eq!(chunks.last().unwrap().1, data.len());
+
+        // Verify no gaps between chunks
+        for i in 1..chunks.len() {
+            assert_eq!(chunks[i].0, chunks[i - 1].1);
+        }
+
+        // Verify each chunk boundary is on a newline
+        for &(_, end) in &chunks[..chunks.len() - 1] {
+            assert_eq!(data[end - 1], b'\n', "Chunk should end on newline boundary");
+        }
+    }
+
+    #[test]
+    fn test_split_into_chunks_empty() {
+        let data = b"";
+        let chunks = split_into_chunks(data, 1024);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_split_into_chunks_very_small_batch() {
+        let data = b"a\nb\nc\nd\n";
+        // Batch of 2 bytes: each chunk should contain at least one complete line
+        let chunks = split_into_chunks(data, 2);
+        assert!(chunks.len() >= 2);
+        // All data covered
+        assert_eq!(chunks.first().unwrap().0, 0);
+        assert_eq!(chunks.last().unwrap().1, data.len());
+    }
+
+    #[test]
+    fn test_find_newline_boundary() {
+        let data = b"hello\nworld\n";
+        assert_eq!(find_newline_boundary(data, 0), 6); // after "hello\n"
+        assert_eq!(find_newline_boundary(data, 3), 6); // scans forward to first \n
+        assert_eq!(find_newline_boundary(data, 6), 12); // after "world\n"
+        assert_eq!(find_newline_boundary(data, 12), 12); // at end
+    }
+
+    #[test]
+    fn test_find_newline_boundary_no_trailing() {
+        let data = b"hello world";
+        assert_eq!(find_newline_boundary(data, 0), data.len()); // no newline, returns end
+    }
+
+    #[test]
+    fn test_needs_batching() {
+        assert!(!QueryExecutor::needs_batching(100, 1024));
+        assert!(!QueryExecutor::needs_batching(1024, 1024));
+        assert!(QueryExecutor::needs_batching(1025, 1024));
+        assert!(QueryExecutor::needs_batching(BATCH_SIZE_BYTES + 1, BATCH_SIZE_BYTES));
+    }
+
+    #[test]
+    fn test_merge_partial_count() {
+        let partials = vec![
+            BatchPartialResult { partials: vec![PartialAggregate::Count(100)] },
+            BatchPartialResult { partials: vec![PartialAggregate::Count(200)] },
+            BatchPartialResult { partials: vec![PartialAggregate::Count(50)] },
+        ];
+        let functions = vec![(AggFunc::Count, "*".to_string())];
+        let merged = merge_partial_results(&partials, &functions);
+        match &merged[0] {
+            PartialAggregate::Count(c) => assert_eq!(*c, 350),
+            other => panic!("Expected Count, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_merge_partial_sum_int64() {
+        let partials = vec![
+            BatchPartialResult { partials: vec![PartialAggregate::SumInt64(1000)] },
+            BatchPartialResult { partials: vec![PartialAggregate::SumInt64(2000)] },
+        ];
+        let functions = vec![(AggFunc::Sum, "amount".to_string())];
+        let merged = merge_partial_results(&partials, &functions);
+        match &merged[0] {
+            PartialAggregate::SumInt64(s) => assert_eq!(*s, 3000),
+            other => panic!("Expected SumInt64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_merge_partial_sum_float() {
+        let partials = vec![
+            BatchPartialResult { partials: vec![PartialAggregate::SumFloat(1.5)] },
+            BatchPartialResult { partials: vec![PartialAggregate::SumFloat(2.5)] },
+        ];
+        let functions = vec![(AggFunc::Sum, "price".to_string())];
+        let merged = merge_partial_results(&partials, &functions);
+        match &merged[0] {
+            PartialAggregate::SumFloat(s) => assert!((s - 4.0).abs() < 1e-10),
+            other => panic!("Expected SumFloat, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_merge_partial_min_int64() {
+        let partials = vec![
+            BatchPartialResult { partials: vec![PartialAggregate::MinInt64(50)] },
+            BatchPartialResult { partials: vec![PartialAggregate::MinInt64(10)] },
+            BatchPartialResult { partials: vec![PartialAggregate::MinInt64(30)] },
+        ];
+        let functions = vec![(AggFunc::Min, "val".to_string())];
+        let merged = merge_partial_results(&partials, &functions);
+        match &merged[0] {
+            PartialAggregate::MinInt64(v) => assert_eq!(*v, 10),
+            other => panic!("Expected MinInt64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_merge_partial_max_int64() {
+        let partials = vec![
+            BatchPartialResult { partials: vec![PartialAggregate::MaxInt64(50)] },
+            BatchPartialResult { partials: vec![PartialAggregate::MaxInt64(100)] },
+            BatchPartialResult { partials: vec![PartialAggregate::MaxInt64(30)] },
+        ];
+        let functions = vec![(AggFunc::Max, "val".to_string())];
+        let merged = merge_partial_results(&partials, &functions);
+        match &merged[0] {
+            PartialAggregate::MaxInt64(v) => assert_eq!(*v, 100),
+            other => panic!("Expected MaxInt64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_merge_partial_avg_int64() {
+        // Batch 1: sum=300, count=3 (avg=100)
+        // Batch 2: sum=600, count=6 (avg=100)
+        // Merged: sum=900, count=9, avg=100
+        let partials = vec![
+            BatchPartialResult { partials: vec![PartialAggregate::AvgInt64(300, 3)] },
+            BatchPartialResult { partials: vec![PartialAggregate::AvgInt64(600, 6)] },
+        ];
+        let functions = vec![(AggFunc::Avg, "val".to_string())];
+        let merged = merge_partial_results(&partials, &functions);
+        match &merged[0] {
+            PartialAggregate::AvgInt64(sum, count) => {
+                assert_eq!(*sum, 900);
+                assert_eq!(*count, 9);
+                let avg = *sum as f64 / *count as f64;
+                assert!((avg - 100.0).abs() < 1e-10);
+            }
+            other => panic!("Expected AvgInt64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_merge_multiple_functions() {
+        let partials = vec![
+            BatchPartialResult {
+                partials: vec![
+                    PartialAggregate::Count(10),
+                    PartialAggregate::SumInt64(100),
+                    PartialAggregate::MinInt64(5),
+                    PartialAggregate::MaxInt64(15),
+                ],
+            },
+            BatchPartialResult {
+                partials: vec![
+                    PartialAggregate::Count(20),
+                    PartialAggregate::SumInt64(200),
+                    PartialAggregate::MinInt64(1),
+                    PartialAggregate::MaxInt64(25),
+                ],
+            },
+        ];
+        let functions = vec![
+            (AggFunc::Count, "*".to_string()),
+            (AggFunc::Sum, "val".to_string()),
+            (AggFunc::Min, "val".to_string()),
+            (AggFunc::Max, "val".to_string()),
+        ];
+        let merged = merge_partial_results(&partials, &functions);
+
+        match &merged[0] {
+            PartialAggregate::Count(c) => assert_eq!(*c, 30),
+            other => panic!("Expected Count, got {:?}", other),
+        }
+        match &merged[1] {
+            PartialAggregate::SumInt64(s) => assert_eq!(*s, 300),
+            other => panic!("Expected SumInt64, got {:?}", other),
+        }
+        match &merged[2] {
+            PartialAggregate::MinInt64(v) => assert_eq!(*v, 1),
+            other => panic!("Expected MinInt64, got {:?}", other),
+        }
+        match &merged[3] {
+            PartialAggregate::MaxInt64(v) => assert_eq!(*v, 25),
+            other => panic!("Expected MaxInt64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_format_partial_result_count() {
+        assert_eq!(format_partial_result(&PartialAggregate::Count(42)), "42");
+    }
+
+    #[test]
+    fn test_format_partial_result_sum_int64() {
+        assert_eq!(format_partial_result(&PartialAggregate::SumInt64(1000)), "1000");
+    }
+
+    #[test]
+    fn test_format_partial_result_avg_zero_count() {
+        assert_eq!(format_partial_result(&PartialAggregate::AvgInt64(0, 0)), "NULL");
+    }
+
+    #[test]
+    fn test_format_partial_result_avg_int() {
+        let s = format_partial_result(&PartialAggregate::AvgInt64(300, 3));
+        assert_eq!(s, "100");
     }
 }

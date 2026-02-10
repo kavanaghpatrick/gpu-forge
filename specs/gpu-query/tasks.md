@@ -178,7 +178,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-31, AC-2.8_
   - _Design: Kernel 4: Column Filter_
 
-- [ ] 2.9 Batched query execution for large files
+- [x] 2.9 Batched query execution for large files
   - **Do**: In `src/gpu/executor.rs`, add batched execution path: if estimated scan > 1GB, split into multiple command buffers (1GB chunks) with pre-enqueue ordering [KB #152]. Merge partial results (partial sums, partial sorts). Auto-detect batch threshold.
   - **Files**: update `gpu-query/src/gpu/executor.rs`
   - **Done when**: Queries on >1GB files complete without GPU watchdog timeout
