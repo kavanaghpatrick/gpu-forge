@@ -13,7 +13,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
 
 ---
 
-- [ ] 1.1 Scaffold Rust project and Metal build pipeline
+- [x] 1.1 Scaffold Rust project and Metal build pipeline
   - **Do**:
     1. Create `particle-system/` directory at project root
     2. Create `Cargo.toml` with dependencies: objc2 0.6, objc2-metal 0.3 (features=["all"]), objc2-foundation 0.3, winit 0.30, raw-window-handle 0.6, glam 0.29
@@ -35,7 +35,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-2, AC-1.4, NFR-15_
   - _Design: Rust Host Structure, File Layout_
 
-- [ ] 1.2 Create window with CAMetalLayer and Metal device init
+- [x] 1.2 Create window with CAMetalLayer and Metal device init
   - **Do**:
     1. In `src/main.rs`: create winit `EventLoop` and `Window` (1280x720, title "GPU Particles")
     2. Create `src/gpu.rs`: initialize `MTLCreateSystemDefaultDevice()`, create `MTLCommandQueue`
@@ -53,7 +53,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-1, AC-1.1, AC-1.2, AC-1.3, AC-1.6_
   - _Design: CPU Host - Main Event Loop, Metal Device/Queue_
 
-- [ ] 1.3 Triple-buffer semaphore ring and frame timing
+- [x] 1.3 Triple-buffer semaphore ring and frame timing
   - **Do**:
     1. Create `src/frame.rs`: implement `FrameRing` struct with `dispatch_semaphore_create(3)` via `objc2` dispatch APIs (or use `std::sync::Semaphore` with count 3)
     2. `FrameRing::acquire()` blocks on semaphore; `FrameRing::signal()` signals after GPU completion
@@ -71,13 +71,13 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-5, AC-1.5, NFR-5_
   - _Design: Triple Buffering, Per-Frame Sequence_
 
-- [ ] 1.4 [VERIFY] Quality checkpoint: build and shader compilation
+- [x] 1.4 [VERIFY] Quality checkpoint: build and shader compilation
   - **Do**: Run cargo build and clippy; verify .metallib produced
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build 2>&1 | tail -5`
   - **Done when**: No clippy warnings, build succeeds
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.5 Allocate SoA particle buffers and free lists
+- [x] 1.5 Allocate SoA particle buffers and free lists
   - **Do**:
     1. Create `src/buffers.rs`: implement `ParticlePool` struct
     2. Allocate SoA buffers at 1M capacity using `device.newBufferWithLength_options(size, MTLResourceStorageModeShared)`:
@@ -103,7 +103,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-3, FR-4, AC-2.1 through AC-2.8, NFR-7_
   - _Design: Buffer Layout, Particle Data (SoA Layout), Free/Alive Lists_
 
-- [ ] 1.6 GPU PRNG and emission compute kernel
+- [x] 1.6 GPU PRNG and emission compute kernel
   - **Do**:
     1. Create `shaders/prng.metal`: implement `pcg_hash(uint seed)` and `rand_float(uint seed)` -> [0,1) using PCG hash variant
     2. Create `shaders/emission.metal`: implement `emission_kernel` matching design signature
@@ -132,7 +132,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-6, AC-3.1 through AC-3.6_
   - _Design: Emission Kernel, GPU PRNG_
 
-- [ ] 1.7 Basic vertex + fragment shaders and render pipeline
+- [x] 1.7 Basic vertex + fragment shaders and render pipeline
   - **Do**:
     1. Create `shaders/render.metal`:
        - `vertex_main`: read particle index from alive list via instance_id, read position/color/size from SoA, apply view*projection, emit billboard quad (4 vertices: -0.5,-0.5 / +0.5,-0.5 / -0.5,+0.5 / +0.5,+0.5 as triangle strip), scale by particle size
@@ -158,13 +158,13 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-10, FR-11, FR-12, AC-8.1 through AC-8.5_
   - _Design: Vertex Shader, Fragment Shader, Render Shaders_
 
-- [ ] 1.8 [VERIFY] Quality checkpoint: build + shader compilation
+- [x] 1.8 [VERIFY] Quality checkpoint: build + shader compilation
   - **Do**: Build entire project, verify all .metal files compile into .metallib without errors
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build 2>&1 | tail -5`
   - **Done when**: Clean build, no warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.9 Physics update kernel (gravity, drag, lifetime, death)
+- [x] 1.9 Physics update kernel (gravity, drag, lifetime, death)
   - **Do**:
     1. Create `shaders/update.metal`: implement `update_physics_kernel` matching design signature
        - Thread reads index from alive_list_a[tid] (guard: tid < alive_count)
@@ -192,7 +192,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-7, AC-5.1 through AC-5.6, AC-7.1 through AC-7.3_
   - _Design: Physics Update Kernel_
 
-- [ ] 1.10 Alive list compaction and ping-pong swap
+- [x] 1.10 Alive list compaction and ping-pong swap
   - **Do**:
     1. Create `shaders/compact.metal`: implement simplified compaction
        - POC approach: use atomic append instead of prefix scan (simpler, works at 1M scale)
@@ -213,13 +213,13 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-8, FR-9, AC-7.4 through AC-7.6, AC-8.3_
   - _Design: Compaction Kernel, Ping-Pong alive list_
 
-- [ ] 1.11 [VERIFY] Quality checkpoint: full build
+- [x] 1.11 [VERIFY] Quality checkpoint: full build
   - **Do**: Build, clippy, verify all shaders compile
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build 2>&1 | tail -5`
   - **Done when**: Clean build
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.12 POC Checkpoint: particles on screen at 60fps
+- [x] 1.12 POC Checkpoint: particles on screen at 60fps
   - **Do**:
     1. Run the application; verify:
        - Window opens with dark background
@@ -245,7 +245,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
 
 ---
 
-- [ ] 2.1 Grid clear + populate kernels (density field)
+- [x] 2.1 Grid clear + populate kernels (density field)
   - **Do**:
     1. Allocate grid density buffer in `buffers.rs`: 64x64x64 x 4B = 1.05 MB (uint32 per cell)
     2. Create `shaders/grid.metal`:
@@ -268,7 +268,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-17, AC-6.1, AC-6.2_
   - _Design: Grid Clear Kernel, Grid Populate Kernel_
 
-- [ ] 2.2 Pressure gradient force from grid density
+- [x] 2.2 Pressure gradient force from grid density
   - **Do**:
     1. In `shaders/update.metal`: add grid density reads
        - Compute cell index from particle position
@@ -289,13 +289,13 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-18, AC-6.3, AC-6.4, AC-6.6, AC-6.7_
   - _Design: Physics Update Kernel - grid density forces_
 
-- [ ] 2.3 [VERIFY] Quality checkpoint: build + run test
+- [x] 2.3 [VERIFY] Quality checkpoint: build + run test
   - **Do**: Build, clippy, brief run test
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build --release 2>&1 | tail -5`
   - **Done when**: Clean build
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.4 3D perspective camera with orbit controls
+- [x] 2.4 3D perspective camera with orbit controls
   - **Do**:
     1. Create `src/camera.rs`: `OrbitCamera` struct
        - Fields: azimuth, elevation, distance, target (center point), fov, aspect, near, far
@@ -323,7 +323,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-13, FR-14, AC-9.1 through AC-9.5_
   - _Design: Camera, Input Manager_
 
-- [ ] 2.5 Mouse attraction force in physics kernel
+- [x] 2.5 Mouse attraction force in physics kernel
   - **Do**:
     1. In `src/input.rs`: add mouse world-space position computation
        - Unproject screen coords to 3D ray using inverse(projection * view)
@@ -349,7 +349,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-15, AC-10.1 through AC-10.6_
   - _Design: Mouse attraction force, Input Manager_
 
-- [ ] 2.6 Click-to-burst emission
+- [x] 2.6 Click-to-burst emission
   - **Do**:
     1. In `src/input.rs`: track left mouse click events; store burst_requested flag + burst_position
     2. In `src/frame.rs`: when burst_requested, increase emission_count for this frame (add burst_count 20000 to normal emission rate)
@@ -369,13 +369,13 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-16, AC-4.1 through AC-4.6_
   - _Design: Emission Kernel - burst path_
 
-- [ ] 2.7 [VERIFY] Quality checkpoint: build + clippy
+- [x] 2.7 [VERIFY] Quality checkpoint: build + clippy
   - **Do**: Build, clippy, verify all features compile
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build --release 2>&1 | tail -5`
   - **Done when**: Clean build, no clippy warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.8 Progressive pool scaling (1M to 10M)
+- [x] 2.8 Progressive pool scaling (1M to 10M)
   - **Do**:
     1. In `src/buffers.rs`: implement `ParticlePool::grow(new_size)`:
        - Allocate new SoA buffers at new_size
@@ -399,7 +399,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-19, AC-11.1 through AC-11.6_
   - _Design: Progressive Scaling Strategy_
 
-- [ ] 2.9 Lifetime color/size interpolation and billboard quads
+- [x] 2.9 Lifetime color/size interpolation and billboard quads
   - **Do**:
     1. In `shaders/update.metal`: add lifetime-based interpolation
        - `t = age / maxAge` (0.0 at birth, 1.0 at death)
@@ -419,7 +419,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-21, FR-22, AC-7.7, AC-8.1_
   - _Design: Vertex Shader billboard, lifetime interpolation_
 
-- [ ] 2.10 FPS/particle HUD in window title
+- [x] 2.10 FPS/particle HUD in window title
   - **Do**:
     1. In `src/frame.rs`: read alive list counter from GPU buffer (CPU read via SharedStorage pointer)
     2. Update window title every 0.5 seconds: "GPU Particles | {alive}K/{pool}M | {fps} FPS | {frame_ms:.1}ms"
@@ -433,7 +433,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-20, AC-11.5_
   - _Design: HUD Display_
 
-- [ ] 2.11 Two-phase grid populate (threadgroup histogram)
+- [x] 2.11 Two-phase grid populate (threadgroup histogram)
   - **Do**:
     1. Replace single-phase grid populate with two-phase pattern (from histogram.metal.tmpl):
        - Phase 1 (`grid_populate_local`): each threadgroup builds local histogram in threadgroup memory (262K bins is too large; use simplified: each threadgroup processes N particles, atomically increments global grid directly but with threadgroup-local batching)
@@ -449,13 +449,13 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: AC-6.5, NFR-13_
   - _Design: Grid Populate Kernel (Two-Phase)_
 
-- [ ] 2.12 [VERIFY] Quality checkpoint: full feature build
+- [x] 2.12 [VERIFY] Quality checkpoint: full feature build
   - **Do**: Build release, clippy, verify all features work together
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build --release 2>&1 | tail -5`
   - **Done when**: Clean release build, no warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.13 Phase 2 Checkpoint: full feature validation
+- [x] 2.13 Phase 2 Checkpoint: full feature validation
   - **Do**:
     1. Build release and run
     2. Verify all P1 features work:
@@ -482,7 +482,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
 
 ---
 
-- [ ] 3.1 Unit tests: buffer allocation and types
+- [x] 3.1 Unit tests: buffer allocation and types
   - **Do**:
     1. In `src/buffers.rs`: add `#[cfg(test)] mod tests`
     2. Test `ParticlePool::new(1_000_000)`:
@@ -507,7 +507,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: AC-2.1 through AC-2.8_
   - _Design: Buffer Layout_
 
-- [ ] 3.2 Unit tests: camera math
+- [x] 3.2 Unit tests: camera math
   - **Do**:
     1. In `src/camera.rs`: add `#[cfg(test)] mod tests`
     2. Test view_matrix at default position: camera at (0, sin(0.3)*15, cos(0.3)*15) looking at origin
@@ -523,7 +523,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: AC-9.1 through AC-9.5_
   - _Design: Camera_
 
-- [ ] 3.3 Unit tests: input state
+- [x] 3.3 Unit tests: input state
   - **Do**:
     1. In `src/input.rs`: add `#[cfg(test)] mod tests`
     2. Test cursor position tracking
@@ -538,13 +538,13 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: AC-4.1, AC-10.1_
   - _Design: Input Manager_
 
-- [ ] 3.4 [VERIFY] Quality checkpoint: all tests pass
+- [x] 3.4 [VERIFY] Quality checkpoint: all tests pass
   - **Do**: Run full test suite, clippy, build
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10 && cargo clippy 2>&1 | tail -5`
   - **Done when**: All tests pass, no clippy warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 3.5 GPU integration test: emission kernel
+- [x] 3.5 GPU integration test: emission kernel
   - **Do**:
     1. Create `tests/gpu_integration.rs` (integration test file)
     2. Test emission_kernel:
@@ -563,7 +563,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-6, AC-3.1_
   - _Design: Emission Kernel, Test Strategy_
 
-- [ ] 3.6 GPU integration test: physics and compaction
+- [x] 3.6 GPU integration test: physics and compaction
   - **Do**:
     1. In `tests/gpu_integration.rs`: add test_physics
        - Emit 100 particles, run 1 physics step with dt=0.016
@@ -584,7 +584,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-7, FR-8, AC-5.1, AC-7.4_
   - _Design: Physics Update Kernel, Compaction Kernel, Test Strategy_
 
-- [ ] 3.7 [VERIFY] Quality checkpoint: all tests pass (unit + integration)
+- [x] 3.7 [VERIFY] Quality checkpoint: all tests pass (unit + integration)
   - **Do**: Full test suite, clippy, release build
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -15 && cargo clippy 2>&1 | tail -5 && cargo build --release 2>&1 | tail -3`
   - **Done when**: All tests pass, clean release build
@@ -596,7 +596,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
 
 ---
 
-- [ ] 4.1 Configurable physics parameters via keyboard (P2)
+- [x] 4.1 Configurable physics parameters via keyboard (P2)
   - **Do**:
     1. In `src/input.rs`: add keyboard mappings:
        - G/Shift+G: increase/decrease gravity magnitude
@@ -615,7 +615,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-26_
   - _Design: Configurable physics parameters_
 
-- [ ] 4.2 FP16 optimization for color/lifetime/size
+- [x] 4.2 FP16 optimization for color/lifetime/size
   - **Do**:
     1. Verify shaders already use `half2` for lifetime, `half4` for color, `half` for size
     2. In `src/buffers.rs`: verify buffer sizes match FP16 field sizes (not FP32)
@@ -631,13 +631,13 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-23, NFR-8, NFR-12_
   - _Design: Mixed Precision, Technical Decisions_
 
-- [ ] 4.3 [VERIFY] Quality checkpoint: build + all tests
+- [x] 4.3 [VERIFY] Quality checkpoint: build + all tests
   - **Do**: Run full quality suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10 && cargo clippy 2>&1 | tail -5 && cargo build --release 2>&1 | tail -3`
   - **Done when**: All tests pass, clean build
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 4.4 Metal profiler signpost labels
+- [x] 4.4 Metal profiler signpost labels
   - **Do**:
     1. In `src/frame.rs`: add os_signpost labels around each compute dispatch and render pass
        - Use `objc2_foundation` or raw C calls to `os_signpost_interval_begin/end`
@@ -654,7 +654,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-27_
   - _Design: Profiling Tools_
 
-- [ ] 4.5 Code cleanup and documentation
+- [x] 4.5 Code cleanup and documentation
   - **Do**:
     1. Add doc comments to all public functions and structs
     2. Add module-level documentation to each .rs file
@@ -670,7 +670,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Commit**: `docs(particle): add documentation to all modules and shaders`
   - _Design: Code quality_
 
-- [ ] 4.6 [VERIFY] Full local CI: clippy + test + build + doc
+- [x] 4.6 [VERIFY] Full local CI: clippy + test + build + doc
   - **Do**: Run complete local CI suite
   - **Verify**: All commands must pass:
     ```
@@ -683,7 +683,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Done when**: All commands pass with zero errors/warnings
   - **Commit**: `chore(particle): pass full local CI` (if fixes needed)
 
-- [ ] 4.7 Create PR and verify CI
+- [x] 4.7 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current`
     2. If on default branch, STOP and alert user
@@ -695,7 +695,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Done when**: PR created; all CI checks green
   - **If CI fails**: Read failure details, fix locally, push, re-verify
 
-- [ ] 4.8 [VERIFY] AC checklist
+- [x] 4.8 [VERIFY] AC checklist
   - **Do**: Programmatically verify each acceptance criterion is satisfied:
     1. AC-1.1: Window creation code exists (`grep -r "WindowBuilder\|Window::new" src/main.rs`)
     2. AC-1.2: CAMetalLayer setup (`grep -r "CAMetalLayer\|BGRA8Unorm" src/`)
@@ -727,7 +727,7 @@ Continuous PR validation until all completion criteria met.
 
 ---
 
-- [ ] 5.1 Monitor CI and fix failures
+- [x] 5.1 Monitor CI and fix failures
   - **Do**:
     1. Check PR status: `gh pr checks`
     2. If any check fails, read logs: `gh pr checks --json name,state,output`
@@ -738,7 +738,7 @@ Continuous PR validation until all completion criteria met.
   - **Done when**: All CI checks green
   - **Commit**: `fix(particle): address CI failures` (if needed)
 
-- [ ] 5.2 Address review comments
+- [x] 5.2 Address review comments
   - **Do**:
     1. Check for review comments: `gh pr view --comments`
     2. Address each comment with code changes
@@ -747,7 +747,7 @@ Continuous PR validation until all completion criteria met.
   - **Done when**: All review comments addressed; CI still green
   - **Commit**: `fix(particle): address review feedback` (if needed)
 
-- [ ] 5.3 Final validation: run at 1M particles for 10 seconds
+- [x] 5.3 Final validation: run at 1M particles for 10 seconds
   - **Do**:
     1. Build release: `cargo build --release`
     2. Run for 10 seconds: `timeout 10 cargo run --release`
