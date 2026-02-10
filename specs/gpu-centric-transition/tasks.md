@@ -344,7 +344,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - _Requirements: NFR-6_
   - _Design: Section 11.1_
 
-- [ ] 4.2 Add GPU integration test: prepare_dispatch correctness
+- [x] 4.2 Add GPU integration test: prepare_dispatch correctness
   - **Do**:
     1. In `tests/gpu_integration.rs`, add test `test_prepare_dispatch_correctness`:
        - Allocate dead_list with count=500 (set counter to 500, fill 500 indices)

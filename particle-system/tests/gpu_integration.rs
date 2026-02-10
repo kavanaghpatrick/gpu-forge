@@ -1093,6 +1093,361 @@ fn test_indirect_draw_args_gpu_integration() {
 }
 
 // ---------------------------------------------------------------------------
+// prepare_dispatch correctness tests
+// ---------------------------------------------------------------------------
+
+/// Helper: dispatch prepare_dispatch kernel and wait.
+fn dispatch_prepare_dispatch(
+    _device: &ProtocolObject<dyn MTLDevice>,
+    queue: &ProtocolObject<dyn MTLCommandQueue>,
+    pipeline: &ProtocolObject<dyn MTLComputePipelineState>,
+    dead_list: &ProtocolObject<dyn MTLBuffer>,
+    uniforms: &ProtocolObject<dyn MTLBuffer>,
+    write_list: &ProtocolObject<dyn MTLBuffer>,
+    emission_dispatch_args: &ProtocolObject<dyn MTLBuffer>,
+    gpu_emission_params: &ProtocolObject<dyn MTLBuffer>,
+) {
+    let cmd_buf = queue
+        .commandBuffer()
+        .expect("Failed to create command buffer");
+
+    let encoder = cmd_buf
+        .computeCommandEncoder()
+        .expect("Failed to create compute encoder");
+
+    encoder.setComputePipelineState(pipeline);
+
+    // buffer(0)=dead_list, buffer(1)=uniforms, buffer(2)=write_list,
+    // buffer(3)=emission_dispatch_args, buffer(4)=gpu_emission_params
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(dead_list), 0, 0);
+        encoder.setBuffer_offset_atIndex(Some(uniforms), 0, 1);
+        encoder.setBuffer_offset_atIndex(Some(write_list), 0, 2);
+        encoder.setBuffer_offset_atIndex(Some(emission_dispatch_args), 0, 3);
+        encoder.setBuffer_offset_atIndex(Some(gpu_emission_params), 0, 4);
+    }
+
+    // Single-thread dispatch: 1 threadgroup of 32 threads (SIMD-aligned)
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 32,
+            height: 1,
+            depth: 1,
+        },
+    );
+
+    encoder.endEncoding();
+    cmd_buf.commit();
+    cmd_buf.waitUntilCompleted();
+}
+
+/// GPU integration test: prepare_dispatch correctness.
+///
+/// Verifies that the prepare_dispatch kernel correctly:
+/// - Clamps emission_count to dead_count when base_emission_rate > dead_count
+/// - Computes correct threadgroupsPerGridX = ceil(emission_count / 256)
+/// - Resets write_list counter to 0
+#[test]
+fn test_prepare_dispatch_correctness() {
+    let pool_size: usize = 1000;
+
+    let device = MTLCreateSystemDefaultDevice().expect("No Metal device available");
+    let queue = device
+        .newCommandQueue()
+        .expect("Failed to create command queue");
+
+    let metallib_path = find_metallib();
+    let path_ns = NSString::from_str(&metallib_path);
+    #[allow(deprecated)]
+    let library = device
+        .newLibraryWithFile_error(&path_ns)
+        .expect("Failed to load shaders.metallib");
+
+    let prepare_pipeline = create_pipeline(&device, &library, "prepare_dispatch");
+
+    let counter_list_size = COUNTER_HEADER_SIZE + pool_size * 4;
+
+    // Allocate buffers
+    let dead_list = alloc_buffer(&device, counter_list_size);
+    let uniforms_buf = alloc_buffer(&device, 256);
+    let write_list = alloc_buffer(&device, counter_list_size);
+    let emission_dispatch_args = alloc_buffer(&device, 12); // DispatchArgs: 3 x u32
+    let gpu_emission_params = alloc_buffer(&device, 16); // GpuEmissionParams: 4 x u32
+
+    // Initialize dead_list: counter = 500, fill 500 indices
+    unsafe {
+        let ptr = buffer_ptr(&dead_list) as *mut u32;
+        std::ptr::write(ptr, 500u32); // dead_count = 500
+        std::ptr::write(ptr.add(1), 0u32);
+        std::ptr::write(ptr.add(2), 0u32);
+        std::ptr::write(ptr.add(3), 0u32);
+        for i in 0..500usize {
+            std::ptr::write(ptr.add(COUNTER_HEADER_UINTS + i), i as u32);
+        }
+    }
+
+    // Initialize uniforms: base_emission_rate=1000, burst_count=0, pool_size=1000
+    unsafe {
+        let ptr = buffer_ptr(&uniforms_buf) as *mut Uniforms;
+        let mut u = Uniforms::default();
+        u.base_emission_rate = 1000;
+        u.burst_count = 0;
+        u.pool_size = pool_size as u32;
+        std::ptr::write(ptr, u);
+    }
+
+    // Set write_list counter to a non-zero value to verify reset
+    unsafe {
+        let ptr = buffer_ptr(&write_list) as *mut u32;
+        std::ptr::write(ptr, 42u32); // will be reset to 0 by kernel
+    }
+
+    // Dispatch prepare_dispatch
+    dispatch_prepare_dispatch(
+        &device,
+        &queue,
+        &prepare_pipeline,
+        &dead_list,
+        &uniforms_buf,
+        &write_list,
+        &emission_dispatch_args,
+        &gpu_emission_params,
+    );
+
+    // Read back and verify
+    unsafe {
+        // gpu_emission_params: emission_count should be clamped to dead_count = 500
+        let params_ptr = gpu_emission_params.contents().as_ptr() as *const u32;
+        let emission_count = std::ptr::read(params_ptr);
+        assert_eq!(
+            emission_count, 500,
+            "emission_count should be min(1000+0, 500) = 500, got {}",
+            emission_count
+        );
+
+        // emission_dispatch_args: threadgroupsPerGridX = ceil(500/256) = 2
+        let args_ptr = emission_dispatch_args.contents().as_ptr() as *const u32;
+        let threadgroups_x = std::ptr::read(args_ptr);
+        assert_eq!(
+            threadgroups_x, 2,
+            "threadgroupsPerGridX should be ceil(500/256) = 2, got {}",
+            threadgroups_x
+        );
+
+        // write_list counter should be reset to 0
+        let write_ptr = write_list.contents().as_ptr() as *const u32;
+        let write_counter = std::ptr::read(write_ptr);
+        assert_eq!(
+            write_counter, 0,
+            "write_list counter should be reset to 0, got {}",
+            write_counter
+        );
+    }
+
+    println!(
+        "test_prepare_dispatch_correctness PASSED: emission_count=500, threadgroupsX=2, write_list reset"
+    );
+}
+
+/// GPU integration test: prepare_dispatch with zero dead particles.
+///
+/// Verifies that when dead_count=0, emission_count=0 and threadgroups=0.
+#[test]
+fn test_prepare_dispatch_zero_dead() {
+    let pool_size: usize = 1000;
+
+    let device = MTLCreateSystemDefaultDevice().expect("No Metal device available");
+    let queue = device
+        .newCommandQueue()
+        .expect("Failed to create command queue");
+
+    let metallib_path = find_metallib();
+    let path_ns = NSString::from_str(&metallib_path);
+    #[allow(deprecated)]
+    let library = device
+        .newLibraryWithFile_error(&path_ns)
+        .expect("Failed to load shaders.metallib");
+
+    let prepare_pipeline = create_pipeline(&device, &library, "prepare_dispatch");
+
+    let counter_list_size = COUNTER_HEADER_SIZE + pool_size * 4;
+
+    // Allocate buffers
+    let dead_list = alloc_buffer(&device, counter_list_size);
+    let uniforms_buf = alloc_buffer(&device, 256);
+    let write_list = alloc_buffer(&device, counter_list_size);
+    let emission_dispatch_args = alloc_buffer(&device, 12);
+    let gpu_emission_params = alloc_buffer(&device, 16);
+
+    // Initialize dead_list: counter = 0 (no dead particles)
+    unsafe {
+        let ptr = buffer_ptr(&dead_list) as *mut u32;
+        std::ptr::write(ptr, 0u32); // dead_count = 0
+        std::ptr::write(ptr.add(1), 0u32);
+        std::ptr::write(ptr.add(2), 0u32);
+        std::ptr::write(ptr.add(3), 0u32);
+    }
+
+    // Initialize uniforms: base_emission_rate=10000, burst_count=0, pool_size=1000
+    unsafe {
+        let ptr = buffer_ptr(&uniforms_buf) as *mut Uniforms;
+        let mut u = Uniforms::default();
+        u.base_emission_rate = 10000;
+        u.burst_count = 0;
+        u.pool_size = pool_size as u32;
+        std::ptr::write(ptr, u);
+    }
+
+    // Set write_list counter to non-zero
+    unsafe {
+        let ptr = buffer_ptr(&write_list) as *mut u32;
+        std::ptr::write(ptr, 99u32);
+    }
+
+    // Dispatch prepare_dispatch
+    dispatch_prepare_dispatch(
+        &device,
+        &queue,
+        &prepare_pipeline,
+        &dead_list,
+        &uniforms_buf,
+        &write_list,
+        &emission_dispatch_args,
+        &gpu_emission_params,
+    );
+
+    // Read back and verify
+    unsafe {
+        // emission_count = min(10000+0, 0) = 0
+        let params_ptr = gpu_emission_params.contents().as_ptr() as *const u32;
+        let emission_count = std::ptr::read(params_ptr);
+        assert_eq!(
+            emission_count, 0,
+            "emission_count should be 0 with zero dead, got {}",
+            emission_count
+        );
+
+        // threadgroupsPerGridX = ceil(0/256) = 0
+        let args_ptr = emission_dispatch_args.contents().as_ptr() as *const u32;
+        let threadgroups_x = std::ptr::read(args_ptr);
+        assert_eq!(
+            threadgroups_x, 0,
+            "threadgroupsPerGridX should be 0 with zero emission, got {}",
+            threadgroups_x
+        );
+    }
+
+    println!("test_prepare_dispatch_zero_dead PASSED: emission_count=0, threadgroupsX=0");
+}
+
+/// GPU integration test: prepare_dispatch burst clamping.
+///
+/// Verifies that burst_count is correctly clamped when dead_count < base+burst.
+/// dead_count=100, base=50, burst=200:
+///   emission_count = min(50+200, 100) = 100
+///   actual_burst = min(200, 100) = 100
+#[test]
+fn test_prepare_dispatch_burst_clamping() {
+    let pool_size: usize = 1000;
+
+    let device = MTLCreateSystemDefaultDevice().expect("No Metal device available");
+    let queue = device
+        .newCommandQueue()
+        .expect("Failed to create command queue");
+
+    let metallib_path = find_metallib();
+    let path_ns = NSString::from_str(&metallib_path);
+    #[allow(deprecated)]
+    let library = device
+        .newLibraryWithFile_error(&path_ns)
+        .expect("Failed to load shaders.metallib");
+
+    let prepare_pipeline = create_pipeline(&device, &library, "prepare_dispatch");
+
+    let counter_list_size = COUNTER_HEADER_SIZE + pool_size * 4;
+
+    // Allocate buffers
+    let dead_list = alloc_buffer(&device, counter_list_size);
+    let uniforms_buf = alloc_buffer(&device, 256);
+    let write_list = alloc_buffer(&device, counter_list_size);
+    let emission_dispatch_args = alloc_buffer(&device, 12);
+    let gpu_emission_params = alloc_buffer(&device, 16);
+
+    // Initialize dead_list: counter = 100
+    unsafe {
+        let ptr = buffer_ptr(&dead_list) as *mut u32;
+        std::ptr::write(ptr, 100u32); // dead_count = 100
+        std::ptr::write(ptr.add(1), 0u32);
+        std::ptr::write(ptr.add(2), 0u32);
+        std::ptr::write(ptr.add(3), 0u32);
+        for i in 0..100usize {
+            std::ptr::write(ptr.add(COUNTER_HEADER_UINTS + i), i as u32);
+        }
+    }
+
+    // Initialize uniforms: base_emission_rate=50, burst_count=200, pool_size=1000
+    unsafe {
+        let ptr = buffer_ptr(&uniforms_buf) as *mut Uniforms;
+        let mut u = Uniforms::default();
+        u.base_emission_rate = 50;
+        u.burst_count = 200;
+        u.pool_size = pool_size as u32;
+        std::ptr::write(ptr, u);
+    }
+
+    // Dispatch prepare_dispatch
+    dispatch_prepare_dispatch(
+        &device,
+        &queue,
+        &prepare_pipeline,
+        &dead_list,
+        &uniforms_buf,
+        &write_list,
+        &emission_dispatch_args,
+        &gpu_emission_params,
+    );
+
+    // Read back and verify
+    unsafe {
+        let params_ptr = gpu_emission_params.contents().as_ptr() as *const u32;
+
+        // emission_count = min(50+200, 100) = 100
+        let emission_count = std::ptr::read(params_ptr);
+        assert_eq!(
+            emission_count, 100,
+            "emission_count should be min(50+200, 100) = 100, got {}",
+            emission_count
+        );
+
+        // actual_burst = min(200, 100) = 100
+        let actual_burst = std::ptr::read(params_ptr.add(1));
+        assert_eq!(
+            actual_burst, 100,
+            "actual_burst should be min(200, 100) = 100, got {}",
+            actual_burst
+        );
+
+        // threadgroupsPerGridX = ceil(100/256) = 1
+        let args_ptr = emission_dispatch_args.contents().as_ptr() as *const u32;
+        let threadgroups_x = std::ptr::read(args_ptr);
+        assert_eq!(
+            threadgroups_x, 1,
+            "threadgroupsPerGridX should be ceil(100/256) = 1, got {}",
+            threadgroups_x
+        );
+    }
+
+    println!(
+        "test_prepare_dispatch_burst_clamping PASSED: emission_count=100, actual_burst=100, threadgroupsX=1"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // test_sync_indirect_writes_update_dispatch_args: verify DispatchArgs output
 // ---------------------------------------------------------------------------
 
