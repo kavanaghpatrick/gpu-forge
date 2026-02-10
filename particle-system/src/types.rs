@@ -1,3 +1,9 @@
+//! Shared types matching MSL struct layouts: Uniforms, DrawArgs, CounterHeader, BufferSizes.
+//!
+//! All `#[repr(C)]` structs must be byte-identical to their MSL counterparts in
+//! `shaders/types.h`. The mixed-precision SoA layout uses FP32 for physics
+//! (positions, velocities) and FP16 for visuals (colors, lifetimes, sizes).
+
 use glam::{Mat4, Vec3};
 
 /// Compute default view and projection matrices for particle rendering.
@@ -216,7 +222,7 @@ mod tests {
 /// Mixed-precision strategy for bandwidth reduction:
 /// - Positions/velocities: FP32 (packed_float3, 12B each) — physics needs full precision
 /// - Lifetimes: FP16 (half2, 4B) — [0, ~5s] range fits FP16 (precision: ~0.001s)
-/// - Colors: FP16 (half4, 8B) — [0,1] RGBA ideal for FP16 (precision: ~0.001)
+/// - Colors: FP16 (half4, 8B) — \[0,1\] RGBA ideal for FP16 (precision: ~0.001)
 /// - Sizes: FP16 (half, 2B) — [0.01, 0.05] range fits FP16
 ///
 /// Total per-particle: 12+12+4+8+2 = 38B (vs 96B all-FP32) = 60% bandwidth reduction.

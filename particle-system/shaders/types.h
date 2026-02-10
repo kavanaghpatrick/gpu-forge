@@ -1,6 +1,11 @@
 #ifndef TYPES_H
 #define TYPES_H
 
+// types.h — Shared struct definitions between Rust host and MSL shaders.
+//
+// All structs here must match their Rust counterparts in src/types.rs byte-for-byte.
+// Uniforms are uploaded from CPU each frame; DrawArgs are written by GPU compute.
+
 #include <metal_stdlib>
 using namespace metal;
 

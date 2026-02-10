@@ -1,6 +1,11 @@
 #ifndef PRNG_METAL
 #define PRNG_METAL
 
+// prng.metal — GPU pseudo-random number generation using PCG hash.
+//
+// Provides deterministic, per-thread random numbers seeded by thread ID and frame
+// number. No CPU-side state needed — eliminates CPU->GPU sync for randomness.
+
 #include <metal_stdlib>
 using namespace metal;
 

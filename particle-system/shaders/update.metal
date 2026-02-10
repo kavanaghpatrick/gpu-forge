@@ -1,3 +1,9 @@
+// update.metal — Physics update compute kernel.
+//
+// Per-particle physics: gravity, drag, pressure gradient from grid density,
+// mouse attraction, semi-implicit Euler integration, boundary bounce, lifetime
+// aging, and dead/alive list management with ping-pong swap.
+
 #include "types.h"
 
 /// Grid dimension constant (must match grid.metal).

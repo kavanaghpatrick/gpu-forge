@@ -1,3 +1,9 @@
+//! GPU particle system entry point and main event loop.
+//!
+//! Orchestrates the per-frame GPU pipeline: emission -> grid clear -> grid populate ->
+//! physics update -> compaction -> render. Handles window events, camera orbit, mouse
+//! interaction, keyboard controls, and pool scaling.
+
 mod buffers;
 mod camera;
 mod frame;

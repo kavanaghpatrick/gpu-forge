@@ -1,3 +1,8 @@
+//! 3D orbit camera with spherical coordinate control.
+//!
+//! Provides view and projection matrices for particle rendering. Right-drag orbits
+//! the camera around a target point; scroll wheel zooms in/out.
+
 use glam::{Mat4, Vec3};
 
 /// Orbit camera for 3D perspective viewing of the particle field.

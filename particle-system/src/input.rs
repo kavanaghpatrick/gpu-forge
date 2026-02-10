@@ -1,3 +1,9 @@
+//! Mouse and keyboard input handling for camera control, particle interaction,
+//! physics parameter tuning, and pool scaling.
+//!
+//! Tracks cursor position, mouse buttons, shift modifier, drag deltas for orbit,
+//! and provides cursor-to-world unprojection for mouse attraction and burst emission.
+
 use glam::{Mat4, Vec4};
 use winit::keyboard::KeyCode;
 

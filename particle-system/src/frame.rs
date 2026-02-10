@@ -1,3 +1,8 @@
+//! Frame pacing with semaphore-based GPU/CPU synchronization.
+//!
+//! Manages a dispatch semaphore to limit in-flight frames, computes per-frame
+//! delta time, and tracks FPS for the window title HUD.
+
 use std::ptr::NonNull;
 use std::time::Instant;
 

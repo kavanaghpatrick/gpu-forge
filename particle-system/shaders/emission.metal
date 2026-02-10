@@ -1,3 +1,9 @@
+// emission.metal — Particle emission compute kernel.
+//
+// Allocates particles from the dead list via atomic decrement, initializes SoA
+// attributes (position, velocity, lifetime, color, size) using GPU PRNG, and
+// pushes onto the alive list. Supports burst emission at an arbitrary world position.
+
 #include "types.h"
 #include "prng.metal"
 

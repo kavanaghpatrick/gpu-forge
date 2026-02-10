@@ -1,3 +1,10 @@
+// render.metal — Particle rendering: billboard quad vertex/fragment shaders
+// and sync_indirect_args compute kernel.
+//
+// Vertex shader constructs world-space billboard quads from SoA particle data,
+// with lifetime-based size shrink and alpha fade. Fragment shader passes through
+// color. sync_indirect_args copies alive count to indirect draw arguments.
+
 #include "types.h"
 
 /// Vertex output / fragment input for particle billboard quads.

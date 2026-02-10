@@ -1,3 +1,8 @@
+//! Metal GPU state: device, command queue, shader pipelines, and CAMetalLayer.
+//!
+//! Initializes the Metal device, loads the compiled `.metallib`, and creates
+//! all compute and render pipeline state objects used by the particle system.
+
 use std::ptr::NonNull;
 
 use objc2::rc::Retained;

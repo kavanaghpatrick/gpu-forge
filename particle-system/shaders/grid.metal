@@ -1,3 +1,9 @@
+// grid.metal — 3D density grid compute kernels (clear + populate).
+//
+// Maintains a 64^3 voxel grid of particle density used by the physics update
+// kernel to compute pressure gradient forces. Grid is cleared each frame,
+// then populated by alive particles via relaxed-order atomic increments.
+
 #include "types.h"
 
 /// Grid dimension: 64x64x64 = 262144 cells.
