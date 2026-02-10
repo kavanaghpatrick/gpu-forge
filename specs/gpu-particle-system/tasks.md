@@ -538,7 +538,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: AC-4.1, AC-10.1_
   - _Design: Input Manager_
 
-- [ ] 3.4 [VERIFY] Quality checkpoint: all tests pass
+- [x] 3.4 [VERIFY] Quality checkpoint: all tests pass
   - **Do**: Run full test suite, clippy, build
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -10 && cargo clippy 2>&1 | tail -5`
   - **Done when**: All tests pass, no clippy warnings
