@@ -66,7 +66,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-10, FR-11, FR-17_
   - _Design: Kernel 4: Column Filter_
 
-- [ ] 1.7 GPU aggregation kernel (COUNT/SUM)
+- [x] 1.7 GPU aggregation kernel (COUNT/SUM)
   - **Do**: Create `shaders/aggregate.metal` with `aggregate_sum_int64` and `aggregate_count` kernels using 3-level hierarchical reduction (SIMD -> threadgroup -> global atomic). Read selection_mask from filter output.
   - **Files**: `gpu-query/shaders/aggregate.metal`
   - **Done when**: SUM and COUNT produce correct results for filtered data; verified against CPU reference
