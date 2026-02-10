@@ -58,6 +58,9 @@ pub struct ParticlePool {
     // --- Uniforms ---
     /// Uniforms buffer (256 bytes padded).
     pub uniforms: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Uniform ring buffer for triple buffering (768 bytes = 3 x 256).
+    /// Each frame writes to slot [frame_index * 256 .. (frame_index+1) * 256].
+    pub uniform_ring: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 /// Allocate a Metal buffer of `size` bytes with shared storage mode.
@@ -110,6 +113,10 @@ impl ParticlePool {
         let indirect_args = alloc_buffer(device, sizes.indirect_args, "indirect_args");
         let uniforms = alloc_buffer(device, sizes.uniforms, "uniforms");
 
+        // Allocate uniform ring buffer for triple buffering (3 x 256 = 768 bytes)
+        let uniform_ring_size = 3 * std::mem::size_of::<Uniforms>();
+        let uniform_ring = alloc_buffer(device, uniform_ring_size, "uniform_ring");
+
         // Allocate GPU-centric dispatch buffers
         let emission_dispatch_args = alloc_buffer(
             device,
@@ -138,6 +145,7 @@ impl ParticlePool {
             emission_dispatch_args,
             gpu_emission_params,
             uniforms,
+            uniform_ring,
         };
 
         // Initialize buffer contents on CPU
@@ -148,6 +156,7 @@ impl ParticlePool {
         pool.init_emission_dispatch_args();
         pool.init_gpu_emission_params();
         pool.init_uniforms();
+        pool.init_uniform_ring();
 
         pool
     }
@@ -234,6 +243,22 @@ impl ParticlePool {
             let ptr = buffer_ptr(&self.uniforms) as *mut Uniforms;
             std::ptr::write(ptr, Uniforms::default());
         }
+    }
+
+    /// Initialize uniform ring buffer with default Uniforms in all 3 slots.
+    fn init_uniform_ring(&self) {
+        unsafe {
+            let base = buffer_ptr(&self.uniform_ring) as *mut u8;
+            for i in 0..3 {
+                let slot = base.add(Self::uniforms_offset(i)) as *mut Uniforms;
+                std::ptr::write(slot, Uniforms::default());
+            }
+        }
+    }
+
+    /// Compute the byte offset into the uniform ring buffer for a given frame index.
+    pub fn uniforms_offset(frame_index: usize) -> usize {
+        frame_index * std::mem::size_of::<Uniforms>()
     }
 
     /// Grow the pool to `new_size` particles, preserving existing data.

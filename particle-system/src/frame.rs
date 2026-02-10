@@ -12,11 +12,10 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLCommandBuffer;
 
 /// Maximum number of frames in flight.
-/// Using 1 (single buffering) because particle SoA buffers and alive/dead lists
-/// are shared (not per-frame). Multiple in-flight frames would race on these buffers.
-/// For POC this is fine; triple buffering requires per-frame buffer copies or
-/// partitioned buffer regions.
-const MAX_FRAMES_IN_FLIGHT: usize = 1;
+/// GPU-centric architecture (no CPU readback of particle buffers) makes triple
+/// buffering safe: only the uniform buffer needs per-frame copies, handled via
+/// a 768-byte ring buffer with per-frame offsets.
+const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 /// Triple-buffer semaphore ring for pipelining CPU/GPU work.
 ///

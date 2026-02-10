@@ -155,7 +155,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
 
 Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform ring buffer.
 
-- [ ] 2.1 Change MAX_FRAMES_IN_FLIGHT to 3 and add uniform ring buffer
+- [x] 2.1 Change MAX_FRAMES_IN_FLIGHT to 3 and add uniform ring buffer
   - **Do**:
     1. In `frame.rs`: change `const MAX_FRAMES_IN_FLIGHT: usize = 1` to `3`. Update comment to reflect GPU-centric architecture enables safe triple buffering
     2. In `buffers.rs` ParticlePool: add `pub uniform_ring: Retained<ProtocolObject<dyn MTLBuffer>>` (768 bytes = 3 x 256)
