@@ -84,7 +84,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-7, FR-8, FR-9_
   - _Design: Query Compiler_
 
-- [ ] 1.9 GPU execution engine (end-to-end query)
+- [x] 1.9 GPU execution engine (end-to-end query)
   - **Do**: Create `src/gpu/executor.rs` connecting SQL physical plan to Metal kernel dispatch. Encode command buffer: CSV parse -> filter -> aggregate. Use waitUntilCompleted for synchronous result. Wire together: main.rs takes directory path + SQL string via CLI args, runs query, prints result.
   - **Files**: `gpu-query/src/gpu/executor.rs`, update `gpu-query/src/main.rs`
   - **Done when**: `gpu-query ./test-data/ -e "SELECT count(*) FROM test WHERE amount > 100"` prints correct count
