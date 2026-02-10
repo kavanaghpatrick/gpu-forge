@@ -433,7 +433,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-20, AC-11.5_
   - _Design: HUD Display_
 
-- [ ] 2.11 Two-phase grid populate (threadgroup histogram)
+- [x] 2.11 Two-phase grid populate (threadgroup histogram)
   - **Do**:
     1. Replace single-phase grid populate with two-phase pattern (from histogram.metal.tmpl):
        - Phase 1 (`grid_populate_local`): each threadgroup builds local histogram in threadgroup memory (262K bins is too large; use simplified: each threadgroup processes N particles, atomically increments global grid directly but with threadgroup-local batching)
