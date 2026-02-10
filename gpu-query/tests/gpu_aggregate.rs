@@ -1,4 +1,7 @@
-//! Integration tests for the GPU aggregation kernels (COUNT/SUM).
+//! Integration tests for all GPU aggregation kernels.
+//!
+//! Tests: COUNT, SUM (int64 + float), MIN (int64), MAX (int64), AVG,
+//! and GROUP BY (CPU-side).
 //!
 //! Tests the aggregation pipeline: create data + selection_mask -> dispatch
 //! aggregate kernel -> read back result -> verify against CPU reference.
@@ -537,4 +540,626 @@ fn test_sum_filtered_eq() {
 
     let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
     assert_eq!(gpu_sum, 60, "SUM where value == 20: 3 * 20 = 60");
+}
+
+// ============================================================
+// Helper: run aggregate_min_int64 kernel
+// ============================================================
+
+fn run_aggregate_min_int64(
+    gpu: &GpuDevice,
+    data: &[i64],
+    mask_buffer: &objc2::runtime::ProtocolObject<dyn MTLBuffer>,
+    row_count: u32,
+) -> i64 {
+    let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
+
+    let pipeline = encode::make_pipeline(&gpu.library, "aggregate_min_int64");
+    let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
+    let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+
+    // Partials buffer: one i64 per threadgroup, initialized to INT64_MAX
+    let partials_buffer = encode::alloc_buffer(
+        &gpu.device,
+        threadgroup_count * std::mem::size_of::<i64>(),
+    );
+    unsafe {
+        let ptr = partials_buffer.contents().as_ptr() as *mut i64;
+        for i in 0..threadgroup_count {
+            *ptr.add(i) = i64::MAX;
+        }
+    }
+
+    let params = AggParams {
+        row_count,
+        group_count: 0,
+        agg_function: 3, // MIN
+        _pad0: 0,
+    };
+    let params_buffer = encode::alloc_buffer_with_data(&gpu.device, &[params]);
+
+    let cmd_buf = encode::make_command_buffer(&gpu.command_queue);
+    {
+        let encoder = cmd_buf
+            .computeCommandEncoder()
+            .expect("Failed to create compute encoder");
+
+        encoder.setComputePipelineState(&pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&data_buffer), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&partials_buffer), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+        }
+
+        let grid_size = objc2_metal::MTLSize {
+            width: threadgroup_count,
+            height: 1,
+            depth: 1,
+        };
+        let tg_size = objc2_metal::MTLSize {
+            width: threads_per_tg,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+        encoder.endEncoding();
+    }
+    cmd_buf.commit();
+    cmd_buf.waitUntilCompleted();
+
+    // CPU final reduction over partials
+    unsafe {
+        let ptr = partials_buffer.contents().as_ptr() as *const i64;
+        let mut min_val = i64::MAX;
+        for i in 0..threadgroup_count {
+            let v = *ptr.add(i);
+            if v < min_val {
+                min_val = v;
+            }
+        }
+        min_val
+    }
+}
+
+// ============================================================
+// Helper: run aggregate_max_int64 kernel
+// ============================================================
+
+fn run_aggregate_max_int64(
+    gpu: &GpuDevice,
+    data: &[i64],
+    mask_buffer: &objc2::runtime::ProtocolObject<dyn MTLBuffer>,
+    row_count: u32,
+) -> i64 {
+    let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
+
+    let pipeline = encode::make_pipeline(&gpu.library, "aggregate_max_int64");
+    let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
+    let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+
+    // Partials buffer: one i64 per threadgroup, initialized to INT64_MIN
+    let partials_buffer = encode::alloc_buffer(
+        &gpu.device,
+        threadgroup_count * std::mem::size_of::<i64>(),
+    );
+    unsafe {
+        let ptr = partials_buffer.contents().as_ptr() as *mut i64;
+        for i in 0..threadgroup_count {
+            *ptr.add(i) = i64::MIN;
+        }
+    }
+
+    let params = AggParams {
+        row_count,
+        group_count: 0,
+        agg_function: 4, // MAX
+        _pad0: 0,
+    };
+    let params_buffer = encode::alloc_buffer_with_data(&gpu.device, &[params]);
+
+    let cmd_buf = encode::make_command_buffer(&gpu.command_queue);
+    {
+        let encoder = cmd_buf
+            .computeCommandEncoder()
+            .expect("Failed to create compute encoder");
+
+        encoder.setComputePipelineState(&pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&data_buffer), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&partials_buffer), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+        }
+
+        let grid_size = objc2_metal::MTLSize {
+            width: threadgroup_count,
+            height: 1,
+            depth: 1,
+        };
+        let tg_size = objc2_metal::MTLSize {
+            width: threads_per_tg,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+        encoder.endEncoding();
+    }
+    cmd_buf.commit();
+    cmd_buf.waitUntilCompleted();
+
+    // CPU final reduction over partials
+    unsafe {
+        let ptr = partials_buffer.contents().as_ptr() as *const i64;
+        let mut max_val = i64::MIN;
+        for i in 0..threadgroup_count {
+            let v = *ptr.add(i);
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        max_val
+    }
+}
+
+// ============================================================
+// Helper: run aggregate_sum_float kernel
+// ============================================================
+
+fn run_aggregate_sum_float(
+    gpu: &GpuDevice,
+    data: &[f32],
+    mask_buffer: &objc2::runtime::ProtocolObject<dyn MTLBuffer>,
+    row_count: u32,
+) -> f32 {
+    let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
+
+    // Result: single uint32 storing float bits, initialized to 0.0f
+    let result_buffer = encode::alloc_buffer(&gpu.device, 4);
+    unsafe {
+        let ptr = result_buffer.contents().as_ptr() as *mut u32;
+        *ptr = 0; // 0.0f as bits
+    }
+
+    let params = AggParams {
+        row_count,
+        group_count: 0,
+        agg_function: 1, // SUM
+        _pad0: 0,
+    };
+    let params_buffer = encode::alloc_buffer_with_data(&gpu.device, &[params]);
+
+    let pipeline = encode::make_pipeline(&gpu.library, "aggregate_sum_float");
+
+    let cmd_buf = encode::make_command_buffer(&gpu.command_queue);
+    {
+        let encoder = cmd_buf
+            .computeCommandEncoder()
+            .expect("Failed to create compute encoder");
+
+        encoder.setComputePipelineState(&pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&data_buffer), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&result_buffer), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+        }
+
+        let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
+        let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+
+        let grid_size = objc2_metal::MTLSize {
+            width: threadgroup_count,
+            height: 1,
+            depth: 1,
+        };
+        let tg_size = objc2_metal::MTLSize {
+            width: threads_per_tg,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+        encoder.endEncoding();
+    }
+    cmd_buf.commit();
+    cmd_buf.waitUntilCompleted();
+
+    unsafe {
+        let ptr = result_buffer.contents().as_ptr() as *const u32;
+        f32::from_bits(*ptr)
+    }
+}
+
+// ============================================================
+// MIN tests
+// ============================================================
+
+#[test]
+fn test_min_basic() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![50, 10, 30, 20, 40];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 10, "MIN of [50,10,30,20,40] should be 10");
+}
+
+#[test]
+fn test_min_single_value() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![42];
+    let mask = build_all_ones_mask(&gpu.device, 1);
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, 1);
+    assert_eq!(gpu_min, 42, "MIN of single value");
+}
+
+#[test]
+fn test_min_negative_values() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![-10, 5, -50, 20, -3];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, -50, "MIN with negatives should be -50");
+}
+
+#[test]
+fn test_min_filtered() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![10, 20, 30, 40, 50];
+    let (mask, _) = run_filter_to_bitmask(&gpu, &mut cache, &data, CompareOp::Gt, 25);
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 30, "MIN of values > 25 should be 30");
+}
+
+#[test]
+fn test_min_1000_elements() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = (100..1100).collect();
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 100, "MIN of 100..1099 should be 100");
+}
+
+#[test]
+fn test_min_all_same() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![42; 100];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 42, "MIN of all-same should be 42");
+}
+
+// ============================================================
+// MAX tests
+// ============================================================
+
+#[test]
+fn test_max_basic() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![50, 10, 30, 20, 40];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 50, "MAX of [50,10,30,20,40] should be 50");
+}
+
+#[test]
+fn test_max_single_value() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![42];
+    let mask = build_all_ones_mask(&gpu.device, 1);
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, 1);
+    assert_eq!(gpu_max, 42, "MAX of single value");
+}
+
+#[test]
+fn test_max_negative_values() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![-10, -5, -50, -20, -3];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, -3, "MAX with all-negatives should be -3");
+}
+
+#[test]
+fn test_max_filtered() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![10, 20, 30, 40, 50];
+    let (mask, _) = run_filter_to_bitmask(&gpu, &mut cache, &data, CompareOp::Lt, 35);
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 30, "MAX of values < 35 should be 30");
+}
+
+#[test]
+fn test_max_1000_elements() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = (0..1000).collect();
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 999, "MAX of 0..999 should be 999");
+}
+
+#[test]
+fn test_min_max_combined() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![-100, 0, 50, 200, -300];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+
+    assert_eq!(gpu_min, -300, "MIN should be -300");
+    assert_eq!(gpu_max, 200, "MAX should be 200");
+}
+
+// ============================================================
+// SUM float tests
+// ============================================================
+
+#[test]
+fn test_sum_float_basic() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<f32> = vec![1.5, 2.5, 3.0, 4.0, 5.0];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
+    let cpu_sum: f32 = data.iter().sum();
+
+    assert!(
+        (gpu_sum - cpu_sum).abs() < 0.01,
+        "SUM float: expected {}, got {}",
+        cpu_sum,
+        gpu_sum
+    );
+}
+
+#[test]
+fn test_sum_float_filtered() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    // Use int filter, then sum different float data
+    let int_data: Vec<i64> = vec![10, 20, 30, 40, 50];
+    let (mask, _) = run_filter_to_bitmask(&gpu, &mut cache, &int_data, CompareOp::Gt, 25);
+
+    // Only rows 2,3,4 are selected (values 30,40,50)
+    let float_data: Vec<f32> = vec![1.0, 2.0, 3.5, 4.5, 5.5];
+    let gpu_sum = run_aggregate_sum_float(&gpu, &float_data, &mask, float_data.len() as u32);
+
+    // Expected: 3.5 + 4.5 + 5.5 = 13.5
+    assert!(
+        (gpu_sum - 13.5).abs() < 0.01,
+        "SUM float filtered: expected 13.5, got {}",
+        gpu_sum
+    );
+}
+
+#[test]
+fn test_sum_float_zeros() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<f32> = vec![0.0, 0.0, 0.0];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
+    assert!(
+        gpu_sum.abs() < 0.001,
+        "SUM float zeros: expected 0, got {}",
+        gpu_sum
+    );
+}
+
+#[test]
+fn test_sum_float_negative() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<f32> = vec![-1.5, 2.5, -3.0, 4.0];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
+    let cpu_sum: f32 = data.iter().sum();
+
+    assert!(
+        (gpu_sum - cpu_sum).abs() < 0.01,
+        "SUM float with negatives: expected {}, got {}",
+        cpu_sum,
+        gpu_sum
+    );
+}
+
+// ============================================================
+// End-to-end executor tests for all aggregate functions + GROUP BY
+// ============================================================
+
+use gpu_query::gpu::executor::QueryExecutor;
+use gpu_query::io::catalog;
+
+/// Helper: create a test CSV, scan it with the catalog, and execute a query.
+fn run_query(csv_content: &str, sql: &str) -> gpu_query::gpu::executor::QueryResult {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let csv_path = tmp_dir.path().join("test.csv");
+    std::fs::write(&csv_path, csv_content).expect("write csv");
+
+    let catalog_entries = catalog::scan_directory(tmp_dir.path()).expect("scan");
+    let plan = {
+        let parsed = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
+        gpu_query::sql::physical_plan::plan(&parsed).expect("plan")
+    };
+
+    let mut executor = QueryExecutor::new().expect("executor");
+    executor.execute(&plan, &catalog_entries).expect("execute")
+}
+
+#[test]
+fn test_executor_count_star() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT count(*) FROM test");
+    assert_eq!(result.rows[0][0], "5");
+}
+
+#[test]
+fn test_executor_sum() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT sum(amount) FROM test");
+    assert_eq!(result.rows[0][0], "1500");
+}
+
+#[test]
+fn test_executor_min() {
+    let csv = "id,amount\n1,300\n2,100\n3,500\n4,200\n5,400\n";
+    let result = run_query(csv, "SELECT min(amount) FROM test");
+    assert_eq!(result.rows[0][0], "100");
+}
+
+#[test]
+fn test_executor_max() {
+    let csv = "id,amount\n1,300\n2,100\n3,500\n4,200\n5,400\n";
+    let result = run_query(csv, "SELECT max(amount) FROM test");
+    assert_eq!(result.rows[0][0], "500");
+}
+
+#[test]
+fn test_executor_avg() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT avg(amount) FROM test");
+    // AVG = 1500 / 5 = 300.0, should display as "300"
+    assert_eq!(result.rows[0][0], "300");
+}
+
+#[test]
+fn test_executor_multiple_aggregates() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(
+        csv,
+        "SELECT count(*), sum(amount), min(amount), max(amount), avg(amount) FROM test",
+    );
+    assert_eq!(result.columns.len(), 5);
+    assert_eq!(result.rows[0][0], "5");     // count
+    assert_eq!(result.rows[0][1], "1500");  // sum
+    assert_eq!(result.rows[0][2], "100");   // min
+    assert_eq!(result.rows[0][3], "500");   // max
+    assert_eq!(result.rows[0][4], "300");   // avg
+}
+
+#[test]
+fn test_executor_filtered_aggregates() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(
+        csv,
+        "SELECT count(*), sum(amount), min(amount), max(amount) FROM test WHERE amount > 200",
+    );
+    assert_eq!(result.rows[0][0], "3");     // count: 300,400,500
+    assert_eq!(result.rows[0][1], "1200");  // sum: 300+400+500
+    assert_eq!(result.rows[0][2], "300");   // min
+    assert_eq!(result.rows[0][3], "500");   // max
+}
+
+#[test]
+fn test_executor_group_by_int() {
+    let csv = "region,amount\n1,100\n2,200\n1,300\n2,400\n1,500\n";
+    let result = run_query(
+        csv,
+        "SELECT region, count(*), sum(amount) FROM test GROUP BY region",
+    );
+    // Two groups: region=1 (rows: 100,300,500) and region=2 (rows: 200,400)
+    assert_eq!(result.row_count, 2);
+
+    // Rows should be sorted by group key
+    // Region 1: count=3, sum=900
+    assert_eq!(result.rows[0][0], "1");
+    assert_eq!(result.rows[0][1], "3");
+    assert_eq!(result.rows[0][2], "900");
+
+    // Region 2: count=2, sum=600
+    assert_eq!(result.rows[1][0], "2");
+    assert_eq!(result.rows[1][1], "2");
+    assert_eq!(result.rows[1][2], "600");
+}
+
+#[test]
+fn test_executor_group_by_all_aggregates() {
+    let csv = "region,amount\n1,100\n2,200\n1,300\n2,400\n1,500\n";
+    let result = run_query(
+        csv,
+        "SELECT region, count(*), sum(amount), avg(amount), min(amount), max(amount) FROM test GROUP BY region",
+    );
+    assert_eq!(result.row_count, 2);
+
+    // Region 1: count=3, sum=900, avg=300, min=100, max=500
+    assert_eq!(result.rows[0][0], "1");
+    assert_eq!(result.rows[0][1], "3");
+    assert_eq!(result.rows[0][2], "900");
+    assert_eq!(result.rows[0][3], "300");
+    assert_eq!(result.rows[0][4], "100");
+    assert_eq!(result.rows[0][5], "500");
+
+    // Region 2: count=2, sum=600, avg=300, min=200, max=400
+    assert_eq!(result.rows[1][0], "2");
+    assert_eq!(result.rows[1][1], "2");
+    assert_eq!(result.rows[1][2], "600");
+    assert_eq!(result.rows[1][3], "300");
+    assert_eq!(result.rows[1][4], "200");
+    assert_eq!(result.rows[1][5], "400");
+}
+
+#[test]
+fn test_executor_group_by_single_group() {
+    // All rows same group
+    let csv = "region,amount\n1,100\n1,200\n1,300\n";
+    let result = run_query(
+        csv,
+        "SELECT region, count(*), sum(amount) FROM test GROUP BY region",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "1");
+    assert_eq!(result.rows[0][1], "3");
+    assert_eq!(result.rows[0][2], "600");
+}
+
+#[test]
+fn test_executor_group_by_filtered() {
+    let csv = "region,amount\n1,100\n2,200\n1,300\n2,400\n1,500\n";
+    let result = run_query(
+        csv,
+        "SELECT region, count(*), sum(amount) FROM test WHERE amount > 200 GROUP BY region",
+    );
+    // After filter (amount > 200): region=1: [300,500], region=2: [400]
+    assert_eq!(result.row_count, 2);
+
+    // Region 1: count=2, sum=800
+    assert_eq!(result.rows[0][0], "1");
+    assert_eq!(result.rows[0][1], "2");
+    assert_eq!(result.rows[0][2], "800");
+
+    // Region 2: count=1, sum=400
+    assert_eq!(result.rows[1][0], "2");
+    assert_eq!(result.rows[1][1], "1");
+    assert_eq!(result.rows[1][2], "400");
 }

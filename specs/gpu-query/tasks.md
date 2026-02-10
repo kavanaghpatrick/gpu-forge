@@ -124,7 +124,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-4, AC-8.1, AC-8.2, AC-8.3_
   - _Design: Kernel 2: JSON Parser_
 
-- [ ] 2.3 Full aggregation kernel (SUM, AVG, MIN, MAX, GROUP BY)
+- [x] 2.3 Full aggregation kernel (SUM, AVG, MIN, MAX, GROUP BY)
   - **Do**: Extend `shaders/aggregate.metal` with `aggregate_sum_double`, `aggregate_min_max` (function constant: min vs max), `aggregate_grouped` (threadgroup hash table for GROUP BY, 256-bucket local + global merge). Extend physical planner to map GROUP BY + multiple aggregates.
   - **Files**: `gpu-query/shaders/aggregate.metal`, update `src/sql/physical_plan.rs`
   - **Done when**: All 5 aggregate functions work with GROUP BY; verified against CPU oracle

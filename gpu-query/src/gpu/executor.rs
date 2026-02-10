@@ -7,6 +7,8 @@
 //! Pipeline: SQL parse -> PhysicalPlan -> GpuScan (CSV parse) -> GpuFilter
 //! (column_filter) -> GpuAggregate (aggregate_count/aggregate_sum_int64) -> result.
 
+use std::collections::HashMap;
+
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
@@ -132,12 +134,21 @@ impl QueryExecutor {
         match plan {
             PhysicalPlan::GpuAggregate {
                 functions,
-                group_by: _,
+                group_by,
                 input,
             } => {
                 // Walk down to get scan and optional filter results
                 let (scan_result, filter_result) = self.resolve_input(input, catalog)?;
-                self.execute_aggregate(&scan_result, filter_result.as_ref(), functions)
+                if group_by.is_empty() {
+                    self.execute_aggregate(&scan_result, filter_result.as_ref(), functions)
+                } else {
+                    self.execute_aggregate_grouped(
+                        &scan_result,
+                        filter_result.as_ref(),
+                        functions,
+                        group_by,
+                    )
+                }
             }
 
             PhysicalPlan::GpuFilter { .. } => {
@@ -909,56 +920,8 @@ impl QueryExecutor {
         let mut values = Vec::new();
 
         for (func, col_name) in functions {
-            let (col_label, result_str) = match func {
-                AggFunc::Count => {
-                    let label = if col_name == "*" {
-                        "count(*)".to_string()
-                    } else {
-                        format!("count({})", col_name)
-                    };
-                    let count = self.run_aggregate_count(mask_buffer, row_count)?;
-                    (label, count.to_string())
-                }
-                AggFunc::Sum => {
-                    let label = format!("sum({})", col_name);
-
-                    // Find column in schema
-                    let col_idx = scan
-                        .schema
-                        .column_index(col_name)
-                        .ok_or_else(|| format!("Column '{}' not found", col_name))?;
-                    let col_def = &scan.schema.columns[col_idx];
-
-                    match col_def.data_type {
-                        DataType::Int64 => {
-                            let local_idx = scan.schema.columns[..col_idx]
-                                .iter()
-                                .filter(|c| c.data_type == DataType::Int64)
-                                .count();
-                            let sum = self.run_aggregate_sum_int64(
-                                &scan.batch,
-                                mask_buffer,
-                                row_count,
-                                local_idx,
-                            )?;
-                            (label, sum.to_string())
-                        }
-                        _ => {
-                            return Err(format!(
-                                "SUM on {:?} columns not yet supported",
-                                col_def.data_type
-                            ))
-                        }
-                    }
-                }
-                _ => {
-                    return Err(format!(
-                        "{:?} aggregate not supported in POC",
-                        func
-                    ))
-                }
-            };
-
+            let (col_label, result_str) =
+                self.compute_aggregate(func, col_name, scan, mask_buffer, row_count)?;
             columns.push(col_label);
             values.push(result_str);
         }
@@ -968,6 +931,357 @@ impl QueryExecutor {
             rows: vec![values],
             row_count: 1,
         })
+    }
+
+    /// Compute a single aggregate function and return (label, formatted result).
+    fn compute_aggregate(
+        &self,
+        func: &AggFunc,
+        col_name: &str,
+        scan: &ScanResult,
+        mask_buffer: &ProtocolObject<dyn MTLBuffer>,
+        row_count: u32,
+    ) -> Result<(String, String), String> {
+        match func {
+            AggFunc::Count => {
+                let label = if col_name == "*" {
+                    "count(*)".to_string()
+                } else {
+                    format!("count({})", col_name)
+                };
+                let count = self.run_aggregate_count(mask_buffer, row_count)?;
+                Ok((label, count.to_string()))
+            }
+            AggFunc::Sum => {
+                let label = format!("sum({})", col_name);
+                let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                match col_def.data_type {
+                    DataType::Int64 => {
+                        let local_idx = self.int_local_idx(scan, col_idx);
+                        let sum = self.run_aggregate_sum_int64(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        )?;
+                        Ok((label, sum.to_string()))
+                    }
+                    DataType::Float64 => {
+                        let local_idx = self.float_local_idx(scan, col_idx);
+                        let sum = self.run_aggregate_sum_float(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        )?;
+                        // Format float with reasonable precision
+                        Ok((label, format_float(sum as f64)))
+                    }
+                    _ => Err(format!("SUM on {:?} not supported", col_def.data_type)),
+                }
+            }
+            AggFunc::Avg => {
+                let label = format!("avg({})", col_name);
+                let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                // AVG = SUM / COUNT
+                let count = self.run_aggregate_count(mask_buffer, row_count)?;
+                if count == 0 {
+                    return Ok((label, "NULL".to_string()));
+                }
+                match col_def.data_type {
+                    DataType::Int64 => {
+                        let local_idx = self.int_local_idx(scan, col_idx);
+                        let sum = self.run_aggregate_sum_int64(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        )?;
+                        let avg = sum as f64 / count as f64;
+                        Ok((label, format_float(avg)))
+                    }
+                    DataType::Float64 => {
+                        let local_idx = self.float_local_idx(scan, col_idx);
+                        let sum = self.run_aggregate_sum_float(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        )?;
+                        let avg = sum as f64 / count as f64;
+                        Ok((label, format_float(avg)))
+                    }
+                    _ => Err(format!("AVG on {:?} not supported", col_def.data_type)),
+                }
+            }
+            AggFunc::Min => {
+                let label = format!("min({})", col_name);
+                let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                match col_def.data_type {
+                    DataType::Int64 => {
+                        let local_idx = self.int_local_idx(scan, col_idx);
+                        let min = self.run_aggregate_min_int64(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        )?;
+                        Ok((label, min.to_string()))
+                    }
+                    DataType::Float64 => {
+                        // CPU fallback for float MIN
+                        let local_idx = self.float_local_idx(scan, col_idx);
+                        let vals = self.read_masked_floats(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        );
+                        let min = vals.iter().cloned().fold(f32::INFINITY, f32::min);
+                        Ok((label, format_float(min as f64)))
+                    }
+                    _ => Err(format!("MIN on {:?} not supported", col_def.data_type)),
+                }
+            }
+            AggFunc::Max => {
+                let label = format!("max({})", col_name);
+                let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+                match col_def.data_type {
+                    DataType::Int64 => {
+                        let local_idx = self.int_local_idx(scan, col_idx);
+                        let max = self.run_aggregate_max_int64(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        )?;
+                        Ok((label, max.to_string()))
+                    }
+                    DataType::Float64 => {
+                        // CPU fallback for float MAX
+                        let local_idx = self.float_local_idx(scan, col_idx);
+                        let vals = self.read_masked_floats(
+                            &scan.batch, mask_buffer, row_count, local_idx,
+                        );
+                        let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        Ok((label, format_float(max as f64)))
+                    }
+                    _ => Err(format!("MAX on {:?} not supported", col_def.data_type)),
+                }
+            }
+        }
+    }
+
+    /// Resolve column name to (index, definition).
+    fn resolve_column<'a>(
+        &self,
+        scan: &'a ScanResult,
+        col_name: &str,
+    ) -> Result<(usize, &'a ColumnDef), String> {
+        let col_idx = scan
+            .schema
+            .column_index(col_name)
+            .ok_or_else(|| format!("Column '{}' not found", col_name))?;
+        Ok((col_idx, &scan.schema.columns[col_idx]))
+    }
+
+    /// Get the local index among INT64 columns for a given global column index.
+    fn int_local_idx(&self, scan: &ScanResult, col_idx: usize) -> usize {
+        scan.schema.columns[..col_idx]
+            .iter()
+            .filter(|c| c.data_type == DataType::Int64)
+            .count()
+    }
+
+    /// Get the local index among FLOAT64 columns for a given global column index.
+    fn float_local_idx(&self, scan: &ScanResult, col_idx: usize) -> usize {
+        scan.schema.columns[..col_idx]
+            .iter()
+            .filter(|c| c.data_type == DataType::Float64)
+            .count()
+    }
+
+    /// Read masked float values from GPU buffer (CPU readback for fallback aggregates).
+    fn read_masked_floats(
+        &self,
+        batch: &ColumnarBatch,
+        mask_buffer: &ProtocolObject<dyn MTLBuffer>,
+        row_count: u32,
+        float_col_local_idx: usize,
+    ) -> Vec<f32> {
+        let offset = float_col_local_idx * batch.max_rows;
+        let mut result = Vec::new();
+        unsafe {
+            let data_ptr = batch.float_buffer.contents().as_ptr() as *const f32;
+            let mask_ptr = mask_buffer.contents().as_ptr() as *const u32;
+            for i in 0..row_count as usize {
+                let word = *mask_ptr.add(i / 32);
+                let bit = (word >> (i % 32)) & 1;
+                if bit == 1 {
+                    result.push(*data_ptr.add(offset + i));
+                }
+            }
+        }
+        result
+    }
+
+    /// Execute aggregate functions with GROUP BY (CPU-side grouping).
+    ///
+    /// Reads back column data from GPU, groups on CPU using HashMap,
+    /// then computes aggregates per group.
+    fn execute_aggregate_grouped(
+        &self,
+        scan: &ScanResult,
+        filter: Option<&FilterResult>,
+        functions: &[(AggFunc, String)],
+        group_by: &[String],
+    ) -> Result<QueryResult, String> {
+        let row_count = scan.batch.row_count as u32;
+
+        // Build selection mask
+        let default_mask;
+        let mask_buffer = if let Some(f) = filter {
+            &f.bitmask_buffer
+        } else {
+            default_mask = build_all_ones_mask(&self.device.device, row_count as usize);
+            &default_mask
+        };
+
+        // Read group-by column values from GPU buffers
+        // For now, support grouping by INT64 or VARCHAR columns (via string keys)
+        let group_keys = self.read_group_keys(scan, mask_buffer, row_count, group_by)?;
+
+        // group_keys: Vec<(row_index, group_key_string)>
+        // Build HashMap: group_key -> Vec<row_index>
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (row_idx, key) in &group_keys {
+            groups.entry(key.clone()).or_default().push(*row_idx);
+        }
+
+        // Sort groups for deterministic output
+        let mut sorted_keys: Vec<String> = groups.keys().cloned().collect();
+        sorted_keys.sort();
+
+        // Build result columns: group_by columns + aggregate columns
+        let mut result_columns = Vec::new();
+        for g in group_by {
+            result_columns.push(g.clone());
+        }
+        for (func, col_name) in functions {
+            let label = match func {
+                AggFunc::Count => {
+                    if col_name == "*" {
+                        "count(*)".to_string()
+                    } else {
+                        format!("count({})", col_name)
+                    }
+                }
+                AggFunc::Sum => format!("sum({})", col_name),
+                AggFunc::Avg => format!("avg({})", col_name),
+                AggFunc::Min => format!("min({})", col_name),
+                AggFunc::Max => format!("max({})", col_name),
+            };
+            result_columns.push(label);
+        }
+
+        // Read aggregate column data once (CPU-side for grouped aggregation)
+        let mut agg_data: Vec<AggColumnData> = Vec::new();
+        for (func, col_name) in functions {
+            if *func == AggFunc::Count && col_name == "*" {
+                agg_data.push(AggColumnData::CountStar);
+                continue;
+            }
+            let (col_idx, col_def) = self.resolve_column(scan, col_name)?;
+            match col_def.data_type {
+                DataType::Int64 => {
+                    let local_idx = self.int_local_idx(scan, col_idx);
+                    let all_vals = unsafe { scan.batch.read_int_column(local_idx) };
+                    agg_data.push(AggColumnData::Int64(all_vals));
+                }
+                DataType::Float64 => {
+                    let local_idx = self.float_local_idx(scan, col_idx);
+                    let all_vals = unsafe { scan.batch.read_float_column(local_idx) };
+                    agg_data.push(AggColumnData::Float64(all_vals));
+                }
+                _ => return Err(format!("Aggregate on {:?} not supported", col_def.data_type)),
+            }
+        }
+
+        // Compute aggregates per group
+        let mut rows = Vec::new();
+        for key in &sorted_keys {
+            let row_indices = &groups[key];
+            let mut row = Vec::new();
+
+            // Add group-by values (from the key)
+            // For multi-column GROUP BY, the key is "val1|val2|..." - split back
+            let key_parts: Vec<&str> = key.split('|').collect();
+            for part in &key_parts {
+                row.push(part.to_string());
+            }
+
+            // Add aggregate values
+            for (i, (func, _)) in functions.iter().enumerate() {
+                let val = compute_cpu_aggregate(func, &agg_data[i], row_indices);
+                row.push(val);
+            }
+
+            rows.push(row);
+        }
+
+        Ok(QueryResult {
+            columns: result_columns,
+            rows: rows.clone(),
+            row_count: rows.len(),
+        })
+    }
+
+    /// Read group-by column keys as strings for CPU-side grouping.
+    /// Returns (row_index, group_key) for each selected row.
+    fn read_group_keys(
+        &self,
+        scan: &ScanResult,
+        mask_buffer: &ProtocolObject<dyn MTLBuffer>,
+        row_count: u32,
+        group_by: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        // Pre-read all group columns
+        let mut col_readers: Vec<GroupColumnReader> = Vec::new();
+        for g_col_name in group_by {
+            let (col_idx, col_def) = self.resolve_column(scan, g_col_name)?;
+            match col_def.data_type {
+                DataType::Int64 => {
+                    let local_idx = self.int_local_idx(scan, col_idx);
+                    let vals = unsafe { scan.batch.read_int_column(local_idx) };
+                    col_readers.push(GroupColumnReader::Int64(vals));
+                }
+                DataType::Float64 => {
+                    let local_idx = self.float_local_idx(scan, col_idx);
+                    let vals = unsafe { scan.batch.read_float_column(local_idx) };
+                    col_readers.push(GroupColumnReader::Float64(vals));
+                }
+                DataType::Varchar => {
+                    // For varchar GROUP BY, we need raw string data.
+                    // Read from the original file source (CPU fallback).
+                    // For now, return a placeholder error - varchar GROUP BY
+                    // requires dictionary encoding which is task 2.7
+                    return Err(format!(
+                        "GROUP BY on VARCHAR column '{}' not yet supported (requires dictionary encoding)",
+                        g_col_name
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "GROUP BY on {:?} not supported",
+                        col_def.data_type
+                    ));
+                }
+            }
+        }
+
+        let mut result = Vec::new();
+        unsafe {
+            let mask_ptr = mask_buffer.contents().as_ptr() as *const u32;
+            for i in 0..row_count as usize {
+                let word = *mask_ptr.add(i / 32);
+                let bit = (word >> (i % 32)) & 1;
+                if bit == 1 {
+                    let mut key_parts = Vec::new();
+                    for reader in &col_readers {
+                        match reader {
+                            GroupColumnReader::Int64(vals) => {
+                                key_parts.push(vals[i].to_string());
+                            }
+                            GroupColumnReader::Float64(vals) => {
+                                key_parts.push(format!("{}", vals[i]));
+                            }
+                        }
+                    }
+                    result.push((i, key_parts.join("|")));
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Run the aggregate_count kernel on a selection mask.
@@ -1108,6 +1422,355 @@ impl QueryExecutor {
         };
 
         Ok(sum)
+    }
+
+    /// Run the aggregate_min_int64 kernel.
+    /// GPU does SIMD + threadgroup reduction, writes per-threadgroup partials.
+    /// Host reads partials and does final MIN on CPU.
+    fn run_aggregate_min_int64(
+        &self,
+        batch: &ColumnarBatch,
+        mask_buffer: &ProtocolObject<dyn MTLBuffer>,
+        row_count: u32,
+        int_col_local_idx: usize,
+    ) -> Result<i64, String> {
+        let pipeline =
+            encode::make_pipeline(&self.device.library, "aggregate_min_int64");
+
+        let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
+        let threadgroup_count =
+            (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+
+        // Allocate partials buffer: one i64 per threadgroup, initialized to INT64_MAX
+        let partials_buffer = encode::alloc_buffer(
+            &self.device.device,
+            threadgroup_count * std::mem::size_of::<i64>(),
+        );
+        unsafe {
+            let ptr = partials_buffer.contents().as_ptr() as *mut i64;
+            for i in 0..threadgroup_count {
+                *ptr.add(i) = i64::MAX;
+            }
+        }
+
+        let params = AggParams {
+            row_count,
+            group_count: 0,
+            agg_function: 3, // MIN
+            _pad0: 0,
+        };
+        let params_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+
+        let data_offset =
+            int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
+
+        let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&pipeline);
+
+            unsafe {
+                encoder.setBuffer_offset_atIndex(
+                    Some(&batch.int_buffer), data_offset, 0,
+                );
+                encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&partials_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+            }
+
+            let grid_size = objc2_metal::MTLSize {
+                width: threadgroup_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = objc2_metal::MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        // CPU-side final reduction over threadgroup partials
+        let result = unsafe {
+            let ptr = partials_buffer.contents().as_ptr() as *const i64;
+            let mut min_val = i64::MAX;
+            for i in 0..threadgroup_count {
+                let v = *ptr.add(i);
+                if v < min_val {
+                    min_val = v;
+                }
+            }
+            min_val
+        };
+
+        Ok(result)
+    }
+
+    /// Run the aggregate_max_int64 kernel.
+    /// GPU does SIMD + threadgroup reduction, writes per-threadgroup partials.
+    /// Host reads partials and does final MAX on CPU.
+    fn run_aggregate_max_int64(
+        &self,
+        batch: &ColumnarBatch,
+        mask_buffer: &ProtocolObject<dyn MTLBuffer>,
+        row_count: u32,
+        int_col_local_idx: usize,
+    ) -> Result<i64, String> {
+        let pipeline =
+            encode::make_pipeline(&self.device.library, "aggregate_max_int64");
+
+        let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
+        let threadgroup_count =
+            (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+
+        // Allocate partials buffer: one i64 per threadgroup, initialized to INT64_MIN
+        let partials_buffer = encode::alloc_buffer(
+            &self.device.device,
+            threadgroup_count * std::mem::size_of::<i64>(),
+        );
+        unsafe {
+            let ptr = partials_buffer.contents().as_ptr() as *mut i64;
+            for i in 0..threadgroup_count {
+                *ptr.add(i) = i64::MIN;
+            }
+        }
+
+        let params = AggParams {
+            row_count,
+            group_count: 0,
+            agg_function: 4, // MAX
+            _pad0: 0,
+        };
+        let params_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+
+        let data_offset =
+            int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
+
+        let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&pipeline);
+
+            unsafe {
+                encoder.setBuffer_offset_atIndex(
+                    Some(&batch.int_buffer), data_offset, 0,
+                );
+                encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&partials_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+            }
+
+            let grid_size = objc2_metal::MTLSize {
+                width: threadgroup_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = objc2_metal::MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        // CPU-side final reduction over threadgroup partials
+        let result = unsafe {
+            let ptr = partials_buffer.contents().as_ptr() as *const i64;
+            let mut max_val = i64::MIN;
+            for i in 0..threadgroup_count {
+                let v = *ptr.add(i);
+                if v > max_val {
+                    max_val = v;
+                }
+            }
+            max_val
+        };
+
+        Ok(result)
+    }
+
+    /// Run the aggregate_sum_float kernel for FLOAT columns.
+    fn run_aggregate_sum_float(
+        &self,
+        batch: &ColumnarBatch,
+        mask_buffer: &ProtocolObject<dyn MTLBuffer>,
+        row_count: u32,
+        float_col_local_idx: usize,
+    ) -> Result<f32, String> {
+        // Result: single uint32 storing float bits, initialized to 0.0f
+        let result_buffer = encode::alloc_buffer(&self.device.device, 4);
+        unsafe {
+            let ptr = result_buffer.contents().as_ptr() as *mut u32;
+            *ptr = 0; // 0.0f as bits = 0
+        }
+
+        let params = AggParams {
+            row_count,
+            group_count: 0,
+            agg_function: 1, // SUM
+            _pad0: 0,
+        };
+        let params_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+
+        let pipeline =
+            encode::make_pipeline(&self.device.library, "aggregate_sum_float");
+
+        let data_offset =
+            float_col_local_idx * batch.max_rows * std::mem::size_of::<f32>();
+
+        let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&pipeline);
+
+            unsafe {
+                encoder.setBuffer_offset_atIndex(
+                    Some(&batch.float_buffer),
+                    data_offset,
+                    0,
+                );
+                encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&result_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
+            }
+
+            let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
+            let threadgroup_count =
+                (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+
+            let grid_size = objc2_metal::MTLSize {
+                width: threadgroup_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = objc2_metal::MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        let sum = unsafe {
+            let ptr = result_buffer.contents().as_ptr() as *const u32;
+            f32::from_bits(*ptr)
+        };
+
+        Ok(sum)
+    }
+}
+
+/// Column data reader for GROUP BY key extraction.
+enum GroupColumnReader {
+    Int64(Vec<i64>),
+    Float64(Vec<f32>),
+}
+
+/// Column data for CPU-side grouped aggregation.
+enum AggColumnData {
+    CountStar,
+    Int64(Vec<i64>),
+    Float64(Vec<f32>),
+}
+
+/// Compute a CPU-side aggregate over the given row indices.
+fn compute_cpu_aggregate(
+    func: &AggFunc,
+    data: &AggColumnData,
+    row_indices: &[usize],
+) -> String {
+    if row_indices.is_empty() {
+        return "NULL".to_string();
+    }
+
+    match (func, data) {
+        (AggFunc::Count, AggColumnData::CountStar) => row_indices.len().to_string(),
+        (AggFunc::Count, _) => row_indices.len().to_string(),
+
+        (AggFunc::Sum, AggColumnData::Int64(vals)) => {
+            let sum: i64 = row_indices.iter().map(|&i| vals[i]).sum();
+            sum.to_string()
+        }
+        (AggFunc::Sum, AggColumnData::Float64(vals)) => {
+            let sum: f64 = row_indices.iter().map(|&i| vals[i] as f64).sum();
+            format_float(sum)
+        }
+
+        (AggFunc::Avg, AggColumnData::Int64(vals)) => {
+            let sum: f64 = row_indices.iter().map(|&i| vals[i] as f64).sum();
+            let avg = sum / row_indices.len() as f64;
+            format_float(avg)
+        }
+        (AggFunc::Avg, AggColumnData::Float64(vals)) => {
+            let sum: f64 = row_indices.iter().map(|&i| vals[i] as f64).sum();
+            let avg = sum / row_indices.len() as f64;
+            format_float(avg)
+        }
+
+        (AggFunc::Min, AggColumnData::Int64(vals)) => {
+            let min = row_indices.iter().map(|&i| vals[i]).min().unwrap();
+            min.to_string()
+        }
+        (AggFunc::Min, AggColumnData::Float64(vals)) => {
+            let min = row_indices
+                .iter()
+                .map(|&i| vals[i])
+                .fold(f32::INFINITY, f32::min);
+            format_float(min as f64)
+        }
+
+        (AggFunc::Max, AggColumnData::Int64(vals)) => {
+            let max = row_indices.iter().map(|&i| vals[i]).max().unwrap();
+            max.to_string()
+        }
+        (AggFunc::Max, AggColumnData::Float64(vals)) => {
+            let max = row_indices
+                .iter()
+                .map(|&i| vals[i])
+                .fold(f32::NEG_INFINITY, f32::max);
+            format_float(max as f64)
+        }
+
+        _ => "NULL".to_string(),
+    }
+}
+
+/// Format a float value for display: remove trailing zeros after decimal.
+fn format_float(val: f64) -> String {
+    if val == val.floor() && val.abs() < 1e15 {
+        // Integer-valued float: show as integer
+        format!("{}", val as i64)
+    } else {
+        // Show with reasonable precision
+        let s = format!("{:.6}", val);
+        let s = s.trim_end_matches('0');
+        let s = s.trim_end_matches('.');
+        s.to_string()
     }
 }
 
