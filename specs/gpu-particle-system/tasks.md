@@ -369,7 +369,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-16, AC-4.1 through AC-4.6_
   - _Design: Emission Kernel - burst path_
 
-- [ ] 2.7 [VERIFY] Quality checkpoint: build + clippy
+- [x] 2.7 [VERIFY] Quality checkpoint: build + clippy
   - **Do**: Build, clippy, verify all features compile
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build --release 2>&1 | tail -5`
   - **Done when**: Clean build, no clippy warnings
