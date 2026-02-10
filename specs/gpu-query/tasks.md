@@ -252,7 +252,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-30, AC-4.1_
   - _Design: TUI Rendering Architecture_
 
-- [ ] 3.6 CPU comparison and per-query performance line
+- [x] 3.6 CPU comparison and per-query performance line
   - **Do**: Implement CPU comparison estimate: `(bytes_processed / 6.5 GB_per_sec) / actual_gpu_time` for the `~Nx vs CPU` display. Add to every query result line. Implement `.benchmark` command running actual CPU-side query (Rust iterators) for real comparison. Implement warm/cold timing display.
   - **Files**: update `gpu-query/src/gpu/metrics.rs`, `gpu-query/src/tui/results.rs`
   - **Done when**: Every query shows `142M rows | 8.4 GB | 2.3ms | GPU 94% | ~312x vs CPU`

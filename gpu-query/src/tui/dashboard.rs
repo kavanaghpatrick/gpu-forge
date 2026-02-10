@@ -282,6 +282,7 @@ mod tests {
             scan_throughput_gbps: 50.0,
             rows_processed: 1_000_000,
             bytes_scanned: 100_000_000,
+            is_warm: false,
         });
 
         let theme = Theme::thermal();
@@ -338,6 +339,7 @@ mod tests {
                 scan_throughput_gbps: i as f64 * 10.0,
                 rows_processed: i as u64 * 100_000,
                 bytes_scanned: i as u64 * 50_000_000,
+                is_warm: false,
             });
         }
 

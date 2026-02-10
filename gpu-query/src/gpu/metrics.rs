@@ -22,6 +22,43 @@ pub struct QueryMetrics {
     pub rows_processed: u64,
     /// Bytes scanned from source file(s).
     pub bytes_scanned: u64,
+    /// Whether this is a warm query (data already in memory/cache).
+    pub is_warm: bool,
+}
+
+/// CPU comparison estimate based on assumed CPU memory bandwidth.
+#[derive(Debug, Clone)]
+pub struct CpuEstimate {
+    /// Estimated time the same scan would take on CPU (ms).
+    pub cpu_estimate_ms: f64,
+    /// Speedup factor: cpu_estimate / gpu_time.
+    pub speedup_vs_cpu: f64,
+}
+
+/// Assumed CPU memory bandwidth for comparison (single-threaded sequential scan).
+/// M4 has ~60 GB/s DRAM bandwidth but typical single-threaded scan throughput
+/// is much lower due to cache/memory hierarchy: ~6.5 GB/s is realistic for
+/// a single-core sequential CSV/Parquet scan.
+pub const CPU_BANDWIDTH_GBPS: f64 = 6.5;
+
+impl CpuEstimate {
+    /// Compute CPU comparison from bytes_scanned and actual GPU time.
+    ///
+    /// Formula: cpu_estimate_ms = (bytes_scanned / CPU_BANDWIDTH_GBPS) * 1000
+    ///          speedup = cpu_estimate_ms / gpu_time_ms
+    pub fn from_metrics(bytes_scanned: u64, gpu_time_ms: f64) -> Self {
+        let bytes_gb = bytes_scanned as f64 / 1_000_000_000.0;
+        let cpu_estimate_ms = (bytes_gb / CPU_BANDWIDTH_GBPS) * 1000.0;
+        let speedup_vs_cpu = if gpu_time_ms > 0.0 {
+            cpu_estimate_ms / gpu_time_ms
+        } else {
+            0.0
+        };
+        Self {
+            cpu_estimate_ms,
+            speedup_vs_cpu,
+        }
+    }
 }
 
 impl QueryMetrics {
@@ -33,7 +70,13 @@ impl QueryMetrics {
             scan_throughput_gbps: 0.0,
             rows_processed: 0,
             bytes_scanned: 0,
+            is_warm: false,
         }
+    }
+
+    /// Compute the CPU comparison estimate for this query.
+    pub fn cpu_estimate(&self) -> CpuEstimate {
+        CpuEstimate::from_metrics(self.bytes_scanned, self.gpu_time_ms)
     }
 }
 
@@ -179,7 +222,15 @@ impl GpuTimer {
             scan_throughput_gbps,
             rows_processed,
             bytes_scanned,
+            is_warm: false,
         }
+    }
+
+    /// Build a QueryMetrics with warm/cold indicator.
+    pub fn into_metrics_with_warmth(self, bytes_scanned: u64, rows_processed: u64, memory_used_bytes: u64, is_warm: bool) -> QueryMetrics {
+        let mut m = self.into_metrics(bytes_scanned, rows_processed, memory_used_bytes);
+        m.is_warm = is_warm;
+        m
     }
 }
 
@@ -220,6 +271,103 @@ pub fn format_time(ms: f64) -> String {
     }
 }
 
+/// Format a row count with SI suffixes (e.g., 142_000_000 -> "142M").
+pub fn format_row_count(rows: u64) -> String {
+    if rows >= 1_000_000_000 {
+        let val = rows as f64 / 1_000_000_000.0;
+        if val >= 100.0 {
+            format!("{:.0}B", val)
+        } else if val >= 10.0 {
+            format!("{:.1}B", val)
+        } else {
+            format!("{:.2}B", val)
+        }
+    } else if rows >= 1_000_000 {
+        let val = rows as f64 / 1_000_000.0;
+        if val >= 100.0 {
+            format!("{:.0}M", val)
+        } else if val >= 10.0 {
+            format!("{:.1}M", val)
+        } else {
+            format!("{:.2}M", val)
+        }
+    } else if rows >= 1_000 {
+        let val = rows as f64 / 1_000.0;
+        if val >= 100.0 {
+            format!("{:.0}K", val)
+        } else if val >= 10.0 {
+            format!("{:.1}K", val)
+        } else {
+            format!("{:.2}K", val)
+        }
+    } else {
+        format!("{}", rows)
+    }
+}
+
+/// Format bytes with SI-style units for display (e.g., 8_400_000_000 -> "8.4 GB").
+/// Uses decimal units (1 GB = 1,000,000,000 bytes) like data throughput conventions.
+pub fn format_data_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        let val = bytes as f64 / 1_000_000_000.0;
+        if val >= 100.0 {
+            format!("{:.0} GB", val)
+        } else if val >= 10.0 {
+            format!("{:.1} GB", val)
+        } else {
+            format!("{:.2} GB", val)
+        }
+    } else if bytes >= 1_000_000 {
+        let val = bytes as f64 / 1_000_000.0;
+        if val >= 100.0 {
+            format!("{:.0} MB", val)
+        } else if val >= 10.0 {
+            format!("{:.1} MB", val)
+        } else {
+            format!("{:.2} MB", val)
+        }
+    } else if bytes >= 1_000 {
+        let val = bytes as f64 / 1_000.0;
+        if val >= 10.0 {
+            format!("{:.1} KB", val)
+        } else {
+            format!("{:.2} KB", val)
+        }
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Format a CPU comparison speedup (e.g., 312.5 -> "~312x vs CPU").
+pub fn format_speedup(speedup: f64) -> String {
+    if speedup < 1.0 {
+        format!("~{:.1}x vs CPU", speedup)
+    } else if speedup < 10.0 {
+        format!("~{:.1}x vs CPU", speedup)
+    } else {
+        format!("~{:.0}x vs CPU", speedup)
+    }
+}
+
+/// Build the full performance summary line from QueryMetrics.
+///
+/// Format: "142M rows | 8.4 GB | 2.3ms | GPU 94% | ~312x vs CPU"
+pub fn build_metrics_performance_line(metrics: &QueryMetrics, utilization: f32) -> String {
+    let rows = format_row_count(metrics.rows_processed);
+    let data = format_data_bytes(metrics.bytes_scanned);
+    let time = format_time(metrics.gpu_time_ms);
+    let gpu_pct = format!("GPU {:.0}%", utilization * 100.0);
+    let estimate = metrics.cpu_estimate();
+    let speedup = format_speedup(estimate.speedup_vs_cpu);
+
+    let warm_cold = if metrics.is_warm { " (warm)" } else { " (cold)" };
+
+    format!(
+        " {} rows | {} | {}{} | {} | {}",
+        rows, data, time, warm_cold, gpu_pct, speedup
+    )
+}
+
 /// Push a value to a Vec, dropping the oldest if it exceeds max_len.
 fn push_bounded(vec: &mut Vec<f64>, value: f64, max_len: usize) {
     if vec.len() >= max_len {
@@ -240,6 +388,18 @@ fn push_bounded_u64(vec: &mut Vec<u64>, value: u64, max_len: usize) {
 mod tests {
     use super::*;
 
+    /// Helper to build a test QueryMetrics quickly.
+    fn test_metrics(gpu_time_ms: f64, memory_used_bytes: u64, scan_throughput_gbps: f64, rows_processed: u64, bytes_scanned: u64) -> QueryMetrics {
+        QueryMetrics {
+            gpu_time_ms,
+            memory_used_bytes,
+            scan_throughput_gbps,
+            rows_processed,
+            bytes_scanned,
+            is_warm: false,
+        }
+    }
+
     #[test]
     fn test_query_metrics_zero() {
         let m = QueryMetrics::zero();
@@ -248,6 +408,7 @@ mod tests {
         assert_eq!(m.scan_throughput_gbps, 0.0);
         assert_eq!(m.rows_processed, 0);
         assert_eq!(m.bytes_scanned, 0);
+        assert!(!m.is_warm);
     }
 
     #[test]
@@ -263,13 +424,7 @@ mod tests {
     #[test]
     fn test_collector_record() {
         let mut c = GpuMetricsCollector::new();
-        c.record(QueryMetrics {
-            gpu_time_ms: 5.0,
-            memory_used_bytes: 1_000_000,
-            scan_throughput_gbps: 50.0,
-            rows_processed: 100_000,
-            bytes_scanned: 10_000_000,
-        });
+        c.record(test_metrics(5.0, 1_000_000, 50.0, 100_000, 10_000_000));
         assert_eq!(c.query_count, 1);
         assert_eq!(c.time_history.len(), 1);
         assert_eq!(c.time_history[0], 5.0);
@@ -281,27 +436,9 @@ mod tests {
     #[test]
     fn test_collector_peak_memory() {
         let mut c = GpuMetricsCollector::new();
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 500,
-            scan_throughput_gbps: 1.0,
-            rows_processed: 10,
-            bytes_scanned: 100,
-        });
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 2000,
-            scan_throughput_gbps: 1.0,
-            rows_processed: 10,
-            bytes_scanned: 100,
-        });
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 800,
-            scan_throughput_gbps: 1.0,
-            rows_processed: 10,
-            bytes_scanned: 100,
-        });
+        c.record(test_metrics(1.0, 500, 1.0, 10, 100));
+        c.record(test_metrics(1.0, 2000, 1.0, 10, 100));
+        c.record(test_metrics(1.0, 800, 1.0, 10, 100));
         assert_eq!(c.peak_memory_bytes, 2000);
         assert_eq!(c.latest.memory_used_bytes, 800);
     }
@@ -310,13 +447,7 @@ mod tests {
     fn test_utilization_estimate() {
         let mut c = GpuMetricsCollector::new();
         // 50 GB/s out of 100 GB/s = 0.5
-        c.record(QueryMetrics {
-            gpu_time_ms: 10.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 50.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(10.0, 0, 50.0, 0, 0));
         let util = c.utilization_estimate();
         assert!((util - 0.5).abs() < 0.01);
     }
@@ -325,36 +456,18 @@ mod tests {
     fn test_utilization_clamp() {
         let mut c = GpuMetricsCollector::new();
         // Over 100 GB/s should clamp to 1.0
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 200.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(1.0, 0, 200.0, 0, 0));
         assert_eq!(c.utilization_estimate(), 1.0);
     }
 
     #[test]
     fn test_memory_utilization() {
         let mut c = GpuMetricsCollector::new();
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 100,
-            scan_throughput_gbps: 1.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(1.0, 100, 1.0, 0, 0));
         // Only one sample, peak = current = 100
         assert!((c.memory_utilization() - 1.0).abs() < 0.01);
 
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 50,
-            scan_throughput_gbps: 1.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(1.0, 50, 1.0, 0, 0));
         // Peak = 100, current = 50 => 0.5
         assert!((c.memory_utilization() - 0.5).abs() < 0.01);
     }
@@ -362,13 +475,7 @@ mod tests {
     #[test]
     fn test_time_history_us() {
         let mut c = GpuMetricsCollector::new();
-        c.record(QueryMetrics {
-            gpu_time_ms: 2.5,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 0.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(2.5, 0, 0.0, 0, 0));
         let history = c.time_history_us();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0], 2500);
@@ -377,13 +484,7 @@ mod tests {
     #[test]
     fn test_throughput_history_mbs() {
         let mut c = GpuMetricsCollector::new();
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 1.5,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(1.0, 0, 1.5, 0, 0));
         let history = c.throughput_history_mbs();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0], 1500);
@@ -393,20 +494,8 @@ mod tests {
     fn test_avg_time_ms() {
         let mut c = GpuMetricsCollector::new();
         assert_eq!(c.avg_time_ms(), 0.0);
-        c.record(QueryMetrics {
-            gpu_time_ms: 10.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 0.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
-        c.record(QueryMetrics {
-            gpu_time_ms: 20.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 0.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(10.0, 0, 0.0, 0, 0));
+        c.record(test_metrics(20.0, 0, 0.0, 0, 0));
         assert!((c.avg_time_ms() - 15.0).abs() < 0.01);
     }
 
@@ -414,20 +503,8 @@ mod tests {
     fn test_avg_throughput() {
         let mut c = GpuMetricsCollector::new();
         assert_eq!(c.avg_throughput_gbps(), 0.0);
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 40.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
-        c.record(QueryMetrics {
-            gpu_time_ms: 1.0,
-            memory_used_bytes: 0,
-            scan_throughput_gbps: 60.0,
-            rows_processed: 0,
-            bytes_scanned: 0,
-        });
+        c.record(test_metrics(1.0, 0, 40.0, 0, 0));
+        c.record(test_metrics(1.0, 0, 60.0, 0, 0));
         assert!((c.avg_throughput_gbps() - 50.0).abs() < 0.01);
     }
 
@@ -435,13 +512,7 @@ mod tests {
     fn test_history_bounded() {
         let mut c = GpuMetricsCollector::new();
         for i in 0..MAX_HISTORY + 10 {
-            c.record(QueryMetrics {
-                gpu_time_ms: i as f64,
-                memory_used_bytes: i as u64,
-                scan_throughput_gbps: i as f64,
-                rows_processed: 0,
-                bytes_scanned: 0,
-            });
+            c.record(test_metrics(i as f64, i as u64, i as f64, 0, 0));
         }
         assert_eq!(c.time_history.len(), MAX_HISTORY);
         assert_eq!(c.throughput_history.len(), MAX_HISTORY);
@@ -468,8 +539,18 @@ mod tests {
         assert_eq!(metrics.bytes_scanned, 1_000_000_000);
         assert_eq!(metrics.rows_processed, 1_000_000);
         assert_eq!(metrics.memory_used_bytes, 500_000);
+        assert!(!metrics.is_warm);
         // 1 GB scanned in ~10ms = ~100 GB/s
         assert!(metrics.scan_throughput_gbps > 1.0);
+    }
+
+    #[test]
+    fn test_gpu_timer_into_metrics_with_warmth() {
+        let timer = GpuTimer::start();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let metrics = timer.into_metrics_with_warmth(500_000_000, 500_000, 100_000, true);
+        assert!(metrics.is_warm);
+        assert_eq!(metrics.rows_processed, 500_000);
     }
 
     #[test]
@@ -517,5 +598,170 @@ mod tests {
     fn test_default_collector() {
         let c = GpuMetricsCollector::default();
         assert_eq!(c.query_count, 0);
+    }
+
+    // ---- CPU estimate tests ----
+
+    #[test]
+    fn test_cpu_estimate_basic() {
+        // 1 GB scanned in 1ms on GPU
+        // CPU estimate: 1 GB / 6.5 GB/s = 153.8ms
+        // Speedup: 153.8 / 1.0 = ~153.8x
+        let est = CpuEstimate::from_metrics(1_000_000_000, 1.0);
+        assert!((est.cpu_estimate_ms - 153.846).abs() < 1.0);
+        assert!((est.speedup_vs_cpu - 153.846).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_cpu_estimate_small_data() {
+        // 10 MB scanned in 0.5ms
+        // CPU estimate: 0.01 GB / 6.5 GB/s = 1.538ms
+        // Speedup: 1.538 / 0.5 = ~3.08x
+        let est = CpuEstimate::from_metrics(10_000_000, 0.5);
+        assert!((est.cpu_estimate_ms - 1.538).abs() < 0.1);
+        assert!((est.speedup_vs_cpu - 3.077).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_cpu_estimate_zero_time() {
+        let est = CpuEstimate::from_metrics(1_000_000_000, 0.0);
+        assert_eq!(est.speedup_vs_cpu, 0.0);
+    }
+
+    #[test]
+    fn test_cpu_estimate_zero_bytes() {
+        let est = CpuEstimate::from_metrics(0, 5.0);
+        assert_eq!(est.cpu_estimate_ms, 0.0);
+        assert_eq!(est.speedup_vs_cpu, 0.0);
+    }
+
+    #[test]
+    fn test_query_metrics_cpu_estimate() {
+        let m = QueryMetrics {
+            gpu_time_ms: 2.3,
+            memory_used_bytes: 0,
+            scan_throughput_gbps: 0.0,
+            rows_processed: 142_000_000,
+            bytes_scanned: 8_400_000_000,
+            is_warm: true,
+        };
+        let est = m.cpu_estimate();
+        // 8.4 GB / 6.5 GB/s = 1292.3ms
+        // Speedup: 1292.3 / 2.3 = ~561.9x
+        assert!((est.cpu_estimate_ms - 1292.3).abs() < 1.0);
+        assert!(est.speedup_vs_cpu > 500.0);
+    }
+
+    // ---- format_row_count tests ----
+
+    #[test]
+    fn test_format_row_count_small() {
+        assert_eq!(format_row_count(0), "0");
+        assert_eq!(format_row_count(42), "42");
+        assert_eq!(format_row_count(999), "999");
+    }
+
+    #[test]
+    fn test_format_row_count_thousands() {
+        assert_eq!(format_row_count(1_000), "1.00K");
+        assert_eq!(format_row_count(1_500), "1.50K");
+        assert_eq!(format_row_count(10_000), "10.0K");
+        assert_eq!(format_row_count(100_000), "100K");
+        assert_eq!(format_row_count(999_999), "1000K");
+    }
+
+    #[test]
+    fn test_format_row_count_millions() {
+        assert_eq!(format_row_count(1_000_000), "1.00M");
+        assert_eq!(format_row_count(1_500_000), "1.50M");
+        assert_eq!(format_row_count(10_000_000), "10.0M");
+        assert_eq!(format_row_count(142_000_000), "142M");
+        assert_eq!(format_row_count(999_000_000), "999M");
+    }
+
+    #[test]
+    fn test_format_row_count_billions() {
+        assert_eq!(format_row_count(1_000_000_000), "1.00B");
+        assert_eq!(format_row_count(10_000_000_000), "10.0B");
+    }
+
+    // ---- format_data_bytes tests ----
+
+    #[test]
+    fn test_format_data_bytes_small() {
+        assert_eq!(format_data_bytes(500), "500 B");
+    }
+
+    #[test]
+    fn test_format_data_bytes_kb() {
+        assert_eq!(format_data_bytes(1_500), "1.50 KB");
+        assert_eq!(format_data_bytes(50_000), "50.0 KB");
+    }
+
+    #[test]
+    fn test_format_data_bytes_mb() {
+        assert_eq!(format_data_bytes(1_500_000), "1.50 MB");
+        assert_eq!(format_data_bytes(50_000_000), "50.0 MB");
+        assert_eq!(format_data_bytes(500_000_000), "500 MB");
+    }
+
+    #[test]
+    fn test_format_data_bytes_gb() {
+        assert_eq!(format_data_bytes(1_000_000_000), "1.00 GB");
+        assert_eq!(format_data_bytes(8_400_000_000), "8.40 GB");
+        assert_eq!(format_data_bytes(50_000_000_000), "50.0 GB");
+        assert_eq!(format_data_bytes(500_000_000_000), "500 GB");
+    }
+
+    // ---- format_speedup tests ----
+
+    #[test]
+    fn test_format_speedup_small() {
+        assert_eq!(format_speedup(0.5), "~0.5x vs CPU");
+        assert_eq!(format_speedup(3.7), "~3.7x vs CPU");
+    }
+
+    #[test]
+    fn test_format_speedup_large() {
+        assert_eq!(format_speedup(312.5), "~312x vs CPU");
+        assert_eq!(format_speedup(15.0), "~15x vs CPU");
+    }
+
+    // ---- build_metrics_performance_line tests ----
+
+    #[test]
+    fn test_build_metrics_performance_line() {
+        let m = QueryMetrics {
+            gpu_time_ms: 2.3,
+            memory_used_bytes: 0,
+            scan_throughput_gbps: 94.0, // near M4 peak
+            rows_processed: 142_000_000,
+            bytes_scanned: 8_400_000_000,
+            is_warm: false,
+        };
+        let line = build_metrics_performance_line(&m, 0.94);
+        assert!(line.contains("142M rows"));
+        assert!(line.contains("8.40 GB"));
+        assert!(line.contains("2.3 ms"));
+        assert!(line.contains("GPU 94%"));
+        assert!(line.contains("vs CPU"));
+        assert!(line.contains("(cold)"));
+    }
+
+    #[test]
+    fn test_build_metrics_performance_line_warm() {
+        let m = QueryMetrics {
+            gpu_time_ms: 1.0,
+            memory_used_bytes: 0,
+            scan_throughput_gbps: 50.0,
+            rows_processed: 1_000_000,
+            bytes_scanned: 50_000_000,
+            is_warm: true,
+        };
+        let line = build_metrics_performance_line(&m, 0.50);
+        assert!(line.contains("1.00M rows"));
+        assert!(line.contains("50.0 MB"));
+        assert!(line.contains("(warm)"));
+        assert!(line.contains("GPU 50%"));
     }
 }

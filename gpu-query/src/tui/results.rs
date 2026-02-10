@@ -18,6 +18,7 @@ use ratatui::{
 use super::app::AppState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
+use crate::gpu::metrics::{self, QueryMetrics};
 
 /// Pagination state for the results table.
 #[derive(Debug, Clone)]
@@ -312,7 +313,7 @@ pub fn render_results_table(
         }
         super::app::QueryState::Complete => {
             if let Some(ref result) = app.last_result {
-                render_data_table(f, area, result, &app.results_state, app.last_exec_us, theme, border_style, is_focused);
+                render_data_table(f, area, result, &app.results_state, app.last_exec_us, app.last_query_metrics.as_ref(), theme, border_style, is_focused);
             } else {
                 render_placeholder(f, area, theme, border_style, "(no results)");
             }
@@ -376,6 +377,7 @@ fn render_data_table(
     result: &QueryResult,
     results_state: &ResultsState,
     exec_time_us: Option<u64>,
+    query_metrics: Option<&QueryMetrics>,
     theme: &Theme,
     border_style: Style,
     is_focused: bool,
@@ -483,10 +485,16 @@ fn render_data_table(
     };
     f.render_widget(table, table_area);
 
-    // Performance line
+    // Performance line (with CPU comparison when metrics available)
     let perf_y = inner_area.y + inner_area.height.saturating_sub(2);
     if perf_y < inner_area.y + inner_area.height {
-        let perf_text = build_performance_line(result, exec_time_us);
+        let perf_text = if let Some(m) = query_metrics {
+            // Full metrics-based line: "142M rows | 8.4 GB | 2.3ms (cold) | GPU 94% | ~312x vs CPU"
+            let utilization = m.scan_throughput_gbps as f32 / 100.0; // rough M4 estimate
+            metrics::build_metrics_performance_line(m, utilization.clamp(0.0, 1.0))
+        } else {
+            build_performance_line(result, exec_time_us)
+        };
         let perf_line = Line::from(Span::styled(
             perf_text,
             Style::default().fg(theme.muted),
@@ -891,5 +899,85 @@ mod tests {
 
         let max_str = format_i64(i64::MAX);
         assert!(max_str.contains(','));
+    }
+
+    // ---- CPU comparison and metrics-aware performance line tests ----
+
+    #[test]
+    fn test_build_performance_line_with_metrics() {
+        use crate::gpu::metrics::{build_metrics_performance_line, QueryMetrics};
+
+        let m = QueryMetrics {
+            gpu_time_ms: 2.3,
+            memory_used_bytes: 1_000_000,
+            scan_throughput_gbps: 94.0,
+            rows_processed: 142_000_000,
+            bytes_scanned: 8_400_000_000,
+            is_warm: false,
+        };
+        let line = build_metrics_performance_line(&m, 0.94);
+        // Verify all components present
+        assert!(line.contains("142M rows"), "line was: {}", line);
+        assert!(line.contains("8.40 GB"), "line was: {}", line);
+        assert!(line.contains("2.3 ms"), "line was: {}", line);
+        assert!(line.contains("(cold)"), "line was: {}", line);
+        assert!(line.contains("GPU 94%"), "line was: {}", line);
+        assert!(line.contains("vs CPU"), "line was: {}", line);
+    }
+
+    #[test]
+    fn test_build_performance_line_with_metrics_warm() {
+        use crate::gpu::metrics::{build_metrics_performance_line, QueryMetrics};
+
+        let m = QueryMetrics {
+            gpu_time_ms: 0.5,
+            memory_used_bytes: 0,
+            scan_throughput_gbps: 20.0,
+            rows_processed: 1_000_000,
+            bytes_scanned: 12_000_000,
+            is_warm: true,
+        };
+        let line = build_metrics_performance_line(&m, 0.20);
+        assert!(line.contains("1.00M rows"), "line was: {}", line);
+        assert!(line.contains("12.0 MB"), "line was: {}", line);
+        assert!(line.contains("(warm)"), "line was: {}", line);
+        assert!(line.contains("GPU 20%"), "line was: {}", line);
+    }
+
+    #[test]
+    fn test_build_performance_line_fallback_no_metrics() {
+        // When no QueryMetrics available, old format still works
+        let result = QueryResult {
+            columns: vec!["count".into()],
+            rows: vec![vec!["500000".into()]],
+            row_count: 500_000,
+        };
+        let line = build_performance_line(&result, Some(3_500));
+        assert!(line.contains("500,000 rows"), "line was: {}", line);
+        assert!(line.contains("3.5ms"), "line was: {}", line);
+    }
+
+    #[test]
+    fn test_format_row_count_integration() {
+        use crate::gpu::metrics::format_row_count;
+        // Test the row count formatting used in performance line
+        assert_eq!(format_row_count(142_000_000), "142M");
+        assert_eq!(format_row_count(1_500_000), "1.50M");
+        assert_eq!(format_row_count(500), "500");
+    }
+
+    #[test]
+    fn test_format_data_bytes_integration() {
+        use crate::gpu::metrics::format_data_bytes;
+        assert_eq!(format_data_bytes(8_400_000_000), "8.40 GB");
+        assert_eq!(format_data_bytes(12_000_000), "12.0 MB");
+    }
+
+    #[test]
+    fn test_format_speedup_integration() {
+        use crate::gpu::metrics::format_speedup;
+        assert_eq!(format_speedup(312.0), "~312x vs CPU");
+        assert_eq!(format_speedup(5.3), "~5.3x vs CPU");
+        assert_eq!(format_speedup(0.8), "~0.8x vs CPU");
     }
 }

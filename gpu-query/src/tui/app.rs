@@ -6,6 +6,7 @@ use super::catalog::CatalogState;
 use super::results::ResultsState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
+use crate::gpu::metrics::QueryMetrics;
 use std::path::PathBuf;
 
 /// Focus panel in the dashboard layout.
@@ -64,6 +65,9 @@ pub struct AppState {
     /// Last execution time in microseconds.
     pub last_exec_us: Option<u64>,
 
+    /// Last query metrics (for CPU comparison and performance line).
+    pub last_query_metrics: Option<QueryMetrics>,
+
     /// Table names discovered in data directory.
     pub tables: Vec<String>,
 
@@ -94,6 +98,7 @@ impl AppState {
             theme: Theme::by_name(theme_name),
             frame_count: 0,
             last_exec_us: None,
+            last_query_metrics: None,
             tables: Vec::new(),
             status_message: "Ready. Type SQL and press Ctrl+Enter to execute.".into(),
             tick_rate_ms: 16, // ~60fps
