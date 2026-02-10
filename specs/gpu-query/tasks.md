@@ -261,7 +261,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-24, FR-25, FR-33, AC-3.1, AC-3.2, AC-3.3_
   - _Design: TUI Rendering Architecture_
 
-- [ ] 3.7 Full dashboard layout with responsive panels
+- [x] 3.7 Full dashboard layout with responsive panels
   - **Do**: Create `src/tui/ui.rs` with three-panel layout composition. Panel focus cycling (Ctrl+1/2/3 or Tab). Responsive: >=120 cols = full three-panel, 80-119 = two-panel, <80 = minimal REPL. Connect all widgets. Wire Ctrl+Enter to execute query from editor.
   - **Files**: `gpu-query/src/tui/ui.rs`, update `src/main.rs`
   - **Done when**: Full dashboard launches as default; all panels connected; query execution from editor works

@@ -3,10 +3,11 @@
 //! Holds query state, results, GPU metrics, running flags, and theme.
 
 use super::catalog::CatalogState;
+use super::editor::EditorState;
 use super::results::ResultsState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
-use crate::gpu::metrics::QueryMetrics;
+use crate::gpu::metrics::{GpuMetricsCollector, QueryMetrics};
 use std::path::PathBuf;
 
 /// Focus panel in the dashboard layout.
@@ -82,6 +83,12 @@ pub struct AppState {
 
     /// Data catalog tree view state.
     pub catalog_state: CatalogState,
+
+    /// Multi-line SQL editor state (cursor, lines, syntax highlighting).
+    pub editor_state: EditorState,
+
+    /// GPU metrics collector for dashboard sparklines and utilization bars.
+    pub gpu_metrics: GpuMetricsCollector,
 }
 
 impl AppState {
@@ -104,6 +111,8 @@ impl AppState {
             tick_rate_ms: 16, // ~60fps
             results_state: ResultsState::new(),
             catalog_state: CatalogState::new(),
+            editor_state: EditorState::new(),
+            gpu_metrics: GpuMetricsCollector::new(),
         }
     }
 
