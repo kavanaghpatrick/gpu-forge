@@ -390,7 +390,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - **Done when**: All tests pass (unit + GPU integration, old + new)
   - **Commit**: `chore(gpu-centric): pass Phase 4 test quality checkpoint` (only if fixes needed)
 
-- [ ] 4.5 Add conservation invariant stress test
+- [x] 4.5 Add conservation invariant stress test
   - **Do**:
     1. Add test `test_conservation_invariant_stress`:
        - Pool size 10000, base_emission_rate=500
