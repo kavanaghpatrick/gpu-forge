@@ -1981,10 +1981,20 @@ fn build_all_ones_mask(
     buf
 }
 
-/// Infer a runtime schema from a CSV file by sampling the first data row.
+/// Maximum number of sample rows to examine for schema inference.
+const SCHEMA_INFER_SAMPLE_ROWS: usize = 100;
+
+/// Infer a runtime schema from a CSV file by sampling up to 100 data rows.
 ///
-/// For each column, tries to parse as i64, then f64, falling back to Varchar.
-fn infer_schema_from_csv(
+/// For each column, uses type voting across all sampled rows:
+/// - If ALL non-empty values parse as i64 -> Int64
+/// - If ALL non-empty values parse as f64 (but not all as i64) -> Float64
+/// - Otherwise -> Varchar
+/// - If any field is empty, the column is marked nullable
+///
+/// This multi-row sampling is more robust than single-row inference,
+/// catching cases where the first row might have atypical values.
+pub fn infer_schema_from_csv(
     path: &std::path::Path,
     csv_meta: &crate::io::csv::CsvMetadata,
 ) -> Result<RuntimeSchema, String> {
@@ -1998,30 +2008,69 @@ fn infer_schema_from_csv(
     // Skip header
     let _header = lines.next();
 
-    // Read first data row for type inference
-    let first_row = lines
-        .next()
-        .ok_or_else(|| "CSV has no data rows".to_string())?
-        .map_err(|e| format!("Cannot read CSV data row: {}", e))?;
-
+    let num_columns = csv_meta.column_names.len();
     let delimiter = csv_meta.delimiter as char;
-    let fields: Vec<&str> = first_row.trim_end().split(delimiter).collect();
 
+    // Per-column vote counters
+    let mut int_votes = vec![0usize; num_columns];
+    let mut float_votes = vec![0usize; num_columns];
+    let mut varchar_votes = vec![0usize; num_columns];
+    let mut null_votes = vec![0usize; num_columns];
+    let mut rows_sampled = 0usize;
+
+    // Sample up to SCHEMA_INFER_SAMPLE_ROWS data rows
+    for line_result in lines.take(SCHEMA_INFER_SAMPLE_ROWS) {
+        let line = line_result.map_err(|e| format!("Cannot read CSV data row: {}", e))?;
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let fields: Vec<&str> = trimmed.split(delimiter).collect();
+        rows_sampled += 1;
+
+        for (i, _name) in csv_meta.column_names.iter().enumerate() {
+            let field = fields.get(i).map(|s| s.trim()).unwrap_or("");
+
+            if field.is_empty() {
+                null_votes[i] += 1;
+            } else if field.parse::<i64>().is_ok() {
+                int_votes[i] += 1;
+            } else if field.parse::<f64>().is_ok() {
+                float_votes[i] += 1;
+            } else {
+                varchar_votes[i] += 1;
+            }
+        }
+    }
+
+    if rows_sampled == 0 {
+        return Err("CSV has no data rows".to_string());
+    }
+
+    // Determine final type for each column via voting
     let mut columns = Vec::new();
     for (i, name) in csv_meta.column_names.iter().enumerate() {
-        let field = fields.get(i).unwrap_or(&"");
-        let data_type = if field.parse::<i64>().is_ok() {
-            DataType::Int64
-        } else if field.parse::<f64>().is_ok() {
+        let nullable = null_votes[i] > 0;
+
+        // Type precedence: if ANY row has a varchar value -> Varchar
+        // If ANY row has a float (but not varchar) -> Float64
+        // If ALL non-empty rows are int -> Int64
+        let data_type = if varchar_votes[i] > 0 {
+            DataType::Varchar
+        } else if float_votes[i] > 0 {
             DataType::Float64
+        } else if int_votes[i] > 0 {
+            DataType::Int64
         } else {
+            // All values were empty/null -- default to Varchar
             DataType::Varchar
         };
 
         columns.push(ColumnDef {
             name: name.clone(),
             data_type,
-            nullable: false,
+            nullable,
         });
     }
 

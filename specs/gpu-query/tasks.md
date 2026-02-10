@@ -151,7 +151,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-14_
   - _Design: Kernel 7: Prepare Dispatch_
 
-- [ ] 2.6 Schema inference kernel
+- [x] 2.6 Schema inference kernel
   - **Do**: Create `shaders/schema_infer.metal` with `infer_schema` kernel (type voting from sample data). Create `src/storage/null_bitmap.rs` for null bitmap ops. Integrate with CSV/JSON readers for auto-type detection.
   - **Files**: `gpu-query/shaders/schema_infer.metal`, `gpu-query/src/storage/null_bitmap.rs`
   - **Done when**: GPU infers correct types for CSV columns (INT64, FLOAT64, VARCHAR) from first 10K rows
