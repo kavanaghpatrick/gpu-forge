@@ -21,7 +21,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-38_
   - _Design: File Structure, build.rs_
 
-- [ ] 1.2 Metal device init and GPU types
+- [x] 1.2 Metal device init and GPU types
   - **Do**: Create `src/gpu/device.rs` with Metal device creation, command queue, library loading (reuse particle-system/gpu.rs pattern). Create `src/gpu/types.rs` with `#[repr(C)]` structs: FilterParams, AggParams, CsvParseParams, DispatchArgs, ColumnSchema. Add byte-level layout tests for all structs. Create `src/gpu/mod.rs`.
   - **Files**: `gpu-query/src/gpu/mod.rs`, `gpu-query/src/gpu/device.rs`, `gpu-query/src/gpu/types.rs`
   - **Done when**: Metal device initializes, metallib loads, all struct layout tests pass
