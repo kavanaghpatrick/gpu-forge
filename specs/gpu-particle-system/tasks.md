@@ -455,7 +455,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - **Done when**: Clean release build, no warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.13 Phase 2 Checkpoint: full feature validation
+- [x] 2.13 Phase 2 Checkpoint: full feature validation
   - **Do**:
     1. Build release and run
     2. Verify all P1 features work:
