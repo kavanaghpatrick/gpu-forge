@@ -399,7 +399,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-19, AC-11.1 through AC-11.6_
   - _Design: Progressive Scaling Strategy_
 
-- [ ] 2.9 Lifetime color/size interpolation and billboard quads
+- [x] 2.9 Lifetime color/size interpolation and billboard quads
   - **Do**:
     1. In `shaders/update.metal`: add lifetime-based interpolation
        - `t = age / maxAge` (0.0 at birth, 1.0 at death)

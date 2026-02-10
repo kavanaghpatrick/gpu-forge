@@ -326,13 +326,14 @@ impl App {
         encoder.setRenderPipelineState(&gpu.render_pipeline);
         encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
 
-        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniforms
+        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniforms + lifetimes
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(write_list), 0, 0);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.colors), 0, 2);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.sizes), 0, 3);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.uniforms), 0, 4);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
         }
 
         // Indirect draw: triangle strip, 4 vertices per instance, instanceCount from indirect_args

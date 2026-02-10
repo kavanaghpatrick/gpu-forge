@@ -115,6 +115,11 @@ kernel void update_physics_kernel(
     velocities[particle_idx] = vel;
     lifetimes[particle_idx] = half2(half(age), half(max_age));
 
+    // --- Lifetime-based color alpha interpolation ---
+    // t = 0 at birth, 1 at death; quadratic fade-out for smooth disappearance
+    float t = age / max_age;
+    colors[particle_idx].w = half(1.0 - t * t);
+
     // --- Dead or alive? ---
     if (age >= max_age) {
         // Particle died: push index back onto dead list
