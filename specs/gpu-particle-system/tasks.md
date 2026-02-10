@@ -670,7 +670,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - **Commit**: `docs(particle): add documentation to all modules and shaders`
   - _Design: Code quality_
 
-- [ ] 4.6 [VERIFY] Full local CI: clippy + test + build + doc
+- [x] 4.6 [VERIFY] Full local CI: clippy + test + build + doc
   - **Do**: Run complete local CI suite
   - **Verify**: All commands must pass:
     ```
