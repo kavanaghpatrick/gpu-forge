@@ -42,10 +42,11 @@ kernel void emission_kernel(
     device half2*          lifetimes      [[buffer(5)]],
     device half4*          colors         [[buffer(6)]],
     device half*           sizes          [[buffer(7)]],
+    device const GpuEmissionParams* emission_params [[buffer(8)]],
     uint                   tid            [[thread_position_in_grid]]
 ) {
     // Guard: only emit up to emission_count particles
-    if (tid >= uniforms.base_emission_rate) return;
+    if (tid >= emission_params->emission_count) return;
 
     // Unique seed per thread per frame for PRNG
     uint seed = tid * 1099087573u + uniforms.frame_number * 2654435761u;
@@ -70,7 +71,7 @@ kernel void emission_kernel(
     // --- Initialize particle attributes ---
 
     // Burst vs normal emission: burst threads use burst_position as center with 2x velocity
-    bool is_burst = (tid < uniforms.burst_count);
+    bool is_burst = (tid < emission_params->actual_burst_count);
     float3 emitter_center = is_burst ? uniforms.burst_position : float3(0.0);
     float speed_multiplier = is_burst ? 2.0 : 1.0;
 

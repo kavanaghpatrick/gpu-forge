@@ -60,7 +60,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - **Done when**: Build succeeds, all 65 existing tests pass
   - **Commit**: `chore(gpu-centric): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.5 Modify emission.metal to read from GpuEmissionParams
+- [x] 1.5 Modify emission.metal to read from GpuEmissionParams
   - **Do**:
     1. In `emission.metal`: add `device const GpuEmissionParams* emission_params [[buffer(8)]]` parameter to `emission_kernel`
     2. Change guard from `if (tid >= uniforms.base_emission_rate) return` to `if (tid >= emission_params->emission_count) return`
