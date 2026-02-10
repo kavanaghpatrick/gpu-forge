@@ -483,7 +483,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
   - **Done when**: All CI checks green
   - **Commit**: `fix(ci): resolve CI failures` (if needed)
 
-- [ ] 7.2 [VERIFY] AC checklist — all acceptance criteria verified
+- [x] 7.2 [VERIFY] AC checklist — all acceptance criteria verified
   - **Do**: Programmatically verify each acceptance criterion:
     1. AC US-T1: `grep -n "prepare_dispatch" particle-system/shaders/prepare_dispatch.metal | head -3` (kernel exists)
     2. AC US-T1: `! grep -q "dead_list.contents()" particle-system/src/main.rs` (no CPU dead_count read)
