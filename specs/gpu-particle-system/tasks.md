@@ -747,7 +747,7 @@ Continuous PR validation until all completion criteria met.
   - **Done when**: All review comments addressed; CI still green
   - **Commit**: `fix(particle): address review feedback` (if needed)
 
-- [ ] 5.3 Final validation: run at 1M particles for 10 seconds
+- [x] 5.3 Final validation: run at 1M particles for 10 seconds
   - **Do**:
     1. Build release: `cargo build --release`
     2. Run for 10 seconds: `timeout 10 cargo run --release`
