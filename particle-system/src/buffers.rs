@@ -1,7 +1,7 @@
-/// GPU buffer pool for 1M+ particle SoA data, dead/alive lists, and indirect args.
-///
-/// All buffers use `MTLResourceStorageModeShared` for CPU+GPU access on Apple Silicon
-/// unified memory. Dead list is initialized with all indices; alive lists start empty.
+//! GPU buffer pool for 1M+ particle SoA data, dead/alive lists, and indirect args.
+//!
+//! All buffers use `MTLResourceStorageModeShared` for CPU+GPU access on Apple Silicon
+//! unified memory. Dead list is initialized with all indices; alive lists start empty.
 
 use std::ffi::c_void;
 

@@ -158,7 +158,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-10, FR-11, FR-12, AC-8.1 through AC-8.5_
   - _Design: Vertex Shader, Fragment Shader, Render Shaders_
 
-- [ ] 1.8 [VERIFY] Quality checkpoint: build + shader compilation
+- [x] 1.8 [VERIFY] Quality checkpoint: build + shader compilation
   - **Do**: Build entire project, verify all .metal files compile into .metallib without errors
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build 2>&1 | tail -5`
   - **Done when**: Clean build, no warnings
