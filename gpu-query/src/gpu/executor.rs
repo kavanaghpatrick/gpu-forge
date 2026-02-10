@@ -22,6 +22,7 @@ use crate::gpu::types::{AggParams, CsvParseParams, FilterParams};
 use crate::io::catalog::TableEntry;
 use crate::io::format_detect::FileFormat;
 use crate::io::mmap::MmapFile;
+use crate::io::json;
 use crate::io::parquet::{self, ColumnData};
 use crate::sql::physical_plan::PhysicalPlan;
 use crate::sql::types::{AggFunc, CompareOp, Value};
@@ -256,6 +257,9 @@ impl QueryExecutor {
             FileFormat::Parquet => {
                 self.execute_parquet_scan(&entry.path)
             }
+            FileFormat::Json => {
+                self.execute_json_scan(&entry.path)
+            }
             other => {
                 Err(format!(
                     "File format {:?} not yet supported for table '{}'",
@@ -342,6 +346,196 @@ impl QueryExecutor {
             schema,
             delimiter: b',',
         })
+    }
+
+    /// Execute an NDJSON scan: mmap file -> GPU structural index -> GPU field extraction -> ColumnarBatch.
+    fn execute_json_scan(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<ScanResult, String> {
+        let json_meta = json::parse_ndjson_header(path)
+            .map_err(|e| format!("Failed to parse NDJSON header '{}': {}", path.display(), e))?;
+
+        let schema = json_meta.to_schema();
+
+        // Memory-map the file
+        let mmap = MmapFile::open(path)
+            .map_err(|e| format!("Failed to mmap '{}': {}", path.display(), e))?;
+
+        let batch = self.gpu_parse_json(&mmap, &schema);
+
+        Ok(ScanResult {
+            _mmap: mmap,
+            batch,
+            schema,
+            delimiter: b',', // unused for JSON
+        })
+    }
+
+    /// Run the two-pass GPU NDJSON parse pipeline.
+    ///
+    /// Pass 1: json_structural_index - detect newlines for row boundaries
+    /// Pass 2: json_extract_columns - extract fields to SoA column buffers
+    fn gpu_parse_json(
+        &self,
+        mmap: &MmapFile,
+        schema: &RuntimeSchema,
+    ) -> ColumnarBatch {
+        let file_size = mmap.file_size();
+        let max_rows = 1_048_576u32; // 1M rows max for POC
+
+        let data_buffer = mmap.as_metal_buffer(&self.device.device);
+
+        // Reuse CsvParseParams for JSON: delimiter=0, has_header=0
+        let params = CsvParseParams {
+            file_size: file_size as u32,
+            num_columns: schema.num_columns() as u32,
+            delimiter: 0, // unused for JSON
+            has_header: 0, // NDJSON has no header
+            max_rows,
+            _pad0: 0,
+        };
+
+        // Allocate output buffers for pass 1
+        let row_count_buffer =
+            encode::alloc_buffer(&self.device.device, std::mem::size_of::<u32>());
+        unsafe {
+            let ptr = row_count_buffer.contents().as_ptr() as *mut u32;
+            *ptr = 0;
+        }
+
+        let row_offsets_buffer = encode::alloc_buffer(
+            &self.device.device,
+            (max_rows as usize + 1) * std::mem::size_of::<u32>(),
+        );
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
+
+        let index_pipeline =
+            encode::make_pipeline(&self.device.library, "json_structural_index");
+        let extract_pipeline =
+            encode::make_pipeline(&self.device.library, "json_extract_columns");
+
+        // ---- Pass 1: Structural indexing (newline detection) ----
+        let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encode::dispatch_threads_1d(
+                &encoder,
+                &index_pipeline,
+                &[
+                    (&data_buffer, 0),
+                    (&row_count_buffer, 1),
+                    (&row_offsets_buffer, 2),
+                    (&params_buffer, 3),
+                ],
+                file_size,
+            );
+
+            encoder.endEncoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        let newline_count = unsafe {
+            let ptr = row_count_buffer.contents().as_ptr() as *const u32;
+            *ptr
+        };
+
+        // Sort offsets (atomics produce unordered results)
+        let mut sorted_offsets = unsafe {
+            let ptr = row_offsets_buffer.contents().as_ptr() as *const u32;
+            std::slice::from_raw_parts(ptr, newline_count as usize).to_vec()
+        };
+        sorted_offsets.sort();
+
+        // For NDJSON: each newline terminates a JSON object, so data rows = newline_count.
+        // Row 0 starts at byte 0, row 1 starts after first newline, etc.
+        let num_data_rows = newline_count as usize;
+
+        if num_data_rows == 0 {
+            let mut batch =
+                ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+            batch.row_count = 0;
+            return batch;
+        }
+
+        // Build row start offsets: [0, sorted_offsets[0], sorted_offsets[1], ...]
+        // Row 0 starts at byte 0 (beginning of file)
+        let mut data_row_offsets = Vec::with_capacity(num_data_rows + 1);
+        data_row_offsets.push(0u32); // First row starts at beginning of file
+        data_row_offsets.extend_from_slice(&sorted_offsets);
+
+        let data_row_offsets_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &data_row_offsets);
+
+        let data_row_count_buffer =
+            encode::alloc_buffer(&self.device.device, std::mem::size_of::<u32>());
+        unsafe {
+            let ptr = data_row_count_buffer.contents().as_ptr() as *mut u32;
+            *ptr = num_data_rows as u32;
+        }
+
+        let mut batch =
+            ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+
+        let gpu_schemas = schema.to_gpu_schemas();
+        let schemas_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
+
+        let extract_params = CsvParseParams {
+            file_size: file_size as u32,
+            num_columns: schema.num_columns() as u32,
+            delimiter: 0,
+            has_header: 0,
+            max_rows,
+            _pad0: 0,
+        };
+        let extract_params_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &[extract_params]);
+
+        // ---- Pass 2: Field extraction ----
+        let cmd_buf2 = encode::make_command_buffer(&self.device.command_queue);
+        {
+            let encoder = cmd_buf2
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&extract_pipeline);
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(&data_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&data_row_offsets_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&data_row_count_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&batch.int_buffer), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(&batch.float_buffer), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(&extract_params_buffer), 0, 5);
+                encoder.setBuffer_offset_atIndex(Some(&schemas_buffer), 0, 6);
+            }
+
+            let threads_per_tg = extract_pipeline.maxTotalThreadsPerThreadgroup().min(256);
+            let tg_count = (num_data_rows + threads_per_tg - 1) / threads_per_tg;
+
+            let grid = objc2_metal::MTLSize {
+                width: tg_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg = objc2_metal::MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+            encoder.endEncoding();
+        }
+        cmd_buf2.commit();
+        cmd_buf2.waitUntilCompleted();
+
+        batch.row_count = num_data_rows;
+        batch
     }
 
     /// Run the two-pass GPU CSV parse pipeline.

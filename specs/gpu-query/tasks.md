@@ -115,7 +115,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-5, AC-6.1, AC-6.2, AC-6.3_
   - _Design: Kernel 3: Parquet Decoder_
 
-- [ ] 2.2 JSON parser kernel (NDJSON)
+- [x] 2.2 JSON parser kernel (NDJSON)
   - **Do**: Create `src/io/json.rs` for NDJSON metadata (detect fields from first record). Create `shaders/json_parse.metal` with `json_structural_index` (parallel structural char detection) and `json_extract_columns` (field extraction to SoA). Target NDJSON only (one record per line).
   - **Files**: `gpu-query/src/io/json.rs`, `gpu-query/shaders/json_parse.metal`
   - **Done when**: Can query NDJSON files with SELECT/WHERE/aggregate
