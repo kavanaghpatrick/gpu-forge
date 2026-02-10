@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to-end. Skip TUI, accept hardcoded values, no JSON yet.
 
-- [ ] 1.1 Scaffold project and build.rs
+- [x] 1.1 Scaffold project and build.rs
   - **Do**: Create `gpu-query/` as Cargo workspace member alongside particle-system. Set up Cargo.toml with all dependencies (objc2-metal, sqlparser, parquet, ratatui, crossterm, clap, libc, block2, dispatch2). Create `shaders/` directory with `types.h` defining shared structs (FilterParams, AggParams, SortParams, CsvParseParams, DispatchArgs, ColumnSchema). Create `build.rs` copying pattern from particle-system/build.rs (xcrun metal -c -> metallib). Create minimal `src/main.rs` that compiles.
   - **Files**: `gpu-query/Cargo.toml`, `gpu-query/build.rs`, `gpu-query/src/main.rs`, `gpu-query/src/lib.rs`, `gpu-query/shaders/types.h`
   - **Done when**: `cargo build` succeeds, shaders.metallib generated in OUT_DIR
