@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod autocomplete;
+pub mod catalog;
 pub mod dashboard;
 pub mod editor;
 pub mod event;
@@ -45,9 +46,22 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
     // Initialize app state
     let mut app = AppState::new(data_dir.clone(), theme_name);
 
-    // Scan for tables in data directory
-    if let Ok(catalog) = crate::io::catalog::scan_directory(&data_dir) {
-        app.tables = catalog.iter().map(|e| e.name.clone()).collect();
+    // Scan for tables in data directory and populate catalog tree
+    if let Ok(catalog_entries) = crate::io::catalog::scan_directory(&data_dir) {
+        app.tables = catalog_entries.iter().map(|e| e.name.clone()).collect();
+
+        let tree_entries: Vec<catalog::CatalogEntry> = catalog_entries
+            .iter()
+            .map(catalog::CatalogEntry::from_table_entry)
+            .collect();
+
+        let dir_name = data_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("data")
+            .to_string();
+
+        app.catalog_state.load(tree_entries, dir_name);
     }
     app.status_message = format!(
         "gpu-query dashboard | {} tables loaded | Press q to quit",
@@ -59,7 +73,7 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
 
     loop {
         // Render
-        terminal.draw(|f| render_frame(f, &app))?;
+        terminal.draw(|f| render_frame(f, &mut app))?;
 
         // Handle events
         match poll_event(tick_rate)? {
@@ -89,7 +103,7 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
 }
 
 /// Render a single frame of the dashboard.
-fn render_frame(f: &mut Frame, app: &AppState) {
+fn render_frame(f: &mut Frame, app: &mut AppState) {
     let size = f.area();
 
     // Main layout: title bar (3) + content (fill) + status bar (3)
@@ -137,7 +151,7 @@ fn render_title_bar(f: &mut Frame, area: Rect, app: &AppState) {
 }
 
 /// Render the main content area with placeholder panels.
-fn render_content(f: &mut Frame, area: Rect, app: &AppState) {
+fn render_content(f: &mut Frame, area: Rect, app: &mut AppState) {
     // Three-column layout: catalog (20%) | editor+results (80%)
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -157,40 +171,22 @@ fn render_content(f: &mut Frame, area: Rect, app: &AppState) {
     render_results_panel(f, v_chunks[1], app);
 }
 
-/// Render the catalog panel (file list placeholder).
-fn render_catalog_panel(f: &mut Frame, area: Rect, app: &AppState) {
+/// Render the catalog panel with tree view.
+fn render_catalog_panel(f: &mut Frame, area: Rect, app: &mut AppState) {
     let is_focused = app.focus == app::FocusPanel::Catalog;
-    let border_style = if is_focused {
-        app.theme.focus_border_style
-    } else {
-        app.theme.border_style
-    };
 
-    let mut lines: Vec<Line> = Vec::new();
-    if app.tables.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  (no tables)",
-            Style::default().fg(app.theme.muted),
-        )));
-    } else {
-        for table in &app.tables {
-            let style = Style::default().fg(app.theme.text);
-            lines.push(Line::from(Span::styled(format!("  {}", table), style)));
-        }
-    }
-
-    let block = Block::default()
-        .title(Span::styled(
-            " Tables ",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(border_style);
-
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    catalog::render_catalog_tree(
+        f,
+        area,
+        &mut app.catalog_state,
+        is_focused,
+        app.theme.border_style,
+        app.theme.focus_border_style,
+        app.theme.text,
+        app.theme.muted,
+        app.theme.accent,
+        app.theme.selection,
+    );
 }
 
 /// Render the query editor panel (placeholder).

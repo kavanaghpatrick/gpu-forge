@@ -2,6 +2,7 @@
 //!
 //! Holds query state, results, GPU metrics, running flags, and theme.
 
+use super::catalog::CatalogState;
 use super::results::ResultsState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
@@ -74,6 +75,9 @@ pub struct AppState {
 
     /// Results table pagination/scroll state.
     pub results_state: ResultsState,
+
+    /// Data catalog tree view state.
+    pub catalog_state: CatalogState,
 }
 
 impl AppState {
@@ -94,6 +98,7 @@ impl AppState {
             status_message: "Ready. Type SQL and press Ctrl+Enter to execute.".into(),
             tick_rate_ms: 16, // ~60fps
             results_state: ResultsState::new(),
+            catalog_state: CatalogState::new(),
         }
     }
 

@@ -243,7 +243,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-23, AC-3.1, AC-4.2, AC-4.3_
   - _Design: TUI Rendering Architecture, GPU Metrics_
 
-- [ ] 3.5 Data catalog tree view
+- [x] 3.5 Data catalog tree view
   - **Do**: Create `src/tui/catalog.rs` with tree view widget: directory > table (with format badge) > columns (with types). Navigation: arrow keys or j/k. Enter on table = DESCRIBE. Row count badges per table. Integrate with catalog module.
   - **Files**: `gpu-query/src/tui/catalog.rs`
   - **Done when**: Left panel shows file tree with columns and types; clicking table shows DESCRIBE
