@@ -1,3 +1,4 @@
+mod frame;
 mod gpu;
 mod types;
 
@@ -17,11 +18,13 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use frame::FrameRing;
 use gpu::GpuState;
 
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
+    frame_ring: FrameRing,
 }
 
 impl App {
@@ -29,14 +32,18 @@ impl App {
         Self {
             window: None,
             gpu: None,
+            frame_ring: FrameRing::new(),
         }
     }
 
-    fn render(&self) {
+    fn render(&mut self) {
         let gpu = match &self.gpu {
             Some(g) => g,
             None => return,
         };
+
+        // Acquire a frame slot (blocks if all 3 are in use)
+        self.frame_ring.acquire();
 
         // Get the next drawable from the CAMetalLayer
         let drawable = match gpu.layer.nextDrawable() {
@@ -74,6 +81,9 @@ impl App {
             }
         };
 
+        // Register completion handler that signals the semaphore
+        self.frame_ring.register_completion_handler(&command_buffer);
+
         // Create render command encoder (empty pass - just clear)
         let encoder = match command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc) {
             Some(enc) => enc,
@@ -89,6 +99,16 @@ impl App {
         // Present drawable and commit
         command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
         command_buffer.commit();
+
+        // Advance frame ring index
+        self.frame_ring.advance();
+
+        // Update window title with FPS approximately once per second
+        if self.frame_ring.should_update_fps() {
+            if let Some(window) = &self.window {
+                window.set_title(&format!("GPU Particles - {} FPS", self.frame_ring.fps));
+            }
+        }
     }
 }
 

@@ -53,7 +53,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-1, AC-1.1, AC-1.2, AC-1.3, AC-1.6_
   - _Design: CPU Host - Main Event Loop, Metal Device/Queue_
 
-- [ ] 1.3 Triple-buffer semaphore ring and frame timing
+- [x] 1.3 Triple-buffer semaphore ring and frame timing
   - **Do**:
     1. Create `src/frame.rs`: implement `FrameRing` struct with `dispatch_semaphore_create(3)` via `objc2` dispatch APIs (or use `std::sync::Semaphore` with count 3)
     2. `FrameRing::acquire()` blocks on semaphore; `FrameRing::signal()` signals after GPU completion
