@@ -323,7 +323,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-13, FR-14, AC-9.1 through AC-9.5_
   - _Design: Camera, Input Manager_
 
-- [ ] 2.5 Mouse attraction force in physics kernel
+- [x] 2.5 Mouse attraction force in physics kernel
   - **Do**:
     1. In `src/input.rs`: add mouse world-space position computation
        - Unproject screen coords to 3D ray using inverse(projection * view)

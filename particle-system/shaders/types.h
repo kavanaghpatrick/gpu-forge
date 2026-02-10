@@ -29,8 +29,8 @@ struct Uniforms {
     uint     emission_count;        // offset 200 (4 bytes)
     uint     pool_size;             // offset 204 (4 bytes)
     float    interaction_strength;  // offset 208 (4 bytes)
-    float    _pad1;                 // offset 212 (4 bytes)
-    float    _pad2;                 // offset 216 (4 bytes)
+    float    mouse_attraction_radius;   // offset 212 (4 bytes)
+    float    mouse_attraction_strength; // offset 216 (4 bytes)
     float    _pad3;                 // offset 220 (4 bytes)
 };                                  // total: 224 bytes (multiple of 16)
 

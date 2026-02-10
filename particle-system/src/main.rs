@@ -86,10 +86,30 @@ impl App {
         let emission_count: u32 = 10000;
         let view_mat = self.camera.view_matrix();
         let proj_mat = self.camera.projection_matrix();
+
+        // Compute mouse world position by unprojecting cursor to z=0 plane
+        let (win_w, win_h) = self
+            .window
+            .as_ref()
+            .map(|w| {
+                let s = w.inner_size();
+                (s.width, s.height)
+            })
+            .unwrap_or((1280, 720));
+        let mouse_world_pos = input::unproject_cursor_to_world(
+            self.input.cursor_x,
+            self.input.cursor_y,
+            win_w,
+            win_h,
+            &view_mat,
+            &proj_mat,
+        );
+
         unsafe {
             let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
             (*uniforms_ptr).view_matrix = view_mat;
             (*uniforms_ptr).projection_matrix = proj_mat;
+            (*uniforms_ptr).mouse_world_pos = mouse_world_pos;
             (*uniforms_ptr).dt = self.frame_ring.dt;
             (*uniforms_ptr).frame_number = self.frame_number;
             (*uniforms_ptr).emission_count = emission_count;
@@ -101,6 +121,9 @@ impl App {
             (*uniforms_ptr)._pad_grid_max = 0.0;
             // Pressure gradient interaction strength
             (*uniforms_ptr).interaction_strength = 0.001;
+            // Mouse attraction parameters
+            (*uniforms_ptr).mouse_attraction_radius = 5.0;
+            (*uniforms_ptr).mouse_attraction_strength = 10.0;
         }
 
         // Get the next drawable from the CAMetalLayer

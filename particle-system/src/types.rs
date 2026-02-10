@@ -53,9 +53,10 @@ pub struct Uniforms {
     pub pool_size: u32,
     /// Pressure gradient interaction strength (default: 0.001)
     pub interaction_strength: f32,
-    /// Padding to reach 224 bytes (multiple of 16)
-    pub _pad1: f32,
-    pub _pad2: f32,
+    /// Mouse attraction radius (particles within this distance are attracted)
+    pub mouse_attraction_radius: f32,
+    /// Mouse attraction strength (force magnitude scaling)
+    pub mouse_attraction_strength: f32,
     pub _pad3: f32,
 }
 
@@ -80,8 +81,8 @@ impl Default for Uniforms {
             emission_count: 10000,
             pool_size: 1_000_000,
             interaction_strength: 0.001,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            mouse_attraction_radius: 5.0,
+            mouse_attraction_strength: 10.0,
             _pad3: 0.0,
         }
     }

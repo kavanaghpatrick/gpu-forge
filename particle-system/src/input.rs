@@ -1,3 +1,59 @@
+use glam::{Mat4, Vec4};
+
+/// Unproject screen-space cursor coordinates to a world-space position on the z=0 plane.
+///
+/// Converts window coordinates to NDC, computes a ray via inverse(projection * view),
+/// and intersects with the z=0 plane. Falls back to a fixed-depth plane if the ray
+/// is nearly parallel to z=0.
+pub fn unproject_cursor_to_world(
+    cursor_x: f64,
+    cursor_y: f64,
+    window_width: u32,
+    window_height: u32,
+    view: &[[f32; 4]; 4],
+    proj: &[[f32; 4]; 4],
+) -> [f32; 3] {
+    if window_width == 0 || window_height == 0 {
+        return [0.0, 0.0, 0.0];
+    }
+
+    // Convert screen coords to NDC [-1, 1]
+    let ndc_x = (cursor_x / window_width as f64) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (cursor_y / window_height as f64) * 2.0;
+    let ndc_x = ndc_x as f32;
+    let ndc_y = ndc_y as f32;
+
+    // Compute inverse of projection * view
+    let view_mat = Mat4::from_cols_array_2d(view);
+    let proj_mat = Mat4::from_cols_array_2d(proj);
+    let inv_vp = (proj_mat * view_mat).inverse();
+
+    // Near point (NDC z = -1 for RH)
+    let near_clip = inv_vp * Vec4::new(ndc_x, ndc_y, -1.0, 1.0);
+    let near = near_clip.truncate() / near_clip.w;
+
+    // Far point (NDC z = 1 for RH)
+    let far_clip = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+    let far = far_clip.truncate() / far_clip.w;
+
+    // Ray direction
+    let dir = far - near;
+
+    // Intersect with z=0 plane
+    if dir.z.abs() > 1e-6 {
+        let t = -near.z / dir.z;
+        if t >= 0.0 {
+            let hit = near + dir * t;
+            return [hit.x, hit.y, hit.z];
+        }
+    }
+
+    // Fallback: project onto a plane at a fixed depth along the ray
+    // Use t=0.5 to get a point roughly in the middle of the frustum
+    let fallback = near + dir * 0.5;
+    [fallback.x, fallback.y, fallback.z]
+}
+
 /// Tracks mouse and keyboard input state for camera control and interaction.
 pub struct InputState {
     /// Current cursor position in window coordinates

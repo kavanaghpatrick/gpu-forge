@@ -83,6 +83,18 @@ kernel void update_physics_kernel(
     }
     vel += pressure_gradient * uniforms.interaction_strength * dt;
 
+    // --- Mouse attraction force ---
+    // Particles within attraction_radius are pulled toward the mouse world position.
+    // Force magnitude follows inverse-square falloff, clamped to prevent explosion.
+    float3 to_mouse = uniforms.mouse_world_pos - pos;
+    float mouse_dist = length(to_mouse);
+    if (mouse_dist < uniforms.mouse_attraction_radius && mouse_dist > 0.01) {
+        float3 mouse_dir = to_mouse / mouse_dist;
+        float force_mag = uniforms.mouse_attraction_strength / max(mouse_dist * mouse_dist, 0.01);
+        force_mag = min(force_mag, 50.0); // clamp to prevent explosion
+        vel += mouse_dir * force_mag * dt;
+    }
+
     // --- Semi-implicit Euler integration ---
     pos += vel * dt;
 
