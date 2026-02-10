@@ -48,7 +48,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-1_
   - _Design: Components, File System Layer_
 
-- [ ] 1.5 GPU CSV parser kernel (newline detection + field extraction)
+- [x] 1.5 GPU CSV parser kernel (newline detection + field extraction)
   - **Do**: Create `shaders/csv_parse.metal` with two kernels: `csv_detect_newlines` (parallel scan for '\n', output row_offsets via atomic counter) and `csv_parse_fields` (per-row field extraction, type coercion to INT64/FLOAT64, write to SoA columns). Create `src/gpu/encode.rs` with encode helpers. Create `src/storage/mod.rs`, `src/storage/columnar.rs` for SoA buffer allocation, `src/storage/schema.rs` for runtime schema.
   - **Files**: `gpu-query/shaders/csv_parse.metal`, `gpu-query/src/gpu/encode.rs`, `gpu-query/src/storage/mod.rs`, `gpu-query/src/storage/columnar.rs`, `gpu-query/src/storage/schema.rs`
   - **Done when**: Can parse a simple CSV (no quoting) into columnar SoA buffers on GPU; verify column values match expected

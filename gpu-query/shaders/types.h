@@ -15,7 +15,7 @@ using namespace metal;
 // Layout: 40 bytes (5 x 8-byte fields), 8-byte aligned.
 struct FilterParams {
     long     compare_value_int;    // offset 0  (8 bytes) — threshold for INT64 comparisons
-    double   compare_value_float;  // offset 8  (8 bytes) — threshold for FLOAT64 comparisons
+    long     compare_value_float_bits; // offset 8  (8 bytes) — FLOAT64 as bit pattern (Metal lacks double)
     uint     row_count;            // offset 16 (4 bytes) — number of rows to process
     uint     column_stride;        // offset 20 (4 bytes) — bytes between elements (for packed types)
     uint     null_bitmap_present;  // offset 24 (4 bytes) — 1 if null bitmap is valid

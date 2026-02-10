@@ -39,33 +39,43 @@ impl GpuDevice {
     }
 
     /// Find the shaders.metallib in the build output directory.
+    ///
+    /// Searches multiple locations because the exe may be in target/debug/
+    /// (for binaries) or target/debug/deps/ (for tests).
     fn find_metallib() -> String {
         let exe_path = std::env::current_exe().expect("Failed to get current exe path");
         let target_dir = exe_path.parent().expect("Failed to get parent of exe");
 
-        // Search the build directory for shaders.metallib
-        let build_dir = target_dir.join("build");
-        if build_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&build_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let metallib = path.join("out").join("shaders.metallib");
-                    if metallib.exists() {
-                        return metallib.to_string_lossy().into_owned();
+        // Candidate directories to search for build/<hash>/out/shaders.metallib
+        let search_dirs = [
+            target_dir.to_path_buf(),
+            target_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+        ];
+
+        for dir in &search_dirs {
+            let build_dir = dir.join("build");
+            if build_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&build_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let metallib = path.join("out").join("shaders.metallib");
+                        if metallib.exists() {
+                            return metallib.to_string_lossy().into_owned();
+                        }
                     }
                 }
             }
-        }
 
-        // Fallback: alongside the executable
-        let fallback = target_dir.join("shaders.metallib");
-        if fallback.exists() {
-            return fallback.to_string_lossy().into_owned();
+            // Fallback: alongside the executable/in target dir
+            let fallback = dir.join("shaders.metallib");
+            if fallback.exists() {
+                return fallback.to_string_lossy().into_owned();
+            }
         }
 
         panic!(
-            "Could not find shaders.metallib. Searched: {}",
-            build_dir.display()
+            "Could not find shaders.metallib. Searched: {} and parent",
+            target_dir.display()
         );
     }
 }
