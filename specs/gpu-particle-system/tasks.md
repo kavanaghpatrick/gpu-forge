@@ -727,7 +727,7 @@ Continuous PR validation until all completion criteria met.
 
 ---
 
-- [ ] 5.1 Monitor CI and fix failures
+- [x] 5.1 Monitor CI and fix failures
   - **Do**:
     1. Check PR status: `gh pr checks`
     2. If any check fails, read logs: `gh pr checks --json name,state,output`
