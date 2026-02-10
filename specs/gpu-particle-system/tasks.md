@@ -164,7 +164,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - **Done when**: Clean build, no warnings
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.9 Physics update kernel (gravity, drag, lifetime, death)
+- [x] 1.9 Physics update kernel (gravity, drag, lifetime, death)
   - **Do**:
     1. Create `shaders/update.metal`: implement `update_physics_kernel` matching design signature
        - Thread reads index from alive_list_a[tid] (guard: tid < alive_count)

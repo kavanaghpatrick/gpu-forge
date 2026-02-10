@@ -19,6 +19,7 @@ pub struct GpuState {
     pub layer: Retained<CAMetalLayer>,
     pub library: Retained<ProtocolObject<dyn MTLLibrary>>,
     pub emission_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub update_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub sync_indirect_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub render_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub depth_stencil_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
@@ -58,6 +59,16 @@ impl GpuState {
         let emission_pipeline = device
             .newComputePipelineStateWithFunction_error(&emission_fn)
             .expect("Failed to create emission compute pipeline");
+
+        // Create compute pipeline for update_physics_kernel
+        let update_fn_name = NSString::from_str("update_physics_kernel");
+        let update_fn = library
+            .newFunctionWithName(&update_fn_name)
+            .expect("Failed to find update_physics_kernel in metallib");
+        #[allow(deprecated)]
+        let update_pipeline = device
+            .newComputePipelineStateWithFunction_error(&update_fn)
+            .expect("Failed to create update compute pipeline");
 
         // Create compute pipeline for sync_indirect_args kernel
         let sync_fn_name = NSString::from_str("sync_indirect_args");
@@ -110,6 +121,7 @@ impl GpuState {
         println!("Metal device: {:?}", device.name());
         println!("Loaded metallib from: {}", metallib_path);
         println!("Emission pipeline created successfully");
+        println!("Update pipeline created successfully");
         println!("Render pipeline created successfully");
 
         Self {
@@ -118,6 +130,7 @@ impl GpuState {
             layer,
             library,
             emission_pipeline,
+            update_pipeline,
             sync_indirect_pipeline,
             render_pipeline,
             depth_stencil_state,

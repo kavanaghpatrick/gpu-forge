@@ -57,10 +57,12 @@ impl App {
         // Acquire a frame slot (blocks if all 3 are in use)
         self.frame_ring.acquire();
 
-        // --- Reset alive list counter to 0 at frame start (CPU write) ---
+        // --- Reset alive list counters to 0 at frame start (CPU write) ---
         unsafe {
-            let alive_ptr = pool.alive_list_a.contents().as_ptr() as *mut CounterHeader;
-            (*alive_ptr).count = 0;
+            let alive_a_ptr = pool.alive_list_a.contents().as_ptr() as *mut CounterHeader;
+            (*alive_a_ptr).count = 0;
+            let alive_b_ptr = pool.alive_list_b.contents().as_ptr() as *mut CounterHeader;
+            (*alive_b_ptr).count = 0;
         }
 
         // --- Update uniforms ---
@@ -145,11 +147,46 @@ impl App {
             compute_encoder.endEncoding();
         }
 
+        // --- Physics update compute pass ---
+        // Reads from alive_list_a (emission output), writes survivors to alive_list_b,
+        // writes dead particles back to dead_list.
+        // POC shortcut: dispatch ceil(pool_size / 256) threadgroups; guard in shader.
+        if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
+            update_encoder.setComputePipelineState(&gpu.update_pipeline);
+
+            // Set buffers matching update_physics_kernel signature:
+            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list_a (input),
+            // buffer(3) = alive_list_b (output), buffer(4) = positions, buffer(5) = velocities,
+            // buffer(6) = lifetimes, buffer(7) = colors, buffer(8) = sizes
+            unsafe {
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 2);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_b), 0, 3);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 4);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 5);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 6);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 7);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 8);
+            }
+
+            // Dispatch ceil(pool_size / 256) threadgroups; shader guards with tid < alive_count
+            let threadgroup_size = 256usize;
+            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
+            update_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
+                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
+            );
+
+            update_encoder.endEncoding();
+        }
+
         // --- Sync alive count to indirect args (GPU compute, single thread) ---
+        // Now reads from alive_list_b (update kernel output) instead of alive_list_a
         if let Some(sync_encoder) = command_buffer.computeCommandEncoder() {
             sync_encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
             unsafe {
-                sync_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 0);
+                sync_encoder.setBuffer_offset_atIndex(Some(&pool.alive_list_b), 0, 0);
                 sync_encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
             }
             sync_encoder.dispatchThreadgroups_threadsPerThreadgroup(
@@ -173,10 +210,10 @@ impl App {
         encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
 
         // Bind vertex buffers matching render.metal vertex_main signature:
-        // buffer(0) = alive_list, buffer(1) = positions, buffer(2) = colors,
-        // buffer(3) = sizes, buffer(4) = uniforms
+        // buffer(0) = alive_list_b (survivors from update), buffer(1) = positions,
+        // buffer(2) = colors, buffer(3) = sizes, buffer(4) = uniforms
         unsafe {
-            encoder.setVertexBuffer_offset_atIndex(Some(&pool.alive_list_a), 0, 0);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.alive_list_b), 0, 0);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.colors), 0, 2);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.sizes), 0, 3);
