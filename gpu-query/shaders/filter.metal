@@ -117,3 +117,60 @@ kernel void column_filter(
         atomic_fetch_add_explicit(match_count, simd_total, memory_order_relaxed);
     }
 }
+
+// ---- Compound filter kernels (AND/OR of two bitmasks) ----
+//
+// These combine two selection bitmasks produced by separate column_filter
+// dispatches into a single result bitmask. Each thread handles one uint32
+// word (covering 32 rows).
+//
+// Buffer layout:
+//   buffer(0): left bitmask (uint32 array)
+//   buffer(1): right bitmask (uint32 array)
+//   buffer(2): output bitmask (uint32 array)
+//   buffer(3): output match_count (atomic uint32)
+//   buffer(4): num_words (uint32 constant)
+
+kernel void compound_filter_and(
+    device const uint*   mask_left   [[buffer(0)]],
+    device const uint*   mask_right  [[buffer(1)]],
+    device uint*         mask_out    [[buffer(2)]],
+    device atomic_uint*  match_count [[buffer(3)]],
+    constant uint&       num_words   [[buffer(4)]],
+    uint tid                         [[thread_position_in_grid]],
+    uint simd_lane                   [[thread_index_in_simdgroup]]
+) {
+    if (tid >= num_words) return;
+
+    uint result = mask_left[tid] & mask_right[tid];
+    mask_out[tid] = result;
+
+    uint bits = popcount(result);
+    uint simd_total = simd_sum(bits);
+
+    if (simd_lane == 0 && simd_total > 0) {
+        atomic_fetch_add_explicit(match_count, simd_total, memory_order_relaxed);
+    }
+}
+
+kernel void compound_filter_or(
+    device const uint*   mask_left   [[buffer(0)]],
+    device const uint*   mask_right  [[buffer(1)]],
+    device uint*         mask_out    [[buffer(2)]],
+    device atomic_uint*  match_count [[buffer(3)]],
+    constant uint&       num_words   [[buffer(4)]],
+    uint tid                         [[thread_position_in_grid]],
+    uint simd_lane                   [[thread_index_in_simdgroup]]
+) {
+    if (tid >= num_words) return;
+
+    uint result = mask_left[tid] | mask_right[tid];
+    mask_out[tid] = result;
+
+    uint bits = popcount(result);
+    uint simd_total = simd_sum(bits);
+
+    if (simd_lane == 0 && simd_total > 0) {
+        atomic_fetch_add_explicit(match_count, simd_total, memory_order_relaxed);
+    }
+}

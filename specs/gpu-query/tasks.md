@@ -169,7 +169,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-16_
   - _Design: Columnar Storage Engine, String storage_
 
-- [ ] 2.8 Compound predicates (AND/OR) and stream compaction
+- [x] 2.8 Compound predicates (AND/OR) and stream compaction
   - **Do**: Add `compound_filter_and` and `compound_filter_or` to `shaders/filter.metal` (bitwise AND/OR of selection masks). Create `shaders/compact.metal` with `compact_selection` kernel (bitmask to dense row indices via prefix scan [KB #193]). Wire into executor for multi-predicate WHERE.
   - **Files**: `gpu-query/shaders/filter.metal`, `gpu-query/shaders/compact.metal`, update `src/gpu/executor.rs`
   - **Done when**: `WHERE col1 > 100 AND col2 < 200` works correctly

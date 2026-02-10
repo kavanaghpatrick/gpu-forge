@@ -565,3 +565,187 @@ fn test_string_filter_group_by_region() {
         vec![("Africa", "400"), ("Asia", "700"), ("Europe", "400")]
     );
 }
+
+// ---- Compound predicate tests (AND/OR) ----
+
+#[test]
+fn test_compound_and_count() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,50,10\n\
+               2,150,5\n\
+               3,200,20\n\
+               4,300,3\n\
+               5,250,15\n\
+               6,80,25\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 100 AND quantity > 10 => rows 3 (200,20) and 5 (250,15)
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount > 100 AND quantity > 10",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "2", "AND: 2 rows match both predicates");
+}
+
+#[test]
+fn test_compound_or_count() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,50,10\n\
+               2,150,5\n\
+               3,200,20\n\
+               4,300,3\n\
+               5,250,15\n\
+               6,80,25\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 200 OR quantity > 20 => rows 4 (300,3), 5 (250,15), 6 (80,25)
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount > 200 AND quantity > 20",
+    );
+    assert_eq!(result.row_count, 1);
+    // Only row where both: none -- amount>200 has rows 4,5 and quantity>20 has rows 3,6
+    // Actually: amount>200: rows 4(300),5(250); quantity>20: rows 3(20),6(25)
+    // AND of those = empty set? No wait: quantity > 20 means > 20, so row 6 (25) only
+    // amount > 200: rows 4 (300), 5 (250)
+    // quantity > 20: rows 6 (25)
+    // AND => no overlap => 0
+    assert_eq!(result.rows[0][0], "0", "AND: no rows match both predicates");
+}
+
+#[test]
+fn test_compound_and_sum() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,50,10\n\
+               2,150,5\n\
+               3,200,20\n\
+               4,300,3\n\
+               5,250,15\n\
+               6,80,25\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 100 AND quantity > 10 => rows 3 (200,20) and 5 (250,15)
+    // sum(amount) = 200 + 250 = 450
+    let result = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM data WHERE amount > 100 AND quantity > 10",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "450", "AND: sum of matching rows");
+}
+
+#[test]
+fn test_compound_or_sum() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,50,10\n\
+               2,150,5\n\
+               3,200,20\n\
+               4,300,3\n\
+               5,250,15\n\
+               6,80,25\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 250 OR quantity > 20 => rows 4 (300,3), 6 (80,25)
+    // sum(amount) = 300 + 80 = 380
+    let result = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM data WHERE amount > 250 OR quantity > 20",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "380", "OR: sum of matching rows");
+}
+
+#[test]
+fn test_compound_and_all_match() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,150,20\n\
+               2,200,30\n\
+               3,300,40\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 100 AND quantity > 10 => all 3 rows
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount > 100 AND quantity > 10",
+    );
+    assert_eq!(result.rows[0][0], "3", "AND: all rows match both predicates");
+}
+
+#[test]
+fn test_compound_and_no_match() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,50,100\n\
+               2,200,5\n\
+               3,300,3\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 100 AND quantity > 50 => row 1 has qty>50 but amt<100; rows 2,3 have amt>100 but qty<50
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount > 100 AND quantity > 50",
+    );
+    assert_eq!(result.rows[0][0], "0", "AND: no rows match both predicates");
+}
+
+#[test]
+fn test_compound_or_overlap() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount,quantity\n\
+               1,50,10\n\
+               2,200,30\n\
+               3,300,5\n\
+               4,80,40\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 100 OR quantity > 20 => rows 2 (both), 3 (amount only), 4 (quantity only)
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount > 100 OR quantity > 20",
+    );
+    assert_eq!(result.rows[0][0], "3", "OR: 3 rows match at least one predicate");
+}
+
+#[test]
+fn test_compound_same_column_and() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount\n\
+               1,50\n\
+               2,100\n\
+               3,150\n\
+               4,200\n\
+               5,250\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount > 100 AND amount < 200 => row 3 (150) only
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount > 100 AND amount < 200",
+    );
+    assert_eq!(result.rows[0][0], "1", "AND: range filter on same column");
+}
+
+#[test]
+fn test_compound_same_column_or() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,amount\n\
+               1,50\n\
+               2,100\n\
+               3,150\n\
+               4,200\n\
+               5,250\n";
+    make_csv(tmp.path(), "data.csv", csv);
+
+    // amount < 100 OR amount > 200 => rows 1 (50), 5 (250)
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM data WHERE amount < 100 OR amount > 200",
+    );
+    assert_eq!(result.rows[0][0], "2", "OR: exclusive ranges on same column");
+}

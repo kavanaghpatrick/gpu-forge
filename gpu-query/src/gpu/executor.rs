@@ -27,7 +27,7 @@ use crate::io::mmap::MmapFile;
 use crate::io::json;
 use crate::io::parquet::{self, ColumnData};
 use crate::sql::physical_plan::PhysicalPlan;
-use crate::sql::types::{AggFunc, CompareOp, Value};
+use crate::sql::types::{AggFunc, CompareOp, LogicalOp, Value};
 use crate::storage::columnar::ColumnarBatch;
 use crate::storage::dictionary::Dictionary;
 use crate::storage::schema::{ColumnDef, DataType, RuntimeSchema};
@@ -210,6 +210,20 @@ impl QueryExecutor {
                 Ok(result)
             }
 
+            PhysicalPlan::GpuCompoundFilter { .. } => {
+                // A compound filter without aggregate on top: return filtered row count
+                let (scan_result, filter_result) = self.resolve_input(plan, catalog)?;
+                let count = filter_result
+                    .as_ref()
+                    .map(|f| f.match_count())
+                    .unwrap_or(scan_result.batch.row_count as u32);
+                Ok(QueryResult {
+                    columns: vec!["count".to_string()],
+                    rows: vec![vec![count.to_string()]],
+                    row_count: 1,
+                })
+            }
+
             _ => Err(format!("Unsupported plan node for POC: {:?}", plan)),
         }
     }
@@ -244,6 +258,27 @@ impl QueryExecutor {
 
                 let filter = self.execute_filter(&scan, compare_op, column, value)?;
                 Ok((scan, Some(filter)))
+            }
+
+            PhysicalPlan::GpuCompoundFilter { op, left, right } => {
+                // Execute both sub-filters to get their bitmasks, then combine.
+                let (scan_left, filter_left) = self.resolve_input(left, catalog)?;
+                let (_, filter_right) = self.resolve_input(right, catalog)?;
+
+                let left_filter = filter_left.ok_or_else(|| {
+                    "Compound filter: left side produced no filter result".to_string()
+                })?;
+                let right_filter = filter_right.ok_or_else(|| {
+                    "Compound filter: right side produced no filter result".to_string()
+                })?;
+
+                let compound_filter = self.execute_compound_filter(
+                    &left_filter,
+                    &right_filter,
+                    *op,
+                )?;
+
+                Ok((scan_left, Some(compound_filter)))
             }
 
             PhysicalPlan::GpuAggregate { input, .. } => {
@@ -1023,6 +1058,109 @@ impl QueryExecutor {
         // Use FilterResult.match_count() for lazy CPU readback when needed.
         Ok(FilterResult {
             bitmask_buffer,
+            match_count_buffer,
+            dispatch_args_buffer,
+            match_count_cached: std::cell::Cell::new(None),
+            row_count,
+        })
+    }
+
+    /// Execute a compound filter: AND/OR two bitmasks from sub-filters.
+    ///
+    /// Dispatches `compound_filter_and` or `compound_filter_or` kernel to
+    /// combine two selection bitmasks, then `prepare_query_dispatch` for
+    /// indirect dispatch args.
+    fn execute_compound_filter(
+        &self,
+        left: &FilterResult,
+        right: &FilterResult,
+        op: LogicalOp,
+    ) -> Result<FilterResult, String> {
+        let row_count = left.row_count;
+        let num_words = ((row_count + 31) / 32) as usize;
+
+        // Allocate output buffers
+        let out_bitmask = encode::alloc_buffer(
+            &self.device.device,
+            std::cmp::max(num_words * 4, 4),
+        );
+        let match_count_buffer = encode::alloc_buffer(&self.device.device, 4);
+        let dispatch_args_buffer = encode::alloc_buffer(
+            &self.device.device,
+            std::mem::size_of::<crate::gpu::types::DispatchArgs>(),
+        );
+
+        // Zero match count
+        unsafe {
+            let ptr = match_count_buffer.contents().as_ptr() as *mut u32;
+            *ptr = 0;
+        }
+
+        // num_words constant buffer
+        let num_words_val = num_words as u32;
+        let num_words_buffer =
+            encode::alloc_buffer_with_data(&self.device.device, &[num_words_val]);
+
+        // Select kernel by operator
+        let kernel_name = match op {
+            LogicalOp::And => "compound_filter_and",
+            LogicalOp::Or => "compound_filter_or",
+        };
+        let pipeline = encode::make_pipeline(&self.device.library, kernel_name);
+
+        // Dispatch compound filter + prepare_dispatch in one command buffer
+        let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
+        {
+            // --- Stage 1: Compound filter kernel ---
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encode::dispatch_threads_1d(
+                &encoder,
+                &pipeline,
+                &[
+                    (&left.bitmask_buffer, 0),
+                    (&right.bitmask_buffer, 1),
+                    (&out_bitmask, 2),
+                    (&match_count_buffer, 3),
+                    (&num_words_buffer, 4),
+                ],
+                num_words,
+            );
+
+            encoder.endEncoding();
+        }
+        {
+            // --- Stage 2: Prepare dispatch args from match_count ---
+            let prepare_pipeline =
+                encode::make_pipeline(&self.device.library, "prepare_query_dispatch");
+
+            let tpt = 256u32;
+            let tpt_buffer =
+                encode::alloc_buffer_with_data(&self.device.device, &[tpt]);
+
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&prepare_pipeline);
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(&match_count_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&dispatch_args_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&tpt_buffer), 0, 2);
+            }
+
+            let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+            let tg = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+            encoder.endEncoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        Ok(FilterResult {
+            bitmask_buffer: out_bitmask,
             match_count_buffer,
             dispatch_args_buffer,
             match_count_cached: std::cell::Cell::new(None),
