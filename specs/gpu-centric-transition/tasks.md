@@ -325,7 +325,7 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
 
 Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration tests, conservation invariant.
 
-- [ ] 4.1 Add unit tests for new structs and helpers
+- [x] 4.1 Add unit tests for new structs and helpers
   - **Do**:
     1. In `types.rs` tests module, add/verify:
        - `test_dispatch_args_layout`: size==12, align==4, field offsets at 0/4/8

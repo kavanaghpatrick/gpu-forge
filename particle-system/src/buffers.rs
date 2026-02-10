@@ -608,6 +608,39 @@ mod tests {
     }
 
     #[test]
+    fn test_uniform_ring_offset() {
+        // uniforms_offset(0) == 0, (1) == 256, (2) == 512
+        assert_eq!(ParticlePool::uniforms_offset(0), 0);
+        assert_eq!(ParticlePool::uniforms_offset(1), 256);
+        assert_eq!(ParticlePool::uniforms_offset(2), 512);
+    }
+
+    #[test]
+    fn test_pool_new_allocates_dispatch_buffers() {
+        let device = get_device();
+        let pool = ParticlePool::new(&device, 1000);
+
+        // emission_dispatch_args: 12 bytes (DispatchArgs = 3 x u32)
+        assert_eq!(
+            pool.emission_dispatch_args.length(),
+            12,
+            "emission_dispatch_args must be 12 bytes"
+        );
+        // gpu_emission_params: 16 bytes (GpuEmissionParams = 4 x u32)
+        assert_eq!(
+            pool.gpu_emission_params.length(),
+            16,
+            "gpu_emission_params must be 16 bytes"
+        );
+        // update_dispatch_args: 12 bytes (DispatchArgs = 3 x u32)
+        assert_eq!(
+            pool.update_dispatch_args.length(),
+            12,
+            "update_dispatch_args must be 12 bytes"
+        );
+    }
+
+    #[test]
     fn test_pool_grow_noop_for_same_size() {
         let device = get_device();
         let mut pool = ParticlePool::new(&device, 1000);

@@ -135,6 +135,32 @@ impl FrameRing {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_frame_ring_cycles_0_1_2() {
+        let mut ring = FrameRing::new();
+        // Initial frame_index is 0
+        assert_eq!(ring.frame_index(), 0);
+
+        // Advance 6 times and verify cycling: 1, 2, 0, 1, 2, 0
+        let expected = [1, 2, 0, 1, 2, 0];
+        for (i, &exp) in expected.iter().enumerate() {
+            ring.advance();
+            assert_eq!(
+                ring.frame_index(),
+                exp,
+                "After advance #{}, expected frame_index={}, got={}",
+                i + 1,
+                exp,
+                ring.frame_index()
+            );
+        }
+    }
+}
+
 impl Drop for FrameRing {
     fn drop(&mut self) {
         // With triple buffering, up to MAX_FRAMES_IN_FLIGHT frames may be in-flight.

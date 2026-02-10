@@ -344,6 +344,26 @@ mod tests {
     }
 
     #[test]
+    fn test_uniforms_base_emission_rate_offset() {
+        // base_emission_rate should be at byte offset 200 (same position as old emission_count)
+        let uniforms = Uniforms::default();
+        let base = &uniforms as *const Uniforms as *const u8;
+        let field_ptr = &uniforms.base_emission_rate as *const u32 as *const u8;
+        let offset = unsafe { field_ptr.offset_from(base) } as usize;
+        assert_eq!(offset, 200, "base_emission_rate must be at offset 200");
+    }
+
+    #[test]
+    fn test_uniforms_still_256_bytes() {
+        // Verify Uniforms remains exactly 256 bytes after rename and struct changes
+        assert_eq!(
+            mem::size_of::<Uniforms>(),
+            256,
+            "Uniforms must remain 256 bytes"
+        );
+    }
+
+    #[test]
     #[cfg(feature = "debug-telemetry")]
     fn test_debug_telemetry_layout() {
         use super::DebugTelemetry;
