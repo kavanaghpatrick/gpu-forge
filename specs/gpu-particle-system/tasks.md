@@ -71,13 +71,13 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-5, AC-1.5, NFR-5_
   - _Design: Triple Buffering, Per-Frame Sequence_
 
-- [ ] 1.4 [VERIFY] Quality checkpoint: build and shader compilation
+- [x] 1.4 [VERIFY] Quality checkpoint: build and shader compilation
   - **Do**: Run cargo build and clippy; verify .metallib produced
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build 2>&1 | tail -5`
   - **Done when**: No clippy warnings, build succeeds
   - **Commit**: `chore(particle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.5 Allocate SoA particle buffers and free lists
+- [x] 1.5 Allocate SoA particle buffers and free lists
   - **Do**:
     1. Create `src/buffers.rs`: implement `ParticlePool` struct
     2. Allocate SoA buffers at 1M capacity using `device.newBufferWithLength_options(size, MTLResourceStorageModeShared)`:

@@ -7,6 +7,7 @@
 /// Total size: 208 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct Uniforms {
     /// Camera view matrix (column-major float4x4, 64 bytes)
     pub view_matrix: [[f32; 4]; 4],
@@ -76,6 +77,7 @@ impl Default for Uniforms {
 /// and MSL `DrawArgs` in shaders/types.h.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct DrawArgs {
     pub vertex_count: u32,
     pub instance_count: u32,
@@ -91,5 +93,76 @@ impl Default for DrawArgs {
             vertex_start: 0,
             base_instance: 0,
         }
+    }
+}
+
+/// Counter header for dead/alive list buffers.
+///
+/// Layout: first 16 bytes of the buffer.
+/// - offset 0:  `count` (u32, atomic counter)
+/// - offset 4:  12 bytes padding (align to 16 bytes)
+///
+/// After the header, indices start at byte offset 16.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct CounterHeader {
+    pub count: u32,
+    pub _pad: [u32; 3],
+}
+
+/// Size of the counter header in bytes (16).
+#[allow(dead_code)]
+pub const COUNTER_HEADER_SIZE: usize = std::mem::size_of::<CounterHeader>();
+
+/// Per-particle SoA buffer sizes in bytes for a given pool capacity.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct BufferSizes {
+    /// float3 (12 bytes each)
+    pub positions: usize,
+    /// float3 (12 bytes each)
+    pub velocities: usize,
+    /// half2 (4 bytes each)
+    pub lifetimes: usize,
+    /// half4 (8 bytes each)
+    pub colors: usize,
+    /// half padded (4 bytes each)
+    pub sizes: usize,
+    /// 16B header + pool_size * 4B indices
+    pub counter_list: usize,
+    /// DrawArgs (32 bytes, but we use std::mem::size_of)
+    pub indirect_args: usize,
+    /// Uniforms buffer (256 bytes padded)
+    pub uniforms: usize,
+}
+
+#[allow(dead_code)]
+impl BufferSizes {
+    /// Compute all buffer sizes for a given pool capacity.
+    pub fn new(pool_size: usize) -> Self {
+        Self {
+            positions: pool_size * 12,
+            velocities: pool_size * 12,
+            lifetimes: pool_size * 4,
+            colors: pool_size * 8,
+            sizes: pool_size * 4,
+            counter_list: COUNTER_HEADER_SIZE + pool_size * 4,
+            indirect_args: 32, // MTLDrawPrimitivesIndirectArguments = 4 x u32 = 16, but padded to 32
+            uniforms: 256,     // Uniforms padded to 256 bytes
+        }
+    }
+
+    /// Total memory across all buffers (SoA + 1 dead + 2 alive + indirect + uniforms).
+    pub fn total_bytes(&self) -> usize {
+        self.positions
+            + self.velocities
+            + self.lifetimes
+            + self.colors
+            + self.sizes
+            + self.counter_list     // dead list
+            + self.counter_list * 2 // alive list A + B
+            + self.indirect_args
+            + self.uniforms
     }
 }
