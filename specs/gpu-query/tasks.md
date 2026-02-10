@@ -225,7 +225,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-21, FR-22, AC-4.4, AC-4.5, AC-4.6_
   - _Design: TUI Rendering Architecture_
 
-- [ ] 3.3 Results table with streaming pagination
+- [x] 3.3 Results table with streaming pagination
   - **Do**: Create `src/tui/results.rs` with scrollable table widget. Number formatting (thousands separators, right-aligned numerics). NULL rendering (dim gray). Column auto-width. Pagination for >1000 rows (Space: next page). Performance line below results.
   - **Files**: `gpu-query/src/tui/results.rs`
   - **Done when**: Query results display in formatted table; can scroll through large result sets

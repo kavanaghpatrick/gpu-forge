@@ -2,6 +2,7 @@
 //!
 //! Holds query state, results, GPU metrics, running flags, and theme.
 
+use super::results::ResultsState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
 use std::path::PathBuf;
@@ -70,6 +71,9 @@ pub struct AppState {
 
     /// Tick rate in milliseconds (target ~60fps = 16ms).
     pub tick_rate_ms: u64,
+
+    /// Results table pagination/scroll state.
+    pub results_state: ResultsState,
 }
 
 impl AppState {
@@ -89,6 +93,7 @@ impl AppState {
             tables: Vec::new(),
             status_message: "Ready. Type SQL and press Ctrl+Enter to execute.".into(),
             tick_rate_ms: 16, // ~60fps
+            results_state: ResultsState::new(),
         }
     }
 
@@ -104,6 +109,7 @@ impl AppState {
     /// Set the query result.
     pub fn set_result(&mut self, result: QueryResult) {
         self.query_state = QueryState::Complete;
+        self.results_state.reset();
         self.last_result = Some(result);
     }
 

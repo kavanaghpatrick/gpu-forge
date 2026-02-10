@@ -8,6 +8,7 @@ pub mod autocomplete;
 pub mod editor;
 pub mod event;
 pub mod gradient;
+pub mod results;
 pub mod themes;
 
 use app::AppState;
@@ -226,88 +227,9 @@ fn render_editor_panel(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(paragraph, area);
 }
 
-/// Render the results panel (placeholder).
+/// Render the results panel using the scrollable table widget.
 fn render_results_panel(f: &mut Frame, area: Rect, app: &AppState) {
-    let is_focused = app.focus == app::FocusPanel::Results;
-    let border_style = if is_focused {
-        app.theme.focus_border_style
-    } else {
-        app.theme.border_style
-    };
-
-    let content = match &app.query_state {
-        app::QueryState::Idle => {
-            vec![Line::from(Span::styled(
-                "  Run a query to see results here.",
-                Style::default().fg(app.theme.muted),
-            ))]
-        }
-        app::QueryState::Running => {
-            // Animated spinner effect using frame counter
-            let dots = ".".repeat(((app.frame_count / 10) % 4) as usize);
-            vec![Line::from(Span::styled(
-                format!("  Executing{}", dots),
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ))]
-        }
-        app::QueryState::Complete => {
-            if let Some(ref result) = app.last_result {
-                let mut lines = Vec::new();
-                // Header
-                let header = result.columns.join(" | ");
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", header),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                // Separator
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", "-".repeat(header.len())),
-                    Style::default().fg(app.theme.muted),
-                )));
-                // Rows (show first 100)
-                for row in result.rows.iter().take(100) {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}", row.join(" | ")),
-                        Style::default().fg(app.theme.text),
-                    )));
-                }
-                // Footer
-                lines.push(Line::from(Span::styled(
-                    format!("  ({} rows)", result.row_count),
-                    Style::default().fg(app.theme.muted),
-                )));
-                lines
-            } else {
-                vec![Line::from(Span::styled(
-                    "  (no results)",
-                    Style::default().fg(app.theme.muted),
-                ))]
-            }
-        }
-        app::QueryState::Error(msg) => {
-            vec![Line::from(Span::styled(
-                format!("  Error: {}", msg),
-                Style::default().fg(ratatui::style::Color::Rgb(255, 80, 80)),
-            ))]
-        }
-    };
-
-    let block = Block::default()
-        .title(Span::styled(
-            " Results ",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(border_style);
-
-    let paragraph = Paragraph::new(content).block(block);
-    f.render_widget(paragraph, area);
+    results::render_results_table(f, area, app);
 }
 
 /// Render the status bar at the bottom.
