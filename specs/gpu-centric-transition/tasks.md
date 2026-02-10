@@ -445,7 +445,7 @@ Focus: Clean up code structure, extract helpers, improve error handling.
 
 ## Phase 6: Quality Gates & PR
 
-- [ ] 6.1 [VERIFY] Full local CI: build + test + clippy
+- [x] 6.1 [VERIFY] Full local CI: build + test + clippy
   - **Do**: Run complete local quality suite
   - **Verify**: All commands must pass:
     ```
