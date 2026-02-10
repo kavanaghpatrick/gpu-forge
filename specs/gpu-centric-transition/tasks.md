@@ -169,7 +169,7 @@ Focus: Enable CPU/GPU overlap. Change MAX_FRAMES_IN_FLIGHT to 3, add uniform rin
   - _Requirements: FR-9, FR-10_
   - _Design: Section 5.1, 5.2, KB 232_
 
-- [ ] 2.2 Wire uniform ring buffer into main.rs render loop
+- [x] 2.2 Wire uniform ring buffer into main.rs render loop
   - **Do**:
     1. In `main.rs render()`: compute `let uniform_offset = ParticlePool::uniforms_offset(self.frame_ring.frame_index());`
     2. Write uniforms to `pool.uniform_ring` at `uniform_offset` instead of `pool.uniforms`

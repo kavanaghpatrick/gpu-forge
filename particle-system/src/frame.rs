@@ -15,7 +15,7 @@ use objc2_metal::MTLCommandBuffer;
 /// GPU-centric architecture (no CPU readback of particle buffers) makes triple
 /// buffering safe: only the uniform buffer needs per-frame copies, handled via
 /// a 768-byte ring buffer with per-frame offsets.
-const MAX_FRAMES_IN_FLIGHT: usize = 3;
+pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 /// Triple-buffer semaphore ring for pipelining CPU/GPU work.
 ///
@@ -116,6 +116,22 @@ impl FrameRing {
     pub fn should_update_fps(&self) -> bool {
         // FPS was just recalculated if fps_frame_count was reset
         self.fps_frame_count == 0 && self.fps > 0
+    }
+
+    /// Signal the semaphore to release one frame slot.
+    ///
+    /// Used by pool drain logic to restore semaphore slots after draining
+    /// in-flight frames for a safe grow operation.
+    pub fn signal(&self) {
+        self.semaphore.signal();
+    }
+
+    /// Wait on the semaphore to acquire one frame slot (drain-only, no timing update).
+    ///
+    /// Unlike `acquire()`, this does NOT update dt/fps counters. Used by pool drain
+    /// logic to wait for remaining in-flight frames before a safe grow.
+    pub fn wait_one(&self) {
+        self.semaphore.wait(DispatchTime::FOREVER);
     }
 }
 

@@ -56,8 +56,6 @@ pub struct ParticlePool {
     pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
 
     // --- Uniforms ---
-    /// Uniforms buffer (256 bytes padded).
-    pub uniforms: Retained<ProtocolObject<dyn MTLBuffer>>,
     /// Uniform ring buffer for triple buffering (768 bytes = 3 x 256).
     /// Each frame writes to slot [frame_index * 256 .. (frame_index+1) * 256].
     pub uniform_ring: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -88,7 +86,7 @@ unsafe fn buffer_ptr(buffer: &ProtocolObject<dyn MTLBuffer>) -> *mut c_void {
 impl ParticlePool {
     /// Create a new particle pool with `pool_size` capacity.
     ///
-    /// Allocates all SoA buffers, dead/alive lists, indirect args, and uniforms.
+    /// Allocates all SoA buffers, dead/alive lists, indirect args, and uniform ring.
     /// Initializes dead list with all indices [0..pool_size-1], alive lists empty,
     /// and indirect args to default draw state.
     pub fn new(device: &Retained<ProtocolObject<dyn MTLDevice>>, pool_size: usize) -> Self {
@@ -109,9 +107,8 @@ impl ParticlePool {
         // Allocate grid density buffer: 64^3 cells x 4 bytes per uint32
         let grid_density = alloc_buffer(device, sizes.grid_density, "grid_density");
 
-        // Allocate indirect args and uniforms
+        // Allocate indirect args
         let indirect_args = alloc_buffer(device, sizes.indirect_args, "indirect_args");
-        let uniforms = alloc_buffer(device, sizes.uniforms, "uniforms");
 
         // Allocate uniform ring buffer for triple buffering (3 x 256 = 768 bytes)
         let uniform_ring_size = 3 * std::mem::size_of::<Uniforms>();
@@ -144,7 +141,6 @@ impl ParticlePool {
             indirect_args,
             emission_dispatch_args,
             gpu_emission_params,
-            uniforms,
             uniform_ring,
         };
 
@@ -155,7 +151,6 @@ impl ParticlePool {
         pool.init_indirect_args();
         pool.init_emission_dispatch_args();
         pool.init_gpu_emission_params();
-        pool.init_uniforms();
         pool.init_uniform_ring();
 
         pool
@@ -234,14 +229,6 @@ impl ParticlePool {
         unsafe {
             let ptr = buffer_ptr(&self.gpu_emission_params) as *mut GpuEmissionParams;
             std::ptr::write(ptr, GpuEmissionParams::default());
-        }
-    }
-
-    /// Initialize uniforms buffer with default values.
-    fn init_uniforms(&self) {
-        unsafe {
-            let ptr = buffer_ptr(&self.uniforms) as *mut Uniforms;
-            std::ptr::write(ptr, Uniforms::default());
         }
     }
 
@@ -386,7 +373,7 @@ impl ParticlePool {
         self.gpu_emission_params = new_gpu_emission_params;
         // grid_density stays the same (64^3 fixed)
         // indirect_args stays the same
-        // uniforms stays the same
+        // uniform_ring stays the same (768 bytes, not pool-size-dependent)
 
         self.pool_size = new_size;
     }

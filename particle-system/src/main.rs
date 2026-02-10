@@ -32,7 +32,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use buffers::ParticlePool;
 use camera::OrbitCamera;
-use frame::FrameRing;
+use frame::{FrameRing, MAX_FRAMES_IN_FLIGHT};
 use gpu::GpuState;
 use input::InputState;
 use types::Uniforms;
@@ -73,10 +73,19 @@ impl App {
         // Acquire a frame slot (blocks until GPU finishes previous frame)
         self.frame_ring.acquire();
 
-        // --- Handle pending pool grow (safe here: GPU is idle after acquire with single buffering) ---
+        // --- Handle pending pool grow (drain all in-flight frames for safe reallocation) ---
         if let Some(new_size) = self.input.pending_grow.take() {
+            // We already acquired 1 slot above. Drain the remaining in-flight frames
+            // so no GPU work references the old buffers during reallocation.
+            for _ in 0..(MAX_FRAMES_IN_FLIGHT - 1) {
+                self.frame_ring.wait_one();
+            }
             if let Some(pool) = &mut self.pool {
                 pool.grow(new_size);
+            }
+            // Restore the extra semaphore slots we drained
+            for _ in 0..(MAX_FRAMES_IN_FLIGHT - 1) {
+                self.frame_ring.signal();
             }
         }
 
@@ -89,7 +98,8 @@ impl App {
         // write_list: update kernel writes this frame's survivors here; render uses this
         let (read_list, write_list) = pool.get_ping_pong_lists(self.ping_pong);
 
-        // --- Update uniforms ---
+        // --- Update uniforms (write to per-frame slot in uniform ring buffer) ---
+        let uniform_offset = ParticlePool::uniforms_offset(self.frame_ring.frame_index());
         let base_emission: u32 = self.input.physics.emission_rate;
         let view_mat = self.camera.view_matrix();
         let proj_mat = self.camera.projection_matrix();
@@ -121,8 +131,10 @@ impl App {
             0
         };
 
+        // Write uniforms to the per-frame slot in the uniform ring buffer
         unsafe {
-            let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
+            let ring_base = pool.uniform_ring.contents().as_ptr() as *mut u8;
+            let uniforms_ptr = ring_base.add(uniform_offset) as *mut Uniforms;
             (*uniforms_ptr).view_matrix = view_mat;
             (*uniforms_ptr).projection_matrix = proj_mat;
             (*uniforms_ptr).mouse_world_pos = mouse_world_pos;
@@ -200,11 +212,11 @@ impl App {
             prepare_encoder.setLabel(Some(ns_string!("Prepare Dispatch")));
             prepare_encoder.setComputePipelineState(&gpu.prepare_dispatch_pipeline);
 
-            // buffer(0)=dead_list, buffer(1)=uniforms, buffer(2)=write_list,
+            // buffer(0)=dead_list, buffer(1)=uniform_ring, buffer(2)=write_list,
             // buffer(3)=emission_dispatch_args, buffer(4)=gpu_emission_params
             unsafe {
                 prepare_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 0);
-                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 1);
+                prepare_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 1);
                 prepare_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 2);
                 prepare_encoder.setBuffer_offset_atIndex(Some(&pool.emission_dispatch_args), 0, 3);
                 prepare_encoder.setBuffer_offset_atIndex(Some(&pool.gpu_emission_params), 0, 4);
@@ -226,11 +238,11 @@ impl App {
             compute_encoder.setLabel(Some(ns_string!("Emission")));
             compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
 
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
+            // buffer(0) = uniform_ring, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
             // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
             // buffer(6) = colors, buffer(7) = sizes, buffer(8) = gpu_emission_params
             unsafe {
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
                 compute_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
                 compute_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 3);
@@ -278,7 +290,7 @@ impl App {
             grid_pop_encoder.setLabel(Some(ns_string!("Grid Populate")));
             grid_pop_encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
             unsafe {
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 1);
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 2);
                 grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
@@ -301,10 +313,10 @@ impl App {
             update_encoder.setLabel(Some(ns_string!("Physics Update")));
             update_encoder.setComputePipelineState(&gpu.update_pipeline);
 
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = read_list (input),
+            // buffer(0) = uniform_ring, buffer(1) = dead_list, buffer(2) = read_list (input),
             // buffer(3) = write_list (output), buffer(4-8) = SoA data, buffer(9) = grid_density
             unsafe {
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 0);
                 update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
                 update_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
                 update_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 3);
@@ -357,13 +369,13 @@ impl App {
         encoder.setRenderPipelineState(&gpu.render_pipeline);
         encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
 
-        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniforms + lifetimes
+        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniform_ring + lifetimes
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(write_list), 0, 0);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.colors), 0, 2);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.sizes), 0, 3);
-            encoder.setVertexBuffer_offset_atIndex(Some(&pool.uniforms), 0, 4);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 4);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
         }
 
