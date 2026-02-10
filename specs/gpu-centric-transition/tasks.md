@@ -273,13 +273,13 @@ Focus: All variable-count dispatches use indirect args. Add debug infrastructure
   - _Requirements: NFR-5, NFR-6_
   - _Design: Section 11.2_
 
-- [ ] 3.4 [VERIFY] Quality checkpoint: build + all tests
+- [x] 3.4 [VERIFY] Quality checkpoint: build + all tests
   - **Do**: Run full build and all tests after Phase 3 core changes
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo build 2>&1 && cargo test 2>&1 | tail -10`
   - **Done when**: All tests pass, no regressions
   - **Commit**: `chore(gpu-centric): pass Phase 3 quality checkpoint` (only if fixes needed)
 
-- [ ] 3.5 Add F1 GPU capture key
+- [x] 3.5 Add F1 GPU capture key
   - **Do**:
     1. In `input.rs` InputState: add `pub capture_next_frame: bool` field, default false
     2. In `input.rs` InputState::handle_key: add `KeyCode::F1 => { self.capture_next_frame = true; }` before pool key fallthrough

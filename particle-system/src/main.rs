@@ -201,6 +201,15 @@ impl App {
         };
         command_buffer.setLabel(Some(ns_string!("Frame")));
 
+        // F1 GPU capture: log request and reset flag
+        // TODO: Full MTLCaptureManager programmatic capture requires objc2-metal
+        // bindings for MTLCaptureManager/MTLCaptureDescriptor (not yet available).
+        // For now, log a hint to use Xcode GPU capture or MTL_CAPTURE_ENABLED env var.
+        if self.input.capture_next_frame {
+            self.input.capture_next_frame = false;
+            eprintln!("[DEBUG] GPU capture requested (set MTL_CAPTURE_ENABLED=1 to enable)");
+        }
+
         // Register completion handler that signals the semaphore
         self.frame_ring.register_completion_handler(&command_buffer);
 
