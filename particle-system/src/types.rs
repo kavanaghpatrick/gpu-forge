@@ -174,24 +174,13 @@ impl Default for DispatchArgs {
 /// Layout: 4 x u32 = 16 bytes (16-byte aligned for GPU buffer access).
 /// Consumed by `emission_kernel` to know how many particles to emit.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 #[allow(dead_code)]
 pub struct GpuEmissionParams {
     pub emission_count: u32,
     pub actual_burst_count: u32,
     pub _pad0: u32,
     pub _pad1: u32,
-}
-
-impl Default for GpuEmissionParams {
-    fn default() -> Self {
-        Self {
-            emission_count: 0,
-            actual_burst_count: 0,
-            _pad0: 0,
-            _pad1: 0,
-        }
-    }
 }
 
 /// Debug telemetry data written by GPU compute kernels for diagnostics.
