@@ -563,7 +563,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-6, AC-3.1_
   - _Design: Emission Kernel, Test Strategy_
 
-- [ ] 3.6 GPU integration test: physics and compaction
+- [x] 3.6 GPU integration test: physics and compaction
   - **Do**:
     1. In `tests/gpu_integration.rs`: add test_physics
        - Emit 100 particles, run 1 physics step with dt=0.016
