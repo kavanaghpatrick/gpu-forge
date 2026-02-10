@@ -507,7 +507,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: AC-2.1 through AC-2.8_
   - _Design: Buffer Layout_
 
-- [ ] 3.2 Unit tests: camera math
+- [x] 3.2 Unit tests: camera math
   - **Do**:
     1. In `src/camera.rs`: add `#[cfg(test)] mod tests`
     2. Test view_matrix at default position: camera at (0, sin(0.3)*15, cos(0.3)*15) looking at origin
@@ -523,7 +523,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: AC-9.1 through AC-9.5_
   - _Design: Camera_
 
-- [ ] 3.3 Unit tests: input state
+- [x] 3.3 Unit tests: input state
   - **Do**:
     1. In `src/input.rs`: add `#[cfg(test)] mod tests`
     2. Test cursor position tracking
