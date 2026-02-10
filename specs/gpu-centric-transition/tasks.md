@@ -366,7 +366,7 @@ Focus: Comprehensive tests per design Section 11. Unit tests, GPU integration te
   - _Requirements: NFR-6_
   - _Design: Section 11.2_
 
-- [ ] 4.3 Add GPU integration test: indirect dispatch round-trip
+- [x] 4.3 Add GPU integration test: indirect dispatch round-trip
   - **Do**:
     1. Add test `test_indirect_dispatch_round_trip`:
        - Full pipeline: prepare_dispatch -> emission (indirect) -> grid_clear -> grid_populate -> update -> sync_indirect_args

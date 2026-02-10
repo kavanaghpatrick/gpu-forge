@@ -1520,3 +1520,518 @@ fn test_sync_indirect_writes_update_dispatch_args() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Full pipeline context: all 6 compute pipelines for round-trip testing
+// ---------------------------------------------------------------------------
+
+/// Complete GPU test context with all compute pipelines for full pipeline tests.
+pub struct GpuTestContextFullPipeline {
+    pub device: Retained<ProtocolObject<dyn MTLDevice>>,
+    pub queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    pub prepare_dispatch_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub emission_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub grid_clear_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub grid_populate_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub update_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub sync_indirect_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+}
+
+impl GpuTestContextFullPipeline {
+    pub fn new() -> Self {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device available");
+        let queue = device
+            .newCommandQueue()
+            .expect("Failed to create command queue");
+
+        let metallib_path = find_metallib();
+        let path_ns = NSString::from_str(&metallib_path);
+        #[allow(deprecated)]
+        let library = device
+            .newLibraryWithFile_error(&path_ns)
+            .expect("Failed to load shaders.metallib");
+
+        let prepare_dispatch_pipeline = create_pipeline(&device, &library, "prepare_dispatch");
+        let emission_pipeline = create_pipeline(&device, &library, "emission_kernel");
+        let grid_clear_pipeline = create_pipeline(&device, &library, "grid_clear_kernel");
+        let grid_populate_pipeline = create_pipeline(&device, &library, "grid_populate_kernel");
+        let update_pipeline = create_pipeline(&device, &library, "update_physics_kernel");
+        let sync_indirect_pipeline = create_pipeline(&device, &library, "sync_indirect_args");
+
+        Self {
+            device,
+            queue,
+            prepare_dispatch_pipeline,
+            emission_pipeline,
+            grid_clear_pipeline,
+            grid_populate_pipeline,
+            update_pipeline,
+            sync_indirect_pipeline,
+        }
+    }
+}
+
+/// Extended buffers with emission_dispatch_args for full pipeline tests.
+pub struct FullPipelineBuffers {
+    pub uniforms: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub dead_list: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub alive_list_a: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub alive_list_b: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub positions: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub velocities: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub lifetimes: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub colors: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub sizes: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub indirect_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub emission_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+}
+
+impl FullPipelineBuffers {
+    pub fn new(device: &ProtocolObject<dyn MTLDevice>, pool_size: usize) -> Self {
+        let counter_list_size = COUNTER_HEADER_SIZE + pool_size * 4;
+
+        let uniforms = alloc_buffer(device, 256);
+        let dead_list = alloc_buffer(device, counter_list_size);
+        let alive_list_a = alloc_buffer(device, counter_list_size);
+        let alive_list_b = alloc_buffer(device, counter_list_size);
+        let positions = alloc_buffer(device, pool_size * 12);
+        let velocities = alloc_buffer(device, pool_size * 12);
+        let lifetimes = alloc_buffer(device, pool_size * 4);
+        let colors = alloc_buffer(device, pool_size * 8);
+        let sizes = alloc_buffer(device, pool_size * 4);
+        let grid_density = alloc_buffer(device, GRID_CELLS * 4);
+        let indirect_args = alloc_buffer(device, 16);
+        let gpu_emission_params = alloc_buffer(device, 16);
+        let update_dispatch_args = alloc_buffer(device, 12);
+        let emission_dispatch_args = alloc_buffer(device, 12);
+
+        // Initialize uniforms
+        unsafe {
+            let ptr = buffer_ptr(&uniforms) as *mut Uniforms;
+            let mut u = Uniforms::default();
+            u.base_emission_rate = 100;
+            u.pool_size = pool_size as u32;
+            u.dt = 0.016;
+            u.gravity = -9.81;
+            u.drag_coefficient = 0.02;
+            u.interaction_strength = 0.0;
+            u.mouse_attraction_strength = 0.0;
+            u.mouse_attraction_radius = 0.0;
+            u.burst_count = 0;
+            std::ptr::write(ptr, u);
+        }
+
+        // Initialize dead list: counter = pool_size, indices [0..pool_size-1]
+        unsafe {
+            let ptr = buffer_ptr(&dead_list) as *mut u32;
+            std::ptr::write(ptr, pool_size as u32);
+            std::ptr::write(ptr.add(1), 0u32);
+            std::ptr::write(ptr.add(2), 0u32);
+            std::ptr::write(ptr.add(3), 0u32);
+            for i in 0..pool_size {
+                std::ptr::write(ptr.add(COUNTER_HEADER_UINTS + i), i as u32);
+            }
+        }
+
+        // Initialize alive_list_a: counter = 0
+        unsafe {
+            let ptr = buffer_ptr(&alive_list_a) as *mut u32;
+            std::ptr::write(ptr, 0u32);
+            std::ptr::write(ptr.add(1), 0u32);
+            std::ptr::write(ptr.add(2), 0u32);
+            std::ptr::write(ptr.add(3), 0u32);
+            for i in 0..pool_size {
+                std::ptr::write(ptr.add(COUNTER_HEADER_UINTS + i), 0u32);
+            }
+        }
+
+        // Initialize alive_list_b: counter = 0
+        unsafe {
+            let ptr = buffer_ptr(&alive_list_b) as *mut u32;
+            std::ptr::write(ptr, 0u32);
+            std::ptr::write(ptr.add(1), 0u32);
+            std::ptr::write(ptr.add(2), 0u32);
+            std::ptr::write(ptr.add(3), 0u32);
+            for i in 0..pool_size {
+                std::ptr::write(ptr.add(COUNTER_HEADER_UINTS + i), 0u32);
+            }
+        }
+
+        // Zero positions
+        unsafe {
+            let ptr = buffer_ptr(&positions) as *mut u8;
+            std::ptr::write_bytes(ptr, 0, pool_size * 12);
+        }
+
+        // Zero grid density
+        unsafe {
+            let ptr = buffer_ptr(&grid_density) as *mut u8;
+            std::ptr::write_bytes(ptr, 0, GRID_CELLS * 4);
+        }
+
+        // Zero indirect args
+        unsafe {
+            let ptr = buffer_ptr(&indirect_args) as *mut u32;
+            std::ptr::write(ptr, 0u32);
+            std::ptr::write(ptr.add(1), 0u32);
+            std::ptr::write(ptr.add(2), 0u32);
+            std::ptr::write(ptr.add(3), 0u32);
+        }
+
+        // Zero gpu_emission_params
+        unsafe {
+            let ptr = buffer_ptr(&gpu_emission_params) as *mut u32;
+            std::ptr::write(ptr, 0u32);
+            std::ptr::write(ptr.add(1), 0u32);
+            std::ptr::write(ptr.add(2), 0u32);
+            std::ptr::write(ptr.add(3), 0u32);
+        }
+
+        // Bootstrap update_dispatch_args: pool_size/256 threadgroups for first frame
+        unsafe {
+            let ptr = buffer_ptr(&update_dispatch_args) as *mut u32;
+            std::ptr::write(ptr, ((pool_size + 255) / 256) as u32);
+            std::ptr::write(ptr.add(1), 1u32);
+            std::ptr::write(ptr.add(2), 1u32);
+        }
+
+        // Zero emission_dispatch_args (prepare_dispatch will write correct values)
+        unsafe {
+            let ptr = buffer_ptr(&emission_dispatch_args) as *mut u32;
+            std::ptr::write(ptr, 0u32);
+            std::ptr::write(ptr.add(1), 1u32);
+            std::ptr::write(ptr.add(2), 1u32);
+        }
+
+        Self {
+            uniforms,
+            dead_list,
+            alive_list_a,
+            alive_list_b,
+            positions,
+            velocities,
+            lifetimes,
+            colors,
+            sizes,
+            grid_density,
+            indirect_args,
+            gpu_emission_params,
+            update_dispatch_args,
+            emission_dispatch_args,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// test_indirect_dispatch_round_trip: full 6-kernel pipeline
+// ---------------------------------------------------------------------------
+
+/// GPU integration test: indirect dispatch round-trip.
+///
+/// Runs the full 6-kernel pipeline:
+///   prepare_dispatch -> emission (indirect) -> grid_clear -> grid_populate -> update -> sync_indirect_args
+///
+/// Pool size 1000, base_emission_rate=100, burst=0.
+/// After full pipeline:
+///   - Read indirect_args.instanceCount: verify alive count > 0 and <= 100
+///   - Verify conservation: alive_count + dead_count == pool_size
+#[test]
+fn test_indirect_dispatch_round_trip() {
+    let pool_size: usize = 1000;
+
+    let ctx = GpuTestContextFullPipeline::new();
+    let bufs = FullPipelineBuffers::new(&ctx.device, pool_size);
+
+    // --- Step 1: prepare_dispatch ---
+    // Reads dead_list counter, computes emission params, writes emission_dispatch_args,
+    // resets alive_list_b counter (write_list) to 0.
+    {
+        let cmd_buf = ctx.queue.commandBuffer().expect("cmd buf");
+        let encoder = cmd_buf.computeCommandEncoder().expect("encoder");
+        encoder.setComputePipelineState(&ctx.prepare_dispatch_pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&bufs.dead_list), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.uniforms), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.alive_list_b), 0, 2); // write_list
+            encoder.setBuffer_offset_atIndex(Some(&bufs.emission_dispatch_args), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.gpu_emission_params), 0, 4);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize { width: 1, height: 1, depth: 1 },
+            MTLSize { width: 32, height: 1, depth: 1 },
+        );
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+    }
+
+    // Verify prepare_dispatch set emission_count correctly
+    let emission_count = unsafe {
+        let ptr = bufs.gpu_emission_params.contents().as_ptr() as *const u32;
+        std::ptr::read(ptr)
+    };
+    assert_eq!(
+        emission_count, 100,
+        "prepare_dispatch should set emission_count = min(100+0, 1000) = 100, got {}",
+        emission_count
+    );
+
+    // --- Step 2: emission (indirect dispatch) ---
+    // Uses emission_dispatch_args for threadgroup count (computed by prepare_dispatch).
+    // Emission writes to alive_list_a (the read_list for this first frame).
+    {
+        let cmd_buf = ctx.queue.commandBuffer().expect("cmd buf");
+        let encoder = cmd_buf.computeCommandEncoder().expect("encoder");
+        encoder.setComputePipelineState(&ctx.emission_pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&bufs.uniforms), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.dead_list), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.alive_list_a), 0, 2); // emission target
+            encoder.setBuffer_offset_atIndex(Some(&bufs.positions), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.velocities), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.lifetimes), 0, 5);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.colors), 0, 6);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.sizes), 0, 7);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.gpu_emission_params), 0, 8);
+            // Indirect dispatch using emission_dispatch_args
+            encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                &bufs.emission_dispatch_args,
+                0,
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+        }
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+    }
+
+    // Verify emission happened
+    let alive_after_emission = unsafe { read_counter(&bufs.alive_list_a) };
+    assert_eq!(
+        alive_after_emission, 100,
+        "Emission should produce 100 alive particles, got {}",
+        alive_after_emission
+    );
+
+    // --- Step 3: grid_clear ---
+    {
+        let cmd_buf = ctx.queue.commandBuffer().expect("cmd buf");
+        let encoder = cmd_buf.computeCommandEncoder().expect("encoder");
+        encoder.setComputePipelineState(&ctx.grid_clear_pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&bufs.grid_density), 0, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize { width: 1024, height: 1, depth: 1 },
+            MTLSize { width: 256, height: 1, depth: 1 },
+        );
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+    }
+
+    // --- Step 4: grid_populate (indirect dispatch via update_dispatch_args) ---
+    // grid_populate reads alive_list_a (read_list) and writes to grid_density.
+    {
+        let cmd_buf = ctx.queue.commandBuffer().expect("cmd buf");
+        let encoder = cmd_buf.computeCommandEncoder().expect("encoder");
+        encoder.setComputePipelineState(&ctx.grid_populate_pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&bufs.uniforms), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.alive_list_a), 0, 1); // read_list
+            encoder.setBuffer_offset_atIndex(Some(&bufs.positions), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.grid_density), 0, 3);
+            // Indirect dispatch using update_dispatch_args (bootstrap value)
+            encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                &bufs.update_dispatch_args,
+                0,
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+        }
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+    }
+
+    // --- Step 5: update (indirect dispatch via update_dispatch_args) ---
+    // Reads alive_list_a, writes survivors to alive_list_b.
+    {
+        let cmd_buf = ctx.queue.commandBuffer().expect("cmd buf");
+        let encoder = cmd_buf.computeCommandEncoder().expect("encoder");
+        encoder.setComputePipelineState(&ctx.update_pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&bufs.uniforms), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.dead_list), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.alive_list_a), 0, 2); // read
+            encoder.setBuffer_offset_atIndex(Some(&bufs.alive_list_b), 0, 3); // write
+            encoder.setBuffer_offset_atIndex(Some(&bufs.positions), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.velocities), 0, 5);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.lifetimes), 0, 6);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.colors), 0, 7);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.sizes), 0, 8);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.grid_density), 0, 9);
+            // Indirect dispatch using update_dispatch_args
+            encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                &bufs.update_dispatch_args,
+                0,
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+        }
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+    }
+
+    // --- Step 6: sync_indirect_args ---
+    // Reads alive_list_b counter, writes DrawArgs and update_dispatch_args.
+    {
+        let cmd_buf = ctx.queue.commandBuffer().expect("cmd buf");
+        let encoder = cmd_buf.computeCommandEncoder().expect("encoder");
+        encoder.setComputePipelineState(&ctx.sync_indirect_pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&bufs.alive_list_b), 0, 0); // write_list
+            encoder.setBuffer_offset_atIndex(Some(&bufs.indirect_args), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&bufs.update_dispatch_args), 0, 2);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize { width: 1, height: 1, depth: 1 },
+            MTLSize { width: 1, height: 1, depth: 1 },
+        );
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+    }
+
+    // --- Verify results ---
+
+    // Read alive count from indirect_args (DrawArgs.instanceCount at offset 1)
+    let alive_count = unsafe {
+        let ptr = bufs.indirect_args.contents().as_ptr() as *const u32;
+        std::ptr::read(ptr.add(1)) // instanceCount
+    };
+
+    assert!(
+        alive_count > 0,
+        "alive_count should be > 0 after full pipeline, got 0",
+    );
+    assert!(
+        alive_count <= 100,
+        "alive_count should be <= 100 (emission_count), got {}",
+        alive_count
+    );
+
+    // Read dead_count from dead_list counter
+    let dead_count = unsafe { read_counter(&bufs.dead_list) };
+
+    // Conservation invariant: alive_count + dead_count == pool_size
+    assert_eq!(
+        alive_count + dead_count,
+        pool_size as u32,
+        "Conservation invariant failed: alive({}) + dead({}) = {} != pool_size({})",
+        alive_count,
+        dead_count,
+        alive_count + dead_count,
+        pool_size
+    );
+
+    println!(
+        "test_indirect_dispatch_round_trip PASSED: alive={}, dead={}, conservation OK (sum={})",
+        alive_count, dead_count, alive_count + dead_count
+    );
+}
+
+// ---------------------------------------------------------------------------
+// test_write_list_reset_by_gpu: verify prepare_dispatch resets write_list counter
+// ---------------------------------------------------------------------------
+
+/// GPU integration test: write_list counter reset by prepare_dispatch.
+///
+/// Manually sets write_list counter to 999, runs prepare_dispatch,
+/// verifies counter is reset to 0.
+#[test]
+fn test_write_list_reset_by_gpu() {
+    let pool_size: usize = 1000;
+
+    let device = MTLCreateSystemDefaultDevice().expect("No Metal device available");
+    let queue = device
+        .newCommandQueue()
+        .expect("Failed to create command queue");
+
+    let metallib_path = find_metallib();
+    let path_ns = NSString::from_str(&metallib_path);
+    #[allow(deprecated)]
+    let library = device
+        .newLibraryWithFile_error(&path_ns)
+        .expect("Failed to load shaders.metallib");
+
+    let prepare_pipeline = create_pipeline(&device, &library, "prepare_dispatch");
+
+    let counter_list_size = COUNTER_HEADER_SIZE + pool_size * 4;
+
+    // Allocate buffers
+    let dead_list = alloc_buffer(&device, counter_list_size);
+    let uniforms_buf = alloc_buffer(&device, 256);
+    let write_list = alloc_buffer(&device, counter_list_size);
+    let emission_dispatch_args = alloc_buffer(&device, 12);
+    let gpu_emission_params = alloc_buffer(&device, 16);
+
+    // Initialize dead_list with some particles
+    unsafe {
+        let ptr = buffer_ptr(&dead_list) as *mut u32;
+        std::ptr::write(ptr, 500u32);
+        std::ptr::write(ptr.add(1), 0u32);
+        std::ptr::write(ptr.add(2), 0u32);
+        std::ptr::write(ptr.add(3), 0u32);
+        for i in 0..500usize {
+            std::ptr::write(ptr.add(COUNTER_HEADER_UINTS + i), i as u32);
+        }
+    }
+
+    // Initialize uniforms
+    unsafe {
+        let ptr = buffer_ptr(&uniforms_buf) as *mut Uniforms;
+        let mut u = Uniforms::default();
+        u.base_emission_rate = 100;
+        u.pool_size = pool_size as u32;
+        u.burst_count = 0;
+        std::ptr::write(ptr, u);
+    }
+
+    // Set write_list counter to 999 manually (the value we want the GPU to reset)
+    unsafe {
+        let ptr = buffer_ptr(&write_list) as *mut u32;
+        std::ptr::write(ptr, 999u32);
+    }
+
+    // Verify it's set
+    let counter_before = unsafe { read_counter(&write_list) };
+    assert_eq!(counter_before, 999, "write_list counter should be 999 before prepare_dispatch");
+
+    // Dispatch prepare_dispatch
+    dispatch_prepare_dispatch(
+        &device,
+        &queue,
+        &prepare_pipeline,
+        &dead_list,
+        &uniforms_buf,
+        &write_list,
+        &emission_dispatch_args,
+        &gpu_emission_params,
+    );
+
+    // Read back write_list counter: should be 0
+    let counter_after = unsafe { read_counter(&write_list) };
+    assert_eq!(
+        counter_after, 0,
+        "write_list counter should be reset to 0 by prepare_dispatch, got {}",
+        counter_after
+    );
+
+    println!(
+        "test_write_list_reset_by_gpu PASSED: counter before={}, after={}",
+        counter_before, counter_after
+    );
+}
