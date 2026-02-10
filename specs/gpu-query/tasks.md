@@ -160,7 +160,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-6_
   - _Design: Kernel 8: Schema Inference_
 
-- [ ] 2.7 Dictionary encoding for strings
+- [x] 2.7 Dictionary encoding for strings
   - **Do**: Create `shaders/dict_build.metal` with `build_dictionary` kernel (sort-based dedup). Create `src/storage/dictionary.rs` with adaptive encoding: dict if <10K distinct, offset+data otherwise. Wire into filter kernel for string equality (compare dict indices).
   - **Files**: `gpu-query/shaders/dict_build.metal`, `gpu-query/src/storage/dictionary.rs`
   - **Done when**: String columns dictionary-encoded; WHERE region = 'Europe' works via integer comparison

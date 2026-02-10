@@ -417,3 +417,151 @@ fn test_float_filter_eq() {
     let indices = bitmask_to_indices(&bitmask, data.len());
     assert_eq!(indices, vec![1, 2, 4]);
 }
+
+// ---- String filter tests (dictionary-encoded via executor) ----
+
+use std::io::Write;
+use std::path::Path;
+use tempfile::TempDir;
+use gpu_query::gpu::executor::QueryExecutor;
+use gpu_query::io::catalog;
+
+/// Helper: create a CSV file in a directory.
+fn make_csv(dir: &Path, name: &str, content: &str) {
+    let path = dir.join(name);
+    let mut f = std::fs::File::create(&path).expect("create csv file");
+    f.write_all(content.as_bytes()).expect("write csv");
+    f.flush().expect("flush csv");
+}
+
+/// Helper: run a SQL query against a CSV file directory.
+fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
+    let cat = catalog::scan_directory(dir).expect("scan directory");
+    let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
+    let physical_plan =
+        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let mut executor = QueryExecutor::new().expect("create executor");
+    executor
+        .execute(&physical_plan, &cat)
+        .expect("execute query")
+}
+
+#[test]
+fn test_string_filter_eq_europe() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,region,amount\n\
+               1,Europe,100\n\
+               2,Asia,200\n\
+               3,Europe,300\n\
+               4,Africa,400\n\
+               5,Asia,500\n\
+               6,Europe,600\n";
+    make_csv(tmp.path(), "sales.csv", csv);
+
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE region = 'Europe'",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "3", "Should match 3 rows where region = 'Europe'");
+}
+
+#[test]
+fn test_string_filter_nonexistent_value() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,region,amount\n\
+               1,Europe,100\n\
+               2,Asia,200\n\
+               3,Africa,300\n";
+    make_csv(tmp.path(), "sales.csv", csv);
+
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE region = 'Antarctica'",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "0", "Nonexistent value should return 0 rows");
+}
+
+#[test]
+fn test_string_filter_all_match() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,region,amount\n\
+               1,Europe,100\n\
+               2,Europe,200\n\
+               3,Europe,300\n";
+    make_csv(tmp.path(), "sales.csv", csv);
+
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE region = 'Europe'",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "3", "All rows should match");
+}
+
+#[test]
+fn test_string_filter_single_match() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,region,amount\n\
+               1,Europe,100\n\
+               2,Asia,200\n\
+               3,Africa,300\n";
+    make_csv(tmp.path(), "sales.csv", csv);
+
+    let result = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE region = 'Asia'",
+    );
+    assert_eq!(result.row_count, 1);
+    assert_eq!(result.rows[0][0], "1", "Should match exactly 1 row");
+}
+
+#[test]
+fn test_string_filter_with_sum() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,region,amount\n\
+               1,Europe,100\n\
+               2,Asia,200\n\
+               3,Europe,300\n\
+               4,Africa,400\n\
+               5,Europe,500\n";
+    make_csv(tmp.path(), "sales.csv", csv);
+
+    let result = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM sales WHERE region = 'Europe'",
+    );
+    assert_eq!(result.row_count, 1);
+    // Europe rows: amount 100 + 300 + 500 = 900
+    assert_eq!(result.rows[0][0], "900", "SUM of Europe amounts should be 900");
+}
+
+#[test]
+fn test_string_filter_group_by_region() {
+    let tmp = TempDir::new().unwrap();
+    let csv = "id,region,amount\n\
+               1,Europe,100\n\
+               2,Asia,200\n\
+               3,Europe,300\n\
+               4,Africa,400\n\
+               5,Asia,500\n";
+    make_csv(tmp.path(), "sales.csv", csv);
+
+    let result = run_query(
+        tmp.path(),
+        "SELECT region, sum(amount) FROM sales GROUP BY region",
+    );
+    assert_eq!(result.row_count, 3, "Should have 3 groups");
+
+    // Groups sorted alphabetically: Africa, Asia, Europe
+    let groups: Vec<(&str, &str)> = result
+        .rows
+        .iter()
+        .map(|r| (r[0].as_str(), r[1].as_str()))
+        .collect();
+    assert_eq!(
+        groups,
+        vec![("Africa", "400"), ("Asia", "700"), ("Europe", "400")]
+    );
+}

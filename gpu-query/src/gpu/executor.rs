@@ -29,6 +29,7 @@ use crate::io::parquet::{self, ColumnData};
 use crate::sql::physical_plan::PhysicalPlan;
 use crate::sql::types::{AggFunc, CompareOp, Value};
 use crate::storage::columnar::ColumnarBatch;
+use crate::storage::dictionary::Dictionary;
 use crate::storage::schema::{ColumnDef, DataType, RuntimeSchema};
 
 /// Result of executing a query.
@@ -285,8 +286,16 @@ impl QueryExecutor {
                 let mmap = MmapFile::open(&entry.path)
                     .map_err(|e| format!("Failed to mmap '{}': {}", entry.path.display(), e))?;
 
-                // Run GPU CSV parse pipeline
-                let batch = self.gpu_parse_csv(&mmap, &schema, csv_meta.delimiter);
+                // Run GPU CSV parse pipeline (handles int/float columns)
+                let mut batch = self.gpu_parse_csv(&mmap, &schema, csv_meta.delimiter);
+
+                // Build dictionaries for VARCHAR columns from raw CSV data (CPU-side)
+                build_csv_dictionaries(
+                    &entry.path,
+                    csv_meta,
+                    &schema,
+                    &mut batch,
+                )?;
 
                 Ok(ScanResult {
                     _mmap: mmap,
@@ -403,7 +412,10 @@ impl QueryExecutor {
         let mmap = MmapFile::open(path)
             .map_err(|e| format!("Failed to mmap '{}': {}", path.display(), e))?;
 
-        let batch = self.gpu_parse_json(&mmap, &schema);
+        let mut batch = self.gpu_parse_json(&mmap, &schema);
+
+        // Build dictionaries for VARCHAR columns from raw NDJSON data (CPU-side)
+        build_json_dictionaries(path, &schema, &mut batch)?;
 
         Ok(ScanResult {
             _mmap: mmap,
@@ -752,52 +764,108 @@ impl QueryExecutor {
             .ok_or_else(|| format!("Column '{}' not found in schema", column))?;
         let col_def = &scan.schema.columns[col_idx];
 
-        // Determine the GPU column type and which buffer to use
-        let (gpu_col_type, data_buffer, compare_int, compare_float) = match col_def.data_type {
-            DataType::Int64 => {
-                // Find the local index among INT64 columns
-                let local_idx = scan
-                    .schema
-                    .columns[..col_idx]
-                    .iter()
-                    .filter(|c| c.data_type == DataType::Int64)
-                    .count();
+        // Determine the GPU column type and which buffer to use.
+        // For Varchar, we create a temporary buffer with dict codes as i64.
+        // The _temp_owned_buffer keeps it alive for the GPU dispatch.
+        let (gpu_col_type, compare_int, compare_float);
+        let _temp_owned_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>;
+        let data_buffer: &ProtocolObject<dyn MTLBuffer>;
 
+        match col_def.data_type {
+            DataType::Int64 => {
                 let int_val = match value {
                     Value::Int(v) => *v,
                     Value::Float(v) => *v as i64,
                     _ => return Err(format!("Cannot compare INT64 column to {:?}", value)),
                 };
-
-                // The int_buffer holds all INT64 columns in SoA layout.
-                // For column at local_idx, data starts at offset local_idx * max_rows * sizeof(i64).
-                let offset = local_idx * scan.batch.max_rows * std::mem::size_of::<i64>();
-
-                (ColumnTypeCode::Int64, &scan.batch.int_buffer, int_val, 0.0f64)
+                gpu_col_type = ColumnTypeCode::Int64;
+                compare_int = int_val;
+                compare_float = 0.0f64;
+                data_buffer = &scan.batch.int_buffer;
+                _temp_owned_buffer = None;
             }
             DataType::Float64 => {
-                let local_idx = scan
-                    .schema
-                    .columns[..col_idx]
-                    .iter()
-                    .filter(|c| c.data_type == DataType::Float64)
-                    .count();
-
                 let float_val = match value {
                     Value::Float(v) => *v as f32,
                     Value::Int(v) => *v as f32,
                     _ => return Err(format!("Cannot compare FLOAT64 column to {:?}", value)),
                 };
-
-                let offset = local_idx * scan.batch.max_rows * std::mem::size_of::<f32>();
                 let float_bits = float_val.to_bits() as i32;
+                gpu_col_type = ColumnTypeCode::Float64;
+                compare_int = 0i64;
+                compare_float = f64::from_bits(float_bits as u32 as u64);
+                data_buffer = &scan.batch.float_buffer;
+                _temp_owned_buffer = None;
+            }
+            DataType::Varchar => {
+                // Dictionary-encoded string column: look up the comparison value's
+                // dict code on CPU, then filter on dict codes using INT64 filter kernel.
+                let local_idx = scan
+                    .schema
+                    .columns[..col_idx]
+                    .iter()
+                    .filter(|c| c.data_type == DataType::Varchar)
+                    .count();
 
-                (
-                    ColumnTypeCode::Float64,
-                    &scan.batch.float_buffer,
-                    0i64,
-                    f64::from_bits(float_bits as u32 as u64),
-                )
+                let str_val = match value {
+                    Value::Str(s) => s.as_str(),
+                    _ => return Err(format!("Cannot compare VARCHAR column to {:?}", value)),
+                };
+
+                // Look up string value in the column's dictionary
+                let dict = scan
+                    .batch
+                    .dictionaries
+                    .get(col_idx)
+                    .and_then(|d| d.as_ref())
+                    .ok_or_else(|| {
+                        format!("No dictionary for VARCHAR column '{}'", column)
+                    })?;
+
+                // Encode the comparison value. If not in dict, no rows can match.
+                let dict_code = match dict.encode(str_val) {
+                    Some(code) => code as i64,
+                    None => {
+                        // Value not in dictionary -> 0 matches. Return empty result.
+                        let bitmask_buffer =
+                            encode::alloc_buffer(&self.device.device, std::cmp::max(bitmask_words * 4, 4));
+                        let match_count_buffer = encode::alloc_buffer(&self.device.device, 4);
+                        let dispatch_args_buffer = encode::alloc_buffer(
+                            &self.device.device,
+                            std::mem::size_of::<crate::gpu::types::DispatchArgs>(),
+                        );
+                        unsafe {
+                            let ptr = bitmask_buffer.contents().as_ptr() as *mut u32;
+                            for i in 0..bitmask_words {
+                                *ptr.add(i) = 0;
+                            }
+                            let cp = match_count_buffer.contents().as_ptr() as *mut u32;
+                            *cp = 0;
+                        }
+                        return Ok(FilterResult {
+                            bitmask_buffer,
+                            match_count_buffer,
+                            dispatch_args_buffer,
+                            match_count_cached: std::cell::Cell::new(Some(0)),
+                            row_count,
+                        });
+                    }
+                };
+
+                // Re-upload dict codes as i64 values to a temporary buffer
+                // for the INT64 filter kernel.
+                let dict_codes = unsafe { scan.batch.read_string_dict_column(local_idx) };
+                let codes_as_i64: Vec<i64> = dict_codes.iter().map(|&c| c as i64).collect();
+                let temp = encode::alloc_buffer_with_data(&self.device.device, &codes_as_i64);
+
+                gpu_col_type = ColumnTypeCode::Int64;
+                compare_int = dict_code;
+                compare_float = 0.0f64;
+                _temp_owned_buffer = Some(temp);
+                // This is safe: _temp_owned_buffer keeps the Retained alive
+                // until end of function, and the GPU dispatch completes synchronously
+                // (waitUntilCompleted) before we return.
+                data_buffer = _temp_owned_buffer.as_ref().unwrap();
             }
             _ => {
                 return Err(format!(
@@ -805,7 +873,7 @@ impl QueryExecutor {
                     col_def.data_type
                 ))
             }
-        };
+        }
 
         // Convert SQL CompareOp to GPU CompareOp
         let gpu_compare_op = match compare_op {
@@ -860,6 +928,7 @@ impl QueryExecutor {
 
         // For multi-column SoA buffers, we need to set buffer offset to point at
         // the correct column's data within the shared buffer.
+        // For Varchar, the temp buffer contains only this column's data at offset 0.
         let col_local_idx = match col_def.data_type {
             DataType::Int64 => scan.schema.columns[..col_idx]
                 .iter()
@@ -877,6 +946,7 @@ impl QueryExecutor {
             DataType::Float64 => {
                 col_local_idx * scan.batch.max_rows * std::mem::size_of::<f32>()
             }
+            DataType::Varchar => 0, // temp buffer has data at offset 0
             _ => 0,
         };
 
@@ -1318,8 +1388,35 @@ impl QueryExecutor {
                     let vals = unsafe { scan_result.batch.read_float_column(local_idx) };
                     col_data.push(ColumnValues::Float64(vals));
                 }
+                DataType::Varchar => {
+                    // Read dict-encoded strings from the string_dict_buffer
+                    let local_idx = scan_result.schema.columns[..col_idx]
+                        .iter()
+                        .filter(|c| c.data_type == DataType::Varchar)
+                        .count();
+                    let dict_codes = unsafe {
+                        scan_result.batch.read_string_dict_column(local_idx)
+                    };
+                    let dict = scan_result.batch.dictionaries.get(col_idx)
+                        .and_then(|d| d.as_ref());
+                    let vals: Vec<String> = dict_codes
+                        .iter()
+                        .map(|&code| {
+                            if let Some(d) = dict {
+                                if (code as usize) < d.len() {
+                                    d.decode(code).to_string()
+                                } else {
+                                    "NULL".to_string()
+                                }
+                            } else {
+                                "".to_string()
+                            }
+                        })
+                        .collect();
+                    col_data.push(ColumnValues::Varchar(vals));
+                }
                 _ => {
-                    // Varchar columns: placeholder empty strings
+                    // Other unsupported types: placeholder empty strings
                     let vals = vec!["".to_string(); row_count as usize];
                     col_data.push(ColumnValues::Varchar(vals));
                 }
@@ -1415,14 +1512,29 @@ impl QueryExecutor {
                     col_readers.push(GroupColumnReader::Float64(vals));
                 }
                 DataType::Varchar => {
-                    // For varchar GROUP BY, we need raw string data.
-                    // Read from the original file source (CPU fallback).
-                    // For now, return a placeholder error - varchar GROUP BY
-                    // requires dictionary encoding which is task 2.7
-                    return Err(format!(
-                        "GROUP BY on VARCHAR column '{}' not yet supported (requires dictionary encoding)",
-                        g_col_name
-                    ));
+                    // Read dict-encoded VARCHAR column and decode to strings
+                    let local_idx = scan.schema.columns[..col_idx]
+                        .iter()
+                        .filter(|c| c.data_type == DataType::Varchar)
+                        .count();
+                    let dict_codes = unsafe { scan.batch.read_string_dict_column(local_idx) };
+                    let dict = scan.batch.dictionaries.get(col_idx)
+                        .and_then(|d| d.as_ref());
+                    let vals: Vec<String> = dict_codes
+                        .iter()
+                        .map(|&code| {
+                            if let Some(d) = dict {
+                                if (code as usize) < d.len() {
+                                    d.decode(code).to_string()
+                                } else {
+                                    "NULL".to_string()
+                                }
+                            } else {
+                                "".to_string()
+                            }
+                        })
+                        .collect();
+                    col_readers.push(GroupColumnReader::Varchar(vals));
                 }
                 _ => {
                     return Err(format!(
@@ -1448,6 +1560,9 @@ impl QueryExecutor {
                             }
                             GroupColumnReader::Float64(vals) => {
                                 key_parts.push(format!("{}", vals[i]));
+                            }
+                            GroupColumnReader::Varchar(vals) => {
+                                key_parts.push(vals[i].clone());
                             }
                         }
                     }
@@ -1871,6 +1986,7 @@ enum ColumnValues {
 enum GroupColumnReader {
     Int64(Vec<i64>),
     Float64(Vec<f32>),
+    Varchar(Vec<String>),
 }
 
 /// Column data for CPU-side grouped aggregation.
@@ -2075,4 +2191,179 @@ pub fn infer_schema_from_csv(
     }
 
     Ok(RuntimeSchema::new(columns))
+}
+
+/// Build dictionaries for VARCHAR columns in a CSV file (CPU-side).
+///
+/// After the GPU has parsed int/float columns, this function reads the raw CSV
+/// on CPU to extract string column values, builds dictionaries for each VARCHAR
+/// column, encodes values as u32 dict codes, and writes them to the batch's
+/// string_dict_buffer.
+fn build_csv_dictionaries(
+    path: &std::path::Path,
+    csv_meta: &crate::io::csv::CsvMetadata,
+    schema: &RuntimeSchema,
+    batch: &mut ColumnarBatch,
+) -> Result<(), String> {
+    use std::io::BufRead;
+
+    // Check if there are any VARCHAR columns
+    let varchar_count = schema.count_type(DataType::Varchar);
+    if varchar_count == 0 {
+        return Ok(());
+    }
+
+    // Read the entire CSV to extract string column values
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
+    let reader = std::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let delimiter = csv_meta.delimiter as char;
+
+    // Skip header
+    let _header = lines.next();
+
+    // Identify which columns are VARCHAR and their local indices
+    let varchar_cols: Vec<(usize, usize)> = schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.data_type == DataType::Varchar)
+        .enumerate()
+        .map(|(local_idx, (global_idx, _))| (global_idx, local_idx))
+        .collect();
+
+    // Collect string values for each VARCHAR column
+    let mut col_values: Vec<Vec<String>> = vec![Vec::new(); varchar_count];
+
+    for line_result in lines {
+        let line = line_result.map_err(|e| format!("Cannot read CSV row: {}", e))?;
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let fields: Vec<&str> = trimmed.split(delimiter).collect();
+
+        for &(global_idx, local_idx) in &varchar_cols {
+            let field = fields.get(global_idx).map(|s| s.trim()).unwrap_or("");
+            col_values[local_idx].push(field.to_string());
+        }
+    }
+
+    // Build dictionaries and encode values for each VARCHAR column
+    for &(global_idx, local_idx) in &varchar_cols {
+        let values = &col_values[local_idx];
+
+        if let Some(dict) = Dictionary::build(values) {
+            let encoded = dict.encode_column(values);
+
+            // Write encoded dict codes to the string_dict_buffer at the correct offset
+            let offset = local_idx * batch.max_rows;
+            unsafe {
+                let ptr = batch.string_dict_buffer.contents().as_ptr() as *mut u32;
+                for (i, &code) in encoded.iter().enumerate() {
+                    *ptr.add(offset + i) = code;
+                }
+            }
+
+            batch.dictionaries[global_idx] = Some(dict);
+        }
+    }
+
+    Ok(())
+}
+
+/// Build dictionaries for VARCHAR columns in an NDJSON file (CPU-side).
+///
+/// Similar to build_csv_dictionaries but parses NDJSON records.
+fn build_json_dictionaries(
+    path: &std::path::Path,
+    schema: &RuntimeSchema,
+    batch: &mut ColumnarBatch,
+) -> Result<(), String> {
+    use std::io::BufRead;
+
+    let varchar_count = schema.count_type(DataType::Varchar);
+    if varchar_count == 0 {
+        return Ok(());
+    }
+
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
+    let reader = std::io::BufReader::new(file);
+
+    // Identify VARCHAR columns
+    let varchar_cols: Vec<(usize, usize)> = schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.data_type == DataType::Varchar)
+        .enumerate()
+        .map(|(local_idx, (global_idx, _))| (global_idx, local_idx))
+        .collect();
+
+    let mut col_values: Vec<Vec<String>> = vec![Vec::new(); varchar_count];
+
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|e| format!("Cannot read JSON line: {}", e))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Simple JSON field extraction: find "field_name":"value" or "field_name":value
+        for &(global_idx, local_idx) in &varchar_cols {
+            let col_name = &schema.columns[global_idx].name;
+            let pattern = format!("\"{}\":", col_name);
+            if let Some(pos) = trimmed.find(&pattern) {
+                let after = &trimmed[pos + pattern.len()..];
+                let value = extract_json_string_value(after);
+                col_values[local_idx].push(value);
+            } else {
+                col_values[local_idx].push(String::new());
+            }
+        }
+    }
+
+    // Build dictionaries and encode
+    for &(global_idx, local_idx) in &varchar_cols {
+        let values = &col_values[local_idx];
+
+        if let Some(dict) = Dictionary::build(values) {
+            let encoded = dict.encode_column(values);
+
+            let offset = local_idx * batch.max_rows;
+            unsafe {
+                let ptr = batch.string_dict_buffer.contents().as_ptr() as *mut u32;
+                for (i, &code) in encoded.iter().enumerate() {
+                    *ptr.add(offset + i) = code;
+                }
+            }
+
+            batch.dictionaries[global_idx] = Some(dict);
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract a JSON string value from a position right after `"key":`.
+/// Handles both quoted strings and unquoted values.
+fn extract_json_string_value(s: &str) -> String {
+    let s = s.trim_start();
+    if s.starts_with('"') {
+        // Quoted string
+        let inner = &s[1..];
+        if let Some(end) = inner.find('"') {
+            inner[..end].to_string()
+        } else {
+            inner.to_string()
+        }
+    } else {
+        // Unquoted value (number, null, bool)
+        let end = s.find(|c: char| c == ',' || c == '}' || c == ']' || c.is_whitespace())
+            .unwrap_or(s.len());
+        s[..end].to_string()
+    }
 }
