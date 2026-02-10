@@ -105,10 +105,30 @@ struct ScanResult {
 struct FilterResult {
     /// Selection bitmask (1 bit per row).
     bitmask_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
-    /// Number of matching rows.
-    match_count: u32,
+    /// GPU-resident match count buffer (avoids CPU readback between stages).
+    match_count_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Indirect dispatch args buffer for downstream kernels.
+    /// Written by `prepare_query_dispatch` kernel.
+    dispatch_args_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Cached CPU-side match count (populated lazily on first read).
+    match_count_cached: std::cell::Cell<Option<u32>>,
     /// Total row count from input.
     row_count: u32,
+}
+
+impl FilterResult {
+    /// Read match_count from GPU buffer (lazy, cached after first read).
+    fn match_count(&self) -> u32 {
+        if let Some(cached) = self.match_count_cached.get() {
+            return cached;
+        }
+        let count = unsafe {
+            let ptr = self.match_count_buffer.contents().as_ptr() as *const u32;
+            *ptr
+        };
+        self.match_count_cached.set(Some(count));
+        count
+    }
 }
 
 /// The GPU query execution engine.
@@ -156,7 +176,7 @@ impl QueryExecutor {
                 let (scan_result, filter_result) = self.resolve_input(plan, catalog)?;
                 let count = filter_result
                     .as_ref()
-                    .map(|f| f.match_count)
+                    .map(|f| f.match_count())
                     .unwrap_or(scan_result.batch.row_count as u32);
                 Ok(QueryResult {
                     columns: vec!["count".to_string()],
@@ -860,9 +880,17 @@ impl QueryExecutor {
             _ => 0,
         };
 
-        // Dispatch filter kernel
+        // Allocate indirect dispatch args buffer for downstream kernels
+        let dispatch_args_buffer = encode::alloc_buffer(
+            &self.device.device,
+            std::mem::size_of::<crate::gpu::types::DispatchArgs>(),
+        );
+
+        // Dispatch filter kernel + prepare_query_dispatch in one command buffer.
+        // This eliminates the GPU→CPU→GPU round-trip for match_count readback.
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
+            // --- Stage 1: Filter kernel ---
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("compute encoder");
@@ -892,18 +920,42 @@ impl QueryExecutor {
             encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
             encoder.endEncoding();
         }
+        {
+            // --- Stage 2: Prepare dispatch args from match_count (GPU-autonomous) ---
+            let prepare_pipeline =
+                encode::make_pipeline(&self.device.library, "prepare_query_dispatch");
+
+            let tpt = 256u32; // threads per threadgroup for downstream kernels
+            let tpt_buffer =
+                encode::alloc_buffer_with_data(&self.device.device, &[tpt]);
+
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .expect("compute encoder");
+
+            encoder.setComputePipelineState(&prepare_pipeline);
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(&match_count_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&dispatch_args_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&tpt_buffer), 0, 2);
+            }
+
+            // Single thread dispatch
+            let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+            let tg = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+            encoder.endEncoding();
+        }
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        // Read back match count
-        let match_count = unsafe {
-            let ptr = match_count_buffer.contents().as_ptr() as *const u32;
-            *ptr
-        };
-
+        // match_count is NOT read back here -- stays GPU-resident.
+        // Use FilterResult.match_count() for lazy CPU readback when needed.
         Ok(FilterResult {
             bitmask_buffer,
-            match_count,
+            match_count_buffer,
+            dispatch_args_buffer,
+            match_count_cached: std::cell::Cell::new(None),
             row_count,
         })
     }

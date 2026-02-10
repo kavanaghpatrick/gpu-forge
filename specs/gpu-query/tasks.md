@@ -142,7 +142,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-13, AC-2.5_
   - _Design: Kernel 6: Radix Sort_
 
-- [ ] 2.5 Indirect dispatch and prepare_dispatch kernel
+- [x] 2.5 Indirect dispatch and prepare_dispatch kernel
   - **Do**: Create `shaders/prepare_dispatch.metal` with `prepare_query_dispatch` kernel: read match_count from filter, compute threadgroup counts for downstream kernels. Wire into executor to eliminate CPU readback of intermediate counts. Same pattern as particle-system.
   - **Files**: `gpu-query/shaders/prepare_dispatch.metal`, update `src/gpu/executor.rs`
   - **Done when**: Query pipeline runs without CPU readback between stages; indirect dispatch correct
