@@ -615,7 +615,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-26_
   - _Design: Configurable physics parameters_
 
-- [ ] 4.2 FP16 optimization for color/lifetime/size
+- [x] 4.2 FP16 optimization for color/lifetime/size
   - **Do**:
     1. Verify shaders already use `half2` for lifetime, `half4` for color, `half` for size
     2. In `src/buffers.rs`: verify buffer sizes match FP16 field sizes (not FP32)

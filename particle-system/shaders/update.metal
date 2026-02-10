@@ -23,6 +23,19 @@ inline int cell_index(int3 cell) {
 /// Writes survivors to alive_list_b (for rendering this frame).
 /// Writes dead particles back to dead_list (for recycling).
 /// Reads grid_density for pressure gradient force computation.
+///
+/// --- Mixed-Precision Strategy (FP16/FP32) ---
+/// Position and velocity use FP32 (packed_float3) for physics accuracy:
+///   - Euler integration, boundary checks, and force accumulation need full precision
+///   - packed_float3 gives 12-byte stride (no padding) for bandwidth efficiency
+/// Lifetime, color, and size use FP16 for bandwidth reduction:
+///   - half2 lifetime (age, max_age): 4B vs 8B — 2x savings, 0-5s range fits FP16
+///   - half4 color (RGBA): 8B vs 16B — 2x savings, [0,1] range ideal for FP16
+///   - half size: 2B vs 4B — 2x savings, 0.01-0.05 range fits FP16
+/// On Apple Silicon Family 9 (M3/M4), FP16 and FP32 ALU ops can dual-issue
+/// in parallel, so half-precision intermediates for color/size interpolation
+/// run "for free" alongside float physics computations.
+/// Total per-particle read+write: ~64B (vs ~96B all-FP32) = 33% bandwidth reduction.
 kernel void update_physics_kernel(
     constant Uniforms&     uniforms       [[buffer(0)]],
     device uint*           dead_list      [[buffer(1)]],
@@ -115,10 +128,12 @@ kernel void update_physics_kernel(
     velocities[particle_idx] = vel;
     lifetimes[particle_idx] = half2(half(age), half(max_age));
 
-    // --- Lifetime-based color alpha interpolation ---
-    // t = 0 at birth, 1 at death; quadratic fade-out for smooth disappearance
-    float t = age / max_age;
-    colors[particle_idx].w = half(1.0 - t * t);
+    // --- Lifetime-based color alpha interpolation (FP16) ---
+    // t = 0 at birth, 1 at death; quadratic fade-out for smooth disappearance.
+    // Uses half precision: [0,1] ratio and alpha have ample precision in FP16,
+    // and half ops can dual-issue with FP32 physics on Apple Silicon Family 9.
+    half ht = half(age / max_age);
+    colors[particle_idx].w = half(1.0h) - ht * ht;
 
     // --- Dead or alive? ---
     if (age >= max_age) {

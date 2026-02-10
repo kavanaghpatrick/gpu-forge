@@ -30,7 +30,7 @@ pub struct ParticlePool {
     pub lifetimes: Retained<ProtocolObject<dyn MTLBuffer>>,
     /// half4 per particle (8 bytes each): (r, g, b, a).
     pub colors: Retained<ProtocolObject<dyn MTLBuffer>>,
-    /// half per particle, padded to 4 bytes each.
+    /// half per particle (2 bytes each, FP16).
     pub sizes: Retained<ProtocolObject<dyn MTLBuffer>>,
 
     // --- Free / alive lists ---
@@ -389,8 +389,8 @@ mod tests {
         assert_eq!(pool.lifetimes.length(), 1_000_000 * 4);
         // Color buffer: 1M * 8 bytes (half4)
         assert_eq!(pool.colors.length(), 1_000_000 * 8);
-        // Size buffer: 1M * 4 bytes (half padded)
-        assert_eq!(pool.sizes.length(), 1_000_000 * 4);
+        // Size buffer: 1M * 2 bytes (half, FP16)
+        assert_eq!(pool.sizes.length(), 1_000_000 * 2);
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(pool.velocities.length(), 2000 * 12);
         assert_eq!(pool.lifetimes.length(), 2000 * 4);
         assert_eq!(pool.colors.length(), 2000 * 8);
-        assert_eq!(pool.sizes.length(), 2000 * 4);
+        assert_eq!(pool.sizes.length(), 2000 * 2);
     }
 
     #[test]

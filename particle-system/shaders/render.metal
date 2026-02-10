@@ -1,6 +1,7 @@
 #include "types.h"
 
 /// Vertex output / fragment input for particle billboard quads.
+/// Color uses half4 for bandwidth: [0,1] RGBA fits FP16 precision.
 struct VertexOut {
     float4 position [[position]];
     half4  color;
@@ -18,6 +19,12 @@ struct VertexOut {
 /// Billboard approach: extract camera right/up from view matrix columns,
 /// offset quad vertices in world space so quads always face camera.
 /// Lifetime-based size shrink (30% at death) and alpha fade computed here.
+///
+/// --- FP16 Buffer Reads ---
+/// Colors (half4), sizes (half), and lifetimes (half2) are read as FP16
+/// directly from SoA buffers. The vertex shader promotes size/lifetime to
+/// float for world-space transform math (needs full precision for MVP),
+/// but keeps color as half4 through to fragment output.
 vertex VertexOut vertex_main(
     uint                   vertex_id    [[vertex_id]],
     uint                   instance_id  [[instance_id]],
