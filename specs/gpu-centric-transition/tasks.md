@@ -72,7 +72,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1, FR-3_
   - _Design: Section 3.5_
 
-- [ ] 1.6 Add new buffers to ParticlePool and prepare_dispatch pipeline to GpuState
+- [x] 1.6 Add new buffers to ParticlePool and prepare_dispatch pipeline to GpuState
   - **Do**:
     1. In `buffers.rs` ParticlePool struct, add fields:
        - `pub emission_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>` (12 bytes)

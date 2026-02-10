@@ -28,6 +28,7 @@ pub struct GpuState {
     pub grid_clear_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub grid_populate_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub sync_indirect_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub prepare_dispatch_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub render_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub depth_stencil_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
 }
@@ -107,6 +108,16 @@ impl GpuState {
             .newComputePipelineStateWithFunction_error(&sync_fn)
             .expect("Failed to create sync_indirect_args compute pipeline");
 
+        // Create compute pipeline for prepare_dispatch kernel
+        let prepare_dispatch_fn_name = NSString::from_str("prepare_dispatch");
+        let prepare_dispatch_fn = library
+            .newFunctionWithName(&prepare_dispatch_fn_name)
+            .expect("Failed to find prepare_dispatch in metallib");
+        #[allow(deprecated)]
+        let prepare_dispatch_pipeline = device
+            .newComputePipelineStateWithFunction_error(&prepare_dispatch_fn)
+            .expect("Failed to create prepare_dispatch compute pipeline");
+
         // Create render pipeline state for particle billboard quads
         let vertex_fn_name = NSString::from_str("vertex_main");
         let vertex_fn = library
@@ -150,6 +161,7 @@ impl GpuState {
         println!("Emission pipeline created successfully");
         println!("Update pipeline created successfully");
         println!("Grid clear/populate pipelines created successfully");
+        println!("Prepare dispatch pipeline created successfully");
         println!("Render pipeline created successfully");
 
         Self {
@@ -162,6 +174,7 @@ impl GpuState {
             grid_clear_pipeline,
             grid_populate_pipeline,
             sync_indirect_pipeline,
+            prepare_dispatch_pipeline,
             render_pipeline,
             depth_stencil_state,
         }

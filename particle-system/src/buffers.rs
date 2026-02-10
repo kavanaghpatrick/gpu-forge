@@ -10,7 +10,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
-use crate::types::{BufferSizes, CounterHeader, DrawArgs, Uniforms, COUNTER_HEADER_SIZE};
+use crate::types::{BufferSizes, CounterHeader, DispatchArgs, DrawArgs, GpuEmissionParams, Uniforms, COUNTER_HEADER_SIZE};
 
 /// Particle pool holding all SoA buffers, free lists, and indirect draw args.
 #[allow(dead_code)]
@@ -44,6 +44,12 @@ pub struct ParticlePool {
     // --- Indirect draw / dispatch ---
     /// Indirect draw arguments (MTLDrawPrimitivesIndirectArguments, 32 bytes).
     pub indirect_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Indirect dispatch arguments for emission kernel (12 bytes = 3 x u32).
+    /// Written by `prepare_dispatch` kernel each frame.
+    pub emission_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// GPU-computed emission parameters (16 bytes = 4 x u32).
+    /// Written by `prepare_dispatch`, read by `emission_kernel`.
+    pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
 
     // --- Grid density ---
     /// Grid density buffer: 64^3 = 262144 uint32 cells (1.05 MB).
@@ -104,6 +110,18 @@ impl ParticlePool {
         let indirect_args = alloc_buffer(device, sizes.indirect_args, "indirect_args");
         let uniforms = alloc_buffer(device, sizes.uniforms, "uniforms");
 
+        // Allocate GPU-centric dispatch buffers
+        let emission_dispatch_args = alloc_buffer(
+            device,
+            std::mem::size_of::<DispatchArgs>(),
+            "emission_dispatch_args",
+        );
+        let gpu_emission_params = alloc_buffer(
+            device,
+            std::mem::size_of::<GpuEmissionParams>(),
+            "gpu_emission_params",
+        );
+
         let pool = Self {
             pool_size,
             device: device.clone(),
@@ -117,6 +135,8 @@ impl ParticlePool {
             alive_list_b,
             grid_density,
             indirect_args,
+            emission_dispatch_args,
+            gpu_emission_params,
             uniforms,
         };
 
@@ -125,6 +145,8 @@ impl ParticlePool {
         pool.init_alive_list(&pool.alive_list_a);
         pool.init_alive_list(&pool.alive_list_b);
         pool.init_indirect_args();
+        pool.init_emission_dispatch_args();
+        pool.init_gpu_emission_params();
         pool.init_uniforms();
 
         pool
@@ -187,6 +209,22 @@ impl ParticlePool {
         unsafe {
             let ptr = buffer_ptr(&self.indirect_args) as *mut DrawArgs;
             std::ptr::write(ptr, DrawArgs::default());
+        }
+    }
+
+    /// Initialize emission dispatch args to default DispatchArgs (0 threadgroups X, 1 Y, 1 Z).
+    fn init_emission_dispatch_args(&self) {
+        unsafe {
+            let ptr = buffer_ptr(&self.emission_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(ptr, DispatchArgs::default());
+        }
+    }
+
+    /// Initialize GPU emission params to default (all zeros).
+    fn init_gpu_emission_params(&self) {
+        unsafe {
+            let ptr = buffer_ptr(&self.gpu_emission_params) as *mut GpuEmissionParams;
+            std::ptr::write(ptr, GpuEmissionParams::default());
         }
     }
 
@@ -291,6 +329,25 @@ impl ParticlePool {
             );
         }
 
+        // Reallocate GPU-centric dispatch buffers (no copy needed, GPU recomputes each frame)
+        let new_emission_dispatch_args = alloc_buffer(
+            &self.device,
+            std::mem::size_of::<DispatchArgs>(),
+            "emission_dispatch_args",
+        );
+        let new_gpu_emission_params = alloc_buffer(
+            &self.device,
+            std::mem::size_of::<GpuEmissionParams>(),
+            "gpu_emission_params",
+        );
+        // Zero-initialize: GPU will overwrite on next prepare_dispatch
+        unsafe {
+            let ptr = buffer_ptr(&new_emission_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(ptr, DispatchArgs::default());
+            let ptr = buffer_ptr(&new_gpu_emission_params) as *mut GpuEmissionParams;
+            std::ptr::write(ptr, GpuEmissionParams::default());
+        }
+
         // Swap buffer references (old buffers dropped when replaced)
         self.positions = new_positions;
         self.velocities = new_velocities;
@@ -300,6 +357,8 @@ impl ParticlePool {
         self.dead_list = new_dead_list;
         self.alive_list_a = new_alive_list_a;
         self.alive_list_b = new_alive_list_b;
+        self.emission_dispatch_args = new_emission_dispatch_args;
+        self.gpu_emission_params = new_gpu_emission_params;
         // grid_density stays the same (64^3 fixed)
         // indirect_args stays the same
         // uniforms stays the same
@@ -312,6 +371,17 @@ impl ParticlePool {
         unsafe {
             let header = buffer.contents().as_ptr() as *const CounterHeader;
             (*header).count
+        }
+    }
+
+    /// Read the alive count from indirect_args buffer (instance_count field of DrawArgs).
+    ///
+    /// This avoids reading from the alive list counter directly, supporting
+    /// GPU-centric architecture where indirect_args is the source of truth.
+    pub fn read_alive_count_from_indirect(&self) -> u32 {
+        unsafe {
+            let draw_args = self.indirect_args.contents().as_ptr() as *const DrawArgs;
+            (*draw_args).instance_count
         }
     }
 
