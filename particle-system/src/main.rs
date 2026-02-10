@@ -83,7 +83,7 @@ impl App {
         }
 
         // --- Update uniforms ---
-        let emission_count: u32 = 10000;
+        let base_emission: u32 = 10000;
         let view_mat = self.camera.view_matrix();
         let proj_mat = self.camera.projection_matrix();
 
@@ -105,6 +105,24 @@ impl App {
             &proj_mat,
         );
 
+        // Determine burst parameters
+        let burst_count: u32 = if self.input.burst_requested {
+            // Set burst world position from the current mouse world pos
+            self.input.burst_world_pos = mouse_world_pos;
+            20000
+        } else {
+            0
+        };
+
+        // Total emission = base + burst, clamped to available dead list slots
+        let dead_count = unsafe {
+            let dead_ptr = pool.dead_list.contents().as_ptr() as *const CounterHeader;
+            (*dead_ptr).count
+        };
+        let emission_count = (base_emission + burst_count).min(dead_count);
+        // Actual burst_count must not exceed total emission
+        let actual_burst_count = burst_count.min(emission_count);
+
         unsafe {
             let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
             (*uniforms_ptr).view_matrix = view_mat;
@@ -124,7 +142,14 @@ impl App {
             // Mouse attraction parameters
             (*uniforms_ptr).mouse_attraction_radius = 5.0;
             (*uniforms_ptr).mouse_attraction_strength = 10.0;
+            // Burst emission parameters
+            (*uniforms_ptr).burst_position = self.input.burst_world_pos;
+            (*uniforms_ptr)._pad_burst = 0.0;
+            (*uniforms_ptr).burst_count = actual_burst_count;
         }
+
+        // Clear burst_requested after uploading uniforms
+        self.input.burst_requested = false;
 
         // Get the next drawable from the CAMetalLayer
         let drawable = match gpu.layer.nextDrawable() {
@@ -421,7 +446,12 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 match button {
                     MouseButton::Left => {
+                        let was_held = self.input.left_held;
                         self.input.left_held = state == ElementState::Pressed;
+                        // On initial press (not held before), request burst
+                        if !was_held && state == ElementState::Pressed {
+                            self.input.burst_requested = true;
+                        }
                     }
                     MouseButton::Right => {
                         self.input.right_held = state == ElementState::Pressed;

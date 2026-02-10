@@ -349,7 +349,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
   - _Requirements: FR-15, AC-10.1 through AC-10.6_
   - _Design: Mouse attraction force, Input Manager_
 
-- [ ] 2.6 Click-to-burst emission
+- [x] 2.6 Click-to-burst emission
   - **Do**:
     1. In `src/input.rs`: track left mouse click events; store burst_requested flag + burst_position
     2. In `src/frame.rs`: when burst_requested, increase emission_count for this frame (add burst_count 20000 to normal emission rate)

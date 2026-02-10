@@ -17,7 +17,7 @@ pub fn default_camera_matrices() -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
 /// in structs (padded to 16-byte alignment), so we use `[f32; 3]` + explicit
 /// padding float to match.
 ///
-/// Total size: 224 bytes.
+/// Total size: 256 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
@@ -58,6 +58,14 @@ pub struct Uniforms {
     /// Mouse attraction strength (force magnitude scaling)
     pub mouse_attraction_strength: f32,
     pub _pad3: f32,
+    /// Burst emission center in world space (float3 + pad = 16 bytes)
+    pub burst_position: [f32; 3],
+    pub _pad_burst: f32,
+    /// Number of burst particles to emit this frame (0 = no burst)
+    pub burst_count: u32,
+    pub _pad4: f32,
+    pub _pad5: f32,
+    pub _pad6: f32,
 }
 
 impl Default for Uniforms {
@@ -84,6 +92,12 @@ impl Default for Uniforms {
             mouse_attraction_radius: 5.0,
             mouse_attraction_strength: 10.0,
             _pad3: 0.0,
+            burst_position: [0.0, 0.0, 0.0],
+            _pad_burst: 0.0,
+            burst_count: 0,
+            _pad4: 0.0,
+            _pad5: 0.0,
+            _pad6: 0.0,
         }
     }
 }

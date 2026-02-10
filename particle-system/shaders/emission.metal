@@ -63,7 +63,12 @@ kernel void emission_kernel(
 
     // --- Initialize particle attributes ---
 
-    // Position: emitter center (0,0,0) + random offset in sphere (radius 0.5)
+    // Burst vs normal emission: burst threads use burst_position as center with 2x velocity
+    bool is_burst = (tid < uniforms.burst_count);
+    float3 emitter_center = is_burst ? uniforms.burst_position : float3(0.0);
+    float speed_multiplier = is_burst ? 2.0 : 1.0;
+
+    // Position: emitter center + random offset in sphere (radius 0.5)
     seed = pcg_hash(seed);
     float theta = rand_float(seed) * 2.0 * M_PI_F;
     seed = pcg_hash(seed);
@@ -71,19 +76,19 @@ kernel void emission_kernel(
     seed = pcg_hash(seed);
     float r = pow(rand_float(seed), 1.0/3.0) * 0.5; // cube root for uniform volume
     float sin_phi = sin(phi);
-    positions[particle_idx] = float3(
+    positions[particle_idx] = emitter_center + float3(
         r * sin_phi * cos(theta),
         r * sin_phi * sin(theta),
         r * cos(phi)
     );
 
-    // Velocity: random direction * speed (1.0 - 3.0 range)
+    // Velocity: random direction * speed (1.0 - 3.0 range), multiplied for burst
     seed = pcg_hash(seed);
     float v_theta = rand_float(seed) * 2.0 * M_PI_F;
     seed = pcg_hash(seed);
     float v_phi = acos(1.0 - 2.0 * rand_float(seed));
     seed = pcg_hash(seed);
-    float speed = 1.0 + rand_float(seed) * 2.0; // [1.0, 3.0)
+    float speed = (1.0 + rand_float(seed) * 2.0) * speed_multiplier; // [1.0, 3.0) * multiplier
     float v_sin_phi = sin(v_phi);
     velocities[particle_idx] = float3(
         speed * v_sin_phi * cos(v_theta),

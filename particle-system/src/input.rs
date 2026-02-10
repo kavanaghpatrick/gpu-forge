@@ -66,6 +66,10 @@ pub struct InputState {
     pub left_held: bool,
     /// Whether the right mouse button is held
     pub right_held: bool,
+    /// Set to true on initial left mouse press (consumed each frame)
+    pub burst_requested: bool,
+    /// World-space position for the burst emission
+    pub burst_world_pos: [f32; 3],
 }
 
 impl Default for InputState {
@@ -77,6 +81,8 @@ impl Default for InputState {
             prev_cursor_y: 0.0,
             left_held: false,
             right_held: false,
+            burst_requested: false,
+            burst_world_pos: [0.0, 0.0, 0.0],
         }
     }
 }

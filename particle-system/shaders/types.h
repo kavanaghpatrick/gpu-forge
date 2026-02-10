@@ -13,7 +13,7 @@ using namespace metal;
 //   float    = 4 bytes, 4-byte aligned
 //   uint     = 4 bytes, 4-byte aligned
 //
-// Total size: 224 bytes
+// Total size: 256 bytes
 struct Uniforms {
     float4x4 view_matrix;           // offset 0   (64 bytes)
     float4x4 projection_matrix;     // offset 64  (64 bytes)
@@ -32,7 +32,12 @@ struct Uniforms {
     float    mouse_attraction_radius;   // offset 212 (4 bytes)
     float    mouse_attraction_strength; // offset 216 (4 bytes)
     float    _pad3;                 // offset 220 (4 bytes)
-};                                  // total: 224 bytes (multiple of 16)
+    float3   burst_position;        // offset 224 (16 bytes, float3 in struct)
+    uint     burst_count;           // offset 240 (4 bytes)
+    float    _pad4;                 // offset 244 (4 bytes)
+    float    _pad5;                 // offset 248 (4 bytes)
+    float    _pad6;                 // offset 252 (4 bytes)
+};                                  // total: 256 bytes (multiple of 16)
 
 // Indirect draw arguments matching MTLDrawPrimitivesIndirectArguments.
 struct DrawArgs {
