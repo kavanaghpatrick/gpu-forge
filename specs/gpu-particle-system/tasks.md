@@ -35,7 +35,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-2, AC-1.4, NFR-15_
   - _Design: Rust Host Structure, File Layout_
 
-- [ ] 1.2 Create window with CAMetalLayer and Metal device init
+- [x] 1.2 Create window with CAMetalLayer and Metal device init
   - **Do**:
     1. In `src/main.rs`: create winit `EventLoop` and `Window` (1280x720, title "GPU Particles")
     2. Create `src/gpu.rs`: initialize `MTLCreateSystemDefaultDevice()`, create `MTLCommandQueue`
