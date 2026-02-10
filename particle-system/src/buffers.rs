@@ -41,6 +41,10 @@ pub struct ParticlePool {
     /// Indirect draw arguments (MTLDrawPrimitivesIndirectArguments, 32 bytes).
     pub indirect_args: Retained<ProtocolObject<dyn MTLBuffer>>,
 
+    // --- Grid density ---
+    /// Grid density buffer: 64^3 = 262144 uint32 cells (1.05 MB).
+    pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
+
     // --- Uniforms ---
     /// Uniforms buffer (256 bytes padded).
     pub uniforms: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -89,6 +93,9 @@ impl ParticlePool {
         let alive_list_a = alloc_buffer(device, sizes.counter_list, "alive_list_a");
         let alive_list_b = alloc_buffer(device, sizes.counter_list, "alive_list_b");
 
+        // Allocate grid density buffer: 64^3 cells x 4 bytes per uint32
+        let grid_density = alloc_buffer(device, sizes.grid_density, "grid_density");
+
         // Allocate indirect args and uniforms
         let indirect_args = alloc_buffer(device, sizes.indirect_args, "indirect_args");
         let uniforms = alloc_buffer(device, sizes.uniforms, "uniforms");
@@ -103,6 +110,7 @@ impl ParticlePool {
             dead_list,
             alive_list_a,
             alive_list_b,
+            grid_density,
             indirect_args,
             uniforms,
         };

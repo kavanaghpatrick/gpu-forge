@@ -135,6 +135,8 @@ pub struct BufferSizes {
     pub sizes: usize,
     /// 16B header + pool_size * 4B indices
     pub counter_list: usize,
+    /// Grid density: 64^3 cells x 4 bytes (uint32)
+    pub grid_density: usize,
     /// DrawArgs (32 bytes, but we use std::mem::size_of)
     pub indirect_args: usize,
     /// Uniforms buffer (256 bytes padded)
@@ -152,6 +154,7 @@ impl BufferSizes {
             colors: pool_size * 8,
             sizes: pool_size * 4,
             counter_list: COUNTER_HEADER_SIZE + pool_size * 4,
+            grid_density: 64 * 64 * 64 * 4, // 64^3 cells x 4 bytes (uint32) = 1,048,576 bytes
             indirect_args: 32, // MTLDrawPrimitivesIndirectArguments = 4 x u32 = 16, but padded to 32
             uniforms: 256,     // Uniforms padded to 256 bytes
         }
@@ -166,6 +169,7 @@ impl BufferSizes {
             + self.sizes
             + self.counter_list     // dead list
             + self.counter_list * 2 // alive list A + B
+            + self.grid_density    // grid density (64^3 uint32)
             + self.indirect_args
             + self.uniforms
     }

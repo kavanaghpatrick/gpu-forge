@@ -245,7 +245,7 @@ After POC validated, add grid interactions, camera controls, mouse interaction, 
 
 ---
 
-- [ ] 2.1 Grid clear + populate kernels (density field)
+- [x] 2.1 Grid clear + populate kernels (density field)
   - **Do**:
     1. Allocate grid density buffer in `buffers.rs`: 64x64x64 x 4B = 1.05 MB (uint32 per cell)
     2. Create `shaders/grid.metal`:

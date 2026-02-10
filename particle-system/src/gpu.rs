@@ -20,6 +20,8 @@ pub struct GpuState {
     pub library: Retained<ProtocolObject<dyn MTLLibrary>>,
     pub emission_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub update_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub grid_clear_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub grid_populate_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub sync_indirect_pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub render_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub depth_stencil_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
@@ -69,6 +71,26 @@ impl GpuState {
         let update_pipeline = device
             .newComputePipelineStateWithFunction_error(&update_fn)
             .expect("Failed to create update compute pipeline");
+
+        // Create compute pipeline for grid_clear_kernel
+        let grid_clear_fn_name = NSString::from_str("grid_clear_kernel");
+        let grid_clear_fn = library
+            .newFunctionWithName(&grid_clear_fn_name)
+            .expect("Failed to find grid_clear_kernel in metallib");
+        #[allow(deprecated)]
+        let grid_clear_pipeline = device
+            .newComputePipelineStateWithFunction_error(&grid_clear_fn)
+            .expect("Failed to create grid_clear compute pipeline");
+
+        // Create compute pipeline for grid_populate_kernel
+        let grid_populate_fn_name = NSString::from_str("grid_populate_kernel");
+        let grid_populate_fn = library
+            .newFunctionWithName(&grid_populate_fn_name)
+            .expect("Failed to find grid_populate_kernel in metallib");
+        #[allow(deprecated)]
+        let grid_populate_pipeline = device
+            .newComputePipelineStateWithFunction_error(&grid_populate_fn)
+            .expect("Failed to create grid_populate compute pipeline");
 
         // Create compute pipeline for sync_indirect_args kernel
         let sync_fn_name = NSString::from_str("sync_indirect_args");
@@ -122,6 +144,7 @@ impl GpuState {
         println!("Loaded metallib from: {}", metallib_path);
         println!("Emission pipeline created successfully");
         println!("Update pipeline created successfully");
+        println!("Grid clear/populate pipelines created successfully");
         println!("Render pipeline created successfully");
 
         Self {
@@ -131,6 +154,8 @@ impl GpuState {
             library,
             emission_pipeline,
             update_pipeline,
+            grid_clear_pipeline,
+            grid_populate_pipeline,
             sync_indirect_pipeline,
             render_pipeline,
             depth_stencil_state,

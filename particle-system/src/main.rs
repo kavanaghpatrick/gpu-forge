@@ -83,6 +83,11 @@ impl App {
             (*uniforms_ptr).frame_number = self.frame_number;
             (*uniforms_ptr).emission_count = emission_count;
             (*uniforms_ptr).pool_size = pool.pool_size as u32;
+            // Set grid bounds for density field
+            (*uniforms_ptr).grid_bounds_min = [-10.0, -10.0, -10.0];
+            (*uniforms_ptr)._pad_grid_min = 0.0;
+            (*uniforms_ptr).grid_bounds_max = [10.0, 10.0, 10.0];
+            (*uniforms_ptr)._pad_grid_max = 0.0;
         }
 
         // Get the next drawable from the CAMetalLayer
@@ -184,6 +189,42 @@ impl App {
             );
 
             update_encoder.endEncoding();
+        }
+
+        // --- Grid clear compute pass ---
+        // Zero all 262144 cells in the grid density buffer.
+        if let Some(grid_clear_encoder) = command_buffer.computeCommandEncoder() {
+            grid_clear_encoder.setComputePipelineState(&gpu.grid_clear_pipeline);
+            unsafe {
+                grid_clear_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 0);
+            }
+            // 262144 cells / 256 threads per group = 1024 threadgroups
+            grid_clear_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: 1024, height: 1, depth: 1 },
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+            grid_clear_encoder.endEncoding();
+        }
+
+        // --- Grid populate compute pass ---
+        // Each alive particle atomically increments its grid cell density.
+        // Reads from write_list (update kernel output = this frame's survivors).
+        if let Some(grid_pop_encoder) = command_buffer.computeCommandEncoder() {
+            grid_pop_encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
+            unsafe {
+                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
+                grid_pop_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 1);
+                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 2);
+                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
+            }
+            // Dispatch pool_size / 256 threadgroups; shader guards with alive_count
+            let threadgroup_size = 256usize;
+            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
+            grid_pop_encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
+                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
+            );
+            grid_pop_encoder.endEncoding();
         }
 
         // --- Sync alive count to indirect args (GPU compute, single thread) ---
