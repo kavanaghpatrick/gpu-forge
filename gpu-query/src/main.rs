@@ -1,63 +1,23 @@
-use std::path::PathBuf;
+use gpu_query::cli::args::CliArgs;
+use clap::Parser;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args = CliArgs::parse();
 
-    if args.len() < 4 || args[2] != "-e" {
-        eprintln!("Usage: gpu-query <directory> -e \"<SQL>\"");
-        eprintln!("Example: gpu-query ./test-data/ -e \"SELECT count(*) FROM sales WHERE amount > 100\"");
+    if args.is_non_interactive() {
+        let code = gpu_query::cli::run_non_interactive(&args);
+        std::process::exit(code);
+    }
+
+    // Interactive/dashboard mode placeholder -- will be implemented in Phase 3
+    if args.dashboard {
+        eprintln!("Dashboard mode not yet implemented. Use -e \"SQL\" for non-interactive mode.");
         std::process::exit(1);
     }
 
-    let dir = PathBuf::from(&args[1]);
-    let sql = &args[3];
-
-    if !dir.is_dir() {
-        eprintln!("Error: '{}' is not a directory", dir.display());
-        std::process::exit(1);
-    }
-
-    // Scan directory for data files
-    let catalog = gpu_query::io::catalog::scan_directory(&dir)
-        .unwrap_or_else(|e| {
-            eprintln!("Error scanning directory: {}", e);
-            std::process::exit(1);
-        });
-
-    if catalog.is_empty() {
-        eprintln!("No data files found in '{}'", dir.display());
-        std::process::exit(1);
-    }
-
-    // Parse SQL
-    let logical_plan = gpu_query::sql::parser::parse_query(sql)
-        .unwrap_or_else(|e| {
-            eprintln!("SQL parse error: {}", e);
-            std::process::exit(1);
-        });
-
-    // Optimize logical plan (column pruning, predicate pushdown, constant folding)
-    let logical_plan = gpu_query::sql::optimizer::optimize(logical_plan);
-
-    // Convert to physical plan
-    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan)
-        .unwrap_or_else(|e| {
-            eprintln!("Plan error: {:?}", e);
-            std::process::exit(1);
-        });
-
-    // Execute on GPU
-    let mut executor = gpu_query::gpu::executor::QueryExecutor::new()
-        .unwrap_or_else(|e| {
-            eprintln!("GPU init error: {}", e);
-            std::process::exit(1);
-        });
-
-    let result = executor.execute(&physical_plan, &catalog)
-        .unwrap_or_else(|e| {
-            eprintln!("Query execution error: {}", e);
-            std::process::exit(1);
-        });
-
-    result.print();
+    // Default: show usage
+    eprintln!("Usage: gpu-query <directory> -e \"<SQL>\" [--format csv|json|jsonl|table]");
+    eprintln!("       gpu-query <directory> --dashboard");
+    eprintln!("       echo \"SELECT ...\" | gpu-query <directory>");
+    std::process::exit(1);
 }

@@ -196,7 +196,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-8_
   - _Design: Query Compiler, Logical planner_
 
-- [ ] 2.11 Non-interactive CLI mode
+- [x] 2.11 Non-interactive CLI mode
   - **Do**: Create `src/cli/mod.rs`, `src/cli/args.rs` with clap derive for all flags (-e, -f, -o, --format, --no-gpu, --profile, --dashboard, --cold, --theme). Implement non-interactive execution path: parse args -> run query -> format output -> exit. Support pipe input.
   - **Files**: `gpu-query/src/cli/mod.rs`, `gpu-query/src/cli/args.rs`, update `src/main.rs`
   - **Done when**: `gpu-query ./data/ -e "SELECT ..." --format csv > output.csv` works
