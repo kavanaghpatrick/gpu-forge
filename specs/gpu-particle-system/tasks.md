@@ -213,7 +213,7 @@ Focus: Get particles on screen. Prove the 4-kernel compute pipeline + indirect i
   - _Requirements: FR-8, FR-9, AC-7.4 through AC-7.6, AC-8.3_
   - _Design: Compaction Kernel, Ping-Pong alive list_
 
-- [ ] 1.11 [VERIFY] Quality checkpoint: full build
+- [x] 1.11 [VERIFY] Quality checkpoint: full build
   - **Do**: Build, clippy, verify all shaders compile
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo clippy 2>&1 | tail -10 && cargo build 2>&1 | tail -5`
   - **Done when**: Clean build
