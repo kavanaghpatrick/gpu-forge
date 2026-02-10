@@ -39,7 +39,7 @@ Focus: Prove "SELECT count(*) FROM file.csv WHERE col > 100" works on GPU end-to
   - _Requirements: FR-2, FR-36, FR-37_
   - _Design: Zero-Copy I/O Pipeline_
 
-- [ ] 1.4 CSV metadata reader (CPU-side)
+- [x] 1.4 CSV metadata reader (CPU-side)
   - **Do**: Create `src/io/csv.rs` with CPU-side header parsing: read first line for column names, detect delimiter (comma/tab/pipe), count columns. Create `src/io/format_detect.rs` with magic bytes detection (Parquet PAR1 header, JSON { or [, else CSV). Create `src/io/catalog.rs` with directory scanner.
   - **Files**: `gpu-query/src/io/csv.rs`, `gpu-query/src/io/format_detect.rs`, `gpu-query/src/io/catalog.rs`
   - **Done when**: Can scan a directory, detect CSV files, parse headers, return table metadata
