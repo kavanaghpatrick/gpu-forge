@@ -584,7 +584,7 @@ Unit tests for Rust logic, integration tests for GPU kernels.
   - _Requirements: FR-7, FR-8, AC-5.1, AC-7.4_
   - _Design: Physics Update Kernel, Compaction Kernel, Test Strategy_
 
-- [ ] 3.7 [VERIFY] Quality checkpoint: all tests pass (unit + integration)
+- [x] 3.7 [VERIFY] Quality checkpoint: all tests pass (unit + integration)
   - **Do**: Full test suite, clippy, release build
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/particle-system && cargo test 2>&1 | tail -15 && cargo clippy 2>&1 | tail -5 && cargo build --release 2>&1 | tail -3`
   - **Done when**: All tests pass, clean release build
