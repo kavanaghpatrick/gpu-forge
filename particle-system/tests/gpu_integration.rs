@@ -219,6 +219,7 @@ pub struct EmissionBuffers {
     pub lifetimes: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub colors: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub sizes: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 impl EmissionBuffers {
@@ -278,6 +279,17 @@ impl EmissionBuffers {
             std::ptr::write_bytes(ptr, 0, pool_size * 12);
         }
 
+        // GpuEmissionParams: 16 bytes (emission_count, actual_burst_count, _pad0, _pad1)
+        // Manually set emission_count = base_emission_rate (100) for test isolation
+        let gpu_emission_params = alloc_buffer(device, 16);
+        unsafe {
+            let ptr = buffer_ptr(&gpu_emission_params) as *mut u32;
+            std::ptr::write(ptr, 100u32); // emission_count
+            std::ptr::write(ptr.add(1), 0u32); // actual_burst_count
+            std::ptr::write(ptr.add(2), 0u32); // _pad0
+            std::ptr::write(ptr.add(3), 0u32); // _pad1
+        }
+
         Self {
             uniforms,
             dead_list,
@@ -287,6 +299,7 @@ impl EmissionBuffers {
             lifetimes,
             colors,
             sizes,
+            gpu_emission_params,
         }
     }
 }
@@ -334,7 +347,7 @@ fn test_emission_gpu_integration() {
     // Bind buffers matching emission_kernel signature:
     // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list,
     // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
-    // buffer(6) = colors, buffer(7) = sizes
+    // buffer(6) = colors, buffer(7) = sizes, buffer(8) = gpu_emission_params
     unsafe {
         encoder.setBuffer_offset_atIndex(Some(&bufs.uniforms), 0, 0);
         encoder.setBuffer_offset_atIndex(Some(&bufs.dead_list), 0, 1);
@@ -344,6 +357,7 @@ fn test_emission_gpu_integration() {
         encoder.setBuffer_offset_atIndex(Some(&bufs.lifetimes), 0, 5);
         encoder.setBuffer_offset_atIndex(Some(&bufs.colors), 0, 6);
         encoder.setBuffer_offset_atIndex(Some(&bufs.sizes), 0, 7);
+        encoder.setBuffer_offset_atIndex(Some(&bufs.gpu_emission_params), 0, 8);
     }
 
     // Dispatch ceil(emission_count / 256) threadgroups of 256 threads
@@ -433,6 +447,13 @@ fn test_emission_gpu_integration() {
 /// Dispatch the emission kernel on the given context and buffers, then wait.
 #[allow(dead_code)]
 fn dispatch_emission(ctx: &GpuTestContext, bufs: &EmissionBuffers, emission_count: u32) {
+    // Write emission_count into gpu_emission_params for test isolation
+    unsafe {
+        let ptr = buffer_ptr(&bufs.gpu_emission_params) as *mut u32;
+        std::ptr::write(ptr, emission_count); // emission_count
+        // actual_burst_count stays as previously initialized (0)
+    }
+
     let cmd_buf = ctx
         .queue
         .commandBuffer()
@@ -453,6 +474,7 @@ fn dispatch_emission(ctx: &GpuTestContext, bufs: &EmissionBuffers, emission_coun
         encoder.setBuffer_offset_atIndex(Some(&bufs.lifetimes), 0, 5);
         encoder.setBuffer_offset_atIndex(Some(&bufs.colors), 0, 6);
         encoder.setBuffer_offset_atIndex(Some(&bufs.sizes), 0, 7);
+        encoder.setBuffer_offset_atIndex(Some(&bufs.gpu_emission_params), 0, 8);
     }
 
     let threadgroup_size: usize = 256;
@@ -529,6 +551,7 @@ pub struct PhysicsBuffers {
     pub sizes: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub indirect_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 /// Grid dimension constant (must match shader).
@@ -626,6 +649,17 @@ impl PhysicsBuffers {
             std::ptr::write(ptr.add(3), 0u32);
         }
 
+        // GpuEmissionParams: 16 bytes (emission_count, actual_burst_count, _pad0, _pad1)
+        // Manually set emission_count = base_emission_rate (100) for test isolation
+        let gpu_emission_params = alloc_buffer(device, 16);
+        unsafe {
+            let ptr = buffer_ptr(&gpu_emission_params) as *mut u32;
+            std::ptr::write(ptr, 100u32); // emission_count
+            std::ptr::write(ptr.add(1), 0u32); // actual_burst_count
+            std::ptr::write(ptr.add(2), 0u32); // _pad0
+            std::ptr::write(ptr.add(3), 0u32); // _pad1
+        }
+
         Self {
             uniforms,
             dead_list,
@@ -638,6 +672,7 @@ impl PhysicsBuffers {
             sizes,
             grid_density,
             indirect_args,
+            gpu_emission_params,
         }
     }
 }
@@ -648,6 +683,13 @@ fn dispatch_emission_physics(
     bufs: &PhysicsBuffers,
     emission_count: u32,
 ) {
+    // Write emission_count into gpu_emission_params for test isolation
+    unsafe {
+        let ptr = buffer_ptr(&bufs.gpu_emission_params) as *mut u32;
+        std::ptr::write(ptr, emission_count); // emission_count
+        // actual_burst_count stays as previously initialized (0)
+    }
+
     let cmd_buf = ctx
         .queue
         .commandBuffer()
@@ -668,6 +710,7 @@ fn dispatch_emission_physics(
         encoder.setBuffer_offset_atIndex(Some(&bufs.lifetimes), 0, 5);
         encoder.setBuffer_offset_atIndex(Some(&bufs.colors), 0, 6);
         encoder.setBuffer_offset_atIndex(Some(&bufs.sizes), 0, 7);
+        encoder.setBuffer_offset_atIndex(Some(&bufs.gpu_emission_params), 0, 8);
     }
 
     let threadgroup_size: usize = 256;

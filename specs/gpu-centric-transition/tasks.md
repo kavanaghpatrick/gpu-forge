@@ -115,7 +115,7 @@ Focus: Prove indirect dispatch works end-to-end. CPU no longer reads dead_count 
   - _Requirements: FR-1, FR-5, FR-6, FR-7, FR-8, FR-13_
   - _Design: Section 4.4, 3.1_
 
-- [ ] 1.8 Update GPU integration tests for new emission kernel signature
+- [x] 1.8 Update GPU integration tests for new emission kernel signature
   - **Do**:
     1. In `tests/gpu_integration.rs`, update `EmissionBuffers` to include `gpu_emission_params` buffer (16 bytes) and `emission_dispatch_args` buffer (12 bytes)
     2. Update `PhysicsBuffers` similarly
