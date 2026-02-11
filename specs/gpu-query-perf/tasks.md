@@ -199,7 +199,7 @@ Focus: Final polish, lint, and PR preparation.
   - **Commit**: None (verification only)
   - _Requirements: NFR-1, NFR-2, NFR-3_
 
-- [ ] 5.3 Create PR and verify CI
+- [x] 5.3 Create PR and verify CI
   - **Do**: Push branch, create PR with `gh pr create`. PR title: "perf(executor): 7x query speedup via scan cache + persistent executor". PR body should include: before/after benchmark numbers, summary of 5 bottleneck fixes, test results. Use `gh pr checks --watch` to verify CI passes.
   - **Files**: None (git/GitHub operations)
   - **Done when**: PR created, CI green
