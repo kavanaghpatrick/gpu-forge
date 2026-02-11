@@ -299,7 +299,7 @@ After POC validated, build the full query engine with all formats and operators.
 
 ## Phase 4: Testing & Quality
 
-- [ ] 4.1 Struct layout tests for all GPU types
+- [x] 4.1 Struct layout tests for all GPU types
   - **Do**: Ensure all `#[repr(C)]` structs in `src/gpu/types.rs` have layout tests: size_of, align_of, offset_of for every field. Cover: FilterParams, AggParams, SortParams, CsvParseParams, JsonParseParams, ParquetChunkParams, ColumnSchema, DispatchArgs, InferParams.
   - **Files**: `gpu-query/src/gpu/types.rs` (tests module)
   - **Done when**: ~20 layout tests pass, catching any Rust-MSL struct mismatch
