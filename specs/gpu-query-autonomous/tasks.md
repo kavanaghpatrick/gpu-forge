@@ -374,7 +374,7 @@ Focus: Final quality checks, documentation, PR creation.
   - **Commit**: No commit needed (verification only)
   - _Requirements: AC-1.4, AC-2.2_
 
-- [ ] 7.4 Update build.rs for new Metal shaders
+- [x] 7.4 Update build.rs for new Metal shaders
   - **Do**: Ensure `build.rs` compiles `fused_query.metal` and `check_work.metal` (if used). Verify both new .metal files are included in the metallib. Check that `autonomous_types.h` is accessible via include path.
   - **Files**: `gpu-query/build.rs`
   - **Done when**: `cargo build --release` compiles all shaders
