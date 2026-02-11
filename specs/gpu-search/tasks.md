@@ -129,7 +129,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1, NFR-2_
   - _Design: Search Engine, content.rs_
 
-- [ ] 1.14 Port search/streaming.rs -- streaming pipeline
+- [x] 1.14 Port search/streaming.rs -- streaming pipeline
   - **Do**: Port `rust-experiment/src/gpu_os/streaming_search.rs` (1071 lines). Quad-buffered streaming: 4 x 64MB StreamChunks, I/O + search overlap pipeline, AtomicBool per chunk for ready signaling. Test with >64MB test data.
   - **Files**: `gpu-search/src/search/streaming.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: Stream search through >64MB data returns correct results
