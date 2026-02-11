@@ -128,3 +128,103 @@ impl CatalogCache {
         self.dir_modified = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Helper: create a minimal CSV file that scan_directory will recognise.
+    fn write_csv(dir: &std::path::Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, content).expect("write csv");
+        path
+    }
+
+    #[test]
+    fn test_catalog_cache_hit_on_unchanged_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_csv(tmp.path(), "a.csv", "id,name\n1,test\n");
+
+        let mut cache = CatalogCache::new(tmp.path().to_path_buf());
+
+        // First call populates cache.
+        let entries1 = cache.get_or_refresh().unwrap().to_vec();
+        assert_eq!(entries1.len(), 1);
+
+        // Second call should return cached data (is_valid == true).
+        assert!(cache.is_valid().unwrap(), "cache should be valid on unchanged dir");
+        let entries2 = cache.get_or_refresh().unwrap();
+        assert_eq!(entries2.len(), 1);
+        assert_eq!(entries2[0].name, entries1[0].name);
+    }
+
+    #[test]
+    fn test_catalog_cache_miss_on_new_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_csv(tmp.path(), "a.csv", "id\n1\n");
+
+        let mut cache = CatalogCache::new(tmp.path().to_path_buf());
+
+        // Populate cache.
+        let entries = cache.get_or_refresh().unwrap();
+        assert_eq!(entries.len(), 1);
+
+        // Adding a new file changes the directory mtime.
+        // Small sleep to ensure mtime granularity difference on macOS (1s HFS+).
+        thread::sleep(Duration::from_millis(1100));
+        write_csv(tmp.path(), "b.csv", "x\n2\n");
+
+        // Cache should detect new file via dir mtime change.
+        assert!(!cache.is_valid().unwrap(), "cache should be invalid after new file");
+        let entries = cache.get_or_refresh().unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_catalog_cache_miss_on_modified_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let csv_path = write_csv(tmp.path(), "data.csv", "col\nold\n");
+
+        let mut cache = CatalogCache::new(tmp.path().to_path_buf());
+
+        // Populate cache.
+        cache.get_or_refresh().unwrap();
+        assert!(cache.is_valid().unwrap());
+
+        // Modify file content (changes size and/or mtime).
+        thread::sleep(Duration::from_millis(1100));
+        fs::write(&csv_path, "col\nnew_longer_content\n").unwrap();
+
+        // Cache should detect modified file via fingerprint mismatch.
+        assert!(!cache.is_valid().unwrap(), "cache should be invalid after file modification");
+        let entries = cache.get_or_refresh().unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_catalog_cache_invalidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_csv(tmp.path(), "t.csv", "a\n1\n");
+
+        let mut cache = CatalogCache::new(tmp.path().to_path_buf());
+
+        // Populate.
+        let entries = cache.get_or_refresh().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(cache.is_valid().unwrap());
+
+        // Manual invalidation should clear everything.
+        cache.invalidate();
+        assert!(!cache.is_valid().unwrap(), "cache should be invalid after invalidate()");
+        assert!(cache.entries.is_empty());
+        assert!(cache.fingerprints.is_empty());
+        assert!(cache.dir_modified.is_none());
+
+        // Next get_or_refresh re-scans.
+        let entries = cache.get_or_refresh().unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+}

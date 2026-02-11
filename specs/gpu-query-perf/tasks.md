@@ -147,7 +147,7 @@ Focus: Remove `scan_cache.clear()` from execute() to enable cross-query scan res
 
 Focus: Add targeted tests for cache correctness, invalidation, and performance benchmarks.
 
-- [ ] 4.1 Unit tests for CatalogCache
+- [x] 4.1 Unit tests for CatalogCache
   - **Do**: Add tests in `gpu-query/src/io/catalog_cache.rs` (mod tests): (1) `test_catalog_cache_hit_on_unchanged_dir` -- scan, verify second call returns same entries without re-scan. (2) `test_catalog_cache_miss_on_new_file` -- add file to temp dir, verify cache invalidates. (3) `test_catalog_cache_miss_on_modified_file` -- modify file mtime, verify invalidation. (4) `test_catalog_cache_invalidate` -- manual invalidation clears cache. Use `tempfile::TempDir` for test directories.
   - **Files**: `gpu-query/src/io/catalog_cache.rs`
   - **Done when**: 4 catalog cache unit tests pass
