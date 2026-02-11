@@ -160,7 +160,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
 
 After POC validated, build out full feature set: search orchestrator, UI, index, filters.
 
-- [ ] 2.1 Port index/gpu_index.rs -- GPU-resident path index
+- [x] 2.1 Port index/gpu_index.rs -- GPU-resident path index
   - **Do**: Port `rust-experiment/src/gpu_os/gpu_index.rs` (867 lines). GpuPathEntry (256B), GpuResidentIndex struct. Port to objc2-metal types.
   - **Files**: `gpu-search/src/index/gpu_index.rs`, update `gpu-search/src/index/mod.rs`
   - **Done when**: Index built from test directory, loaded into GPU buffer
