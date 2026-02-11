@@ -378,7 +378,7 @@ After POC validated, build the full query engine with all formats and operators.
   - **Verify**: `gh pr checks --watch` all green
   - **Commit**: N/A (PR creation)
 
-- [ ] 5.3 VF: Final verification
+- [x] 5.3 VF: Final verification
   - **Do**: Run the complete test suite one final time. Verify: (a) all ~410 tests pass, (b) 1M-row query completes in <10ms warm, (c) TUI dashboard launches in <3 seconds, (d) all three formats (CSV, Parquet, JSON) queryable. Document final performance numbers.
   - **Files**: None (verification only)
   - **Done when**: All acceptance criteria verified; performance targets met
