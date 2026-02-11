@@ -155,7 +155,7 @@ Focus: Add targeted tests for cache correctness, invalidation, and performance b
   - **Commit**: `test(io): add CatalogCache unit tests for hit/miss/invalidation`
   - _Requirements: AC-4.1, AC-4.3_
 
-- [ ] 4.2 Unit tests for scan cache in executor
+- [x] 4.2 Unit tests for scan cache in executor
   - **Do**: Add tests in `gpu-query/src/gpu/executor.rs` (mod tests) or a new test file: (1) `test_scan_cache_hit` -- execute same table twice, verify scan_uncached called once. (2) `test_scan_cache_eviction` -- insert 9 entries, verify oldest evicted. (3) `test_compound_filter_single_scan` -- execute compound AND query, verify single scan via cache. (4) `test_scan_cache_invalidation_on_file_change` -- modify file between queries, verify re-scan. These tests require GPU (Metal device) so may need to be integration tests.
   - **Files**: `gpu-query/src/gpu/executor.rs` or `gpu-query/tests/gpu_cache.rs`
   - **Done when**: 4 scan cache tests pass

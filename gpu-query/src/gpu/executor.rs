@@ -285,6 +285,11 @@ impl QueryExecutor {
         self.scan_cache.clear();
     }
 
+    /// Return the number of entries currently in the scan cache.
+    pub fn scan_cache_len(&self) -> usize {
+        self.scan_cache.len()
+    }
+
     /// Execute a physical plan against data in the catalog.
     pub fn execute(
         &mut self,
