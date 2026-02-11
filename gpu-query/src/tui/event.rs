@@ -210,6 +210,13 @@ fn execute_dot_command(app: &mut super::app::AppState) {
         DotCommandResult::Error(msg) => {
             app.set_error(msg);
         }
+        DotCommandResult::RefreshCaches => {
+            app.catalog_cache.invalidate();
+            if let Some(ref mut executor) = app.executor {
+                executor.clear_scan_cache();
+            }
+            app.status_message = "Caches refreshed.".into();
+        }
         DotCommandResult::DescribeTable(table_name) => {
             // Execute GPU-parallel DESCRIBE: use cached catalog and persistent executor
             match app.catalog_cache.get_or_refresh().map(|s| s.to_vec()) {

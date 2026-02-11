@@ -280,6 +280,11 @@ impl QueryExecutor {
         })
     }
 
+    /// Clear the scan cache, forcing re-scan on next query.
+    pub fn clear_scan_cache(&mut self) {
+        self.scan_cache.clear();
+    }
+
     /// Execute a physical plan against data in the catalog.
     pub fn execute(
         &mut self,

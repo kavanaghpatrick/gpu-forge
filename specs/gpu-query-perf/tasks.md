@@ -126,7 +126,7 @@ Focus: Remove `scan_cache.clear()` from execute() to enable cross-query scan res
   - _Requirements: FR-2, FR-6_
   - _Design: Component 3 (ScanCache)_
 
-- [ ] 3.2 Add .refresh command to invalidate all caches
+- [x] 3.2 Add .refresh command to invalidate all caches
   - **Do**: In the dot-command handler (likely in `event.rs` or `ui.rs` where `.profile` is handled), add `.refresh` command that: (1) calls `app.catalog_cache.invalidate()`, (2) if executor exists, clears its scan_cache (`app.executor.as_mut().map(|e| e.scan_cache.clear())`), (3) sets status message "Caches refreshed." Need to add `pub fn clear_scan_cache(&mut self)` method to QueryExecutor if scan_cache is private.
   - **Files**: `gpu-query/src/tui/event.rs` or `gpu-query/src/tui/ui.rs`, `gpu-query/src/gpu/executor.rs`
   - **Done when**: `.refresh` command clears catalog cache and scan cache; status message shown

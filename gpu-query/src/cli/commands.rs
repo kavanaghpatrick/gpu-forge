@@ -48,6 +48,8 @@ pub enum DotCommand {
     Help,
     /// .quit — exit the application.
     Quit,
+    /// .refresh — invalidate all caches (catalog + scan).
+    Refresh,
 }
 
 /// Result of executing a dot command.
@@ -66,6 +68,8 @@ pub enum DotCommandResult {
     /// Request GPU-parallel DESCRIBE on specified table.
     /// The caller should invoke `executor.execute_describe()` and display the result.
     DescribeTable(String),
+    /// Request cache invalidation. The caller should clear catalog cache and scan cache.
+    RefreshCaches,
 }
 
 impl fmt::Display for DotCommandResult {
@@ -77,6 +81,7 @@ impl fmt::Display for DotCommandResult {
             DotCommandResult::Quit => write!(f, "Goodbye."),
             DotCommandResult::Error(s) => write!(f, "Error: {}", s),
             DotCommandResult::DescribeTable(table) => write!(f, "DESCRIBE {}", table),
+            DotCommandResult::RefreshCaches => write!(f, "Caches refreshed."),
         }
     }
 }
@@ -144,6 +149,7 @@ pub fn parse_dot_command(input: &str) -> Option<DotCommand> {
             }
         }
         ".history" => Some(DotCommand::History),
+        ".refresh" => Some(DotCommand::Refresh),
         ".clear" => Some(DotCommand::Clear),
         ".help" | ".h" | ".?" => Some(DotCommand::Help),
         ".quit" | ".q" | ".exit" => Some(DotCommand::Quit),
@@ -205,6 +211,7 @@ pub fn handle_dot_command(cmd: &DotCommand, ctx: &DotCommandContext) -> DotComma
         DotCommand::Clear => DotCommandResult::ClearScreen,
         DotCommand::Help => handle_help(),
         DotCommand::Quit => DotCommandResult::Quit,
+        DotCommand::Refresh => DotCommandResult::RefreshCaches,
     }
 }
 
@@ -393,6 +400,7 @@ Dot Commands:
   .format [csv|json|table|jsonl]  Change output format
   .save <file>          Save last query result to file
   .history              Show recent query history
+  .refresh              Invalidate all caches (catalog + scan)
   .clear                Clear the results display
   .help                 Show this help message
   .quit                 Exit gpu-query";
