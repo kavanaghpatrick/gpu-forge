@@ -4,6 +4,7 @@
 //! parse args -> resolve query -> execute -> format output -> exit.
 
 pub mod args;
+pub mod commands;
 
 use crate::gpu::executor::{QueryExecutor, QueryResult};
 use args::{CliArgs, OutputFormat};

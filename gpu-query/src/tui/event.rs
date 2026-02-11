@@ -14,6 +14,11 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
+use crate::cli::commands::{
+    is_dot_command, parse_dot_command, handle_dot_command, append_to_history,
+    DotCommandContext, DotCommandResult,
+};
+
 /// Events produced by the event loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -58,9 +63,16 @@ pub fn handle_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
 
     // Global bindings (work regardless of focused panel)
 
-    // Ctrl+Enter: execute query
+    // Ctrl+Enter: execute query or dot command
     if has_ctrl && key.code == KeyCode::Enter {
-        let _ = super::ui::execute_editor_query(app);
+        let text = app.editor_state.text();
+        if is_dot_command(&text) {
+            execute_dot_command(app);
+        } else {
+            // Record query in persistent history
+            append_to_history(&mut app.history, &text);
+            let _ = super::ui::execute_editor_query(app);
+        }
         return true;
     }
 
@@ -100,6 +112,95 @@ pub fn handle_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
         FocusPanel::Editor => handle_editor_key(key, app),
         FocusPanel::Results => handle_results_key(key, app),
         FocusPanel::Catalog => handle_catalog_key(key, app),
+    }
+}
+
+/// Execute a dot command from the editor text and update app state.
+fn execute_dot_command(app: &mut super::app::AppState) {
+    let text = app.editor_state.text();
+
+    let cmd = match parse_dot_command(&text) {
+        Some(c) => c,
+        None => {
+            app.status_message = format!("Unknown command: {}", text.trim());
+            return;
+        }
+    };
+
+    // Build context from app state
+    let tables: Vec<(String, String, Vec<(String, String)>)> = app
+        .catalog_state
+        .entries
+        .iter()
+        .map(|entry| {
+            let cols: Vec<(String, String)> = entry
+                .columns
+                .iter()
+                .map(|c| (c.name.clone(), c.type_name.clone()))
+                .collect();
+            let fmt = match entry.format {
+                crate::io::format_detect::FileFormat::Csv => "CSV",
+                crate::io::format_detect::FileFormat::Parquet => "Parquet",
+                crate::io::format_detect::FileFormat::Json => "JSON",
+                crate::io::format_detect::FileFormat::Unknown => "?",
+            };
+            (entry.name.clone(), fmt.to_string(), cols)
+        })
+        .collect();
+
+    let last_result_text = app.last_result.as_ref().map(|r| {
+        crate::cli::format_result(r, &crate::cli::args::OutputFormat::Table)
+    });
+    let last_result_ref = last_result_text.as_deref();
+
+    let comparison_text = app.last_query_metrics.as_ref().map(|m| {
+        let est = crate::gpu::metrics::CpuEstimate::from_metrics(m.bytes_scanned, m.gpu_time_ms);
+        format!(
+            "GPU {:.1}ms vs CPU ~{:.1}ms (~{:.1}x speedup)",
+            m.gpu_time_ms, est.cpu_estimate_ms, est.speedup_vs_cpu
+        )
+    });
+
+    let format = crate::cli::args::OutputFormat::Table; // default format for TUI
+    let ctx = DotCommandContext {
+        tables: &tables,
+        history: &app.history,
+        last_result_text: last_result_ref,
+        current_format: &format,
+        profile_on: app.last_query_metrics.is_some(), // proxy
+        timer_on: true,
+        gpu_device_name: "Apple Silicon GPU".into(),
+        gpu_memory_bytes: app.gpu_metrics.peak_memory_bytes,
+        last_comparison: comparison_text,
+    };
+
+    let result = handle_dot_command(&cmd, &ctx);
+
+    match result {
+        DotCommandResult::Output(text) => {
+            // Display as a "query result" with single column
+            let result = crate::gpu::executor::QueryResult {
+                columns: vec!["output".into()],
+                rows: text.lines().map(|l| vec![l.to_string()]).collect(),
+                row_count: text.lines().count(),
+            };
+            app.set_result(result);
+            app.status_message = "Command executed.".into();
+        }
+        DotCommandResult::StateChange(msg) => {
+            app.status_message = msg;
+        }
+        DotCommandResult::ClearScreen => {
+            app.last_result = None;
+            app.results_state.reset();
+            app.status_message = "Cleared.".into();
+        }
+        DotCommandResult::Quit => {
+            app.running = false;
+        }
+        DotCommandResult::Error(msg) => {
+            app.set_error(msg);
+        }
     }
 }
 

@@ -270,7 +270,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-19, AC-4.1, AC-4.8_
   - _Design: TUI Rendering Architecture_
 
-- [ ] 3.8 Dot commands and query history
+- [x] 3.8 Dot commands and query history
   - **Do**: Create `src/cli/commands.rs` with dot command handler: .tables, .schema, .describe, .gpu, .profile, .benchmark, .timer, .comparison, .format, .save, .history, .clear, .help, .quit. Implement query history persistence to `~/.config/gpu-query/history`. Create `src/tui/` config loading from `~/.config/gpu-query/config.toml`.
   - **Files**: `gpu-query/src/cli/commands.rs`, update `src/tui/event.rs`
   - **Done when**: All dot commands work in TUI; history persists across sessions
