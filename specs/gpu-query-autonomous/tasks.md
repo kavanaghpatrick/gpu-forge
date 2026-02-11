@@ -305,7 +305,7 @@ Focus: Comprehensive test coverage. Benchmark validation. Stress testing for sta
   - **Commit**: `test(autonomous): comprehensive work queue concurrency tests`
   - _Requirements: AC-3.4_
 
-- [ ] 6.2 Add comprehensive unit tests for JIT compiler
+- [x] 6.2 Add comprehensive unit tests for JIT compiler
   - **Do**: Expand `jit.rs` tests: (1) source generation for each query pattern (count, sum, filter, compound, groupby, multi-agg), (2) source includes expected patterns (atomic_fetch_add for COUNT, simd_sum_int64 for SUM, comparison operator), (3) source does NOT include unnecessary code (no hash table when no GROUP BY), (4) compile invalid source returns Err.
   - **Files**: `gpu-query/src/gpu/autonomous/jit.rs`
   - **Done when**: ~20 JIT tests pass

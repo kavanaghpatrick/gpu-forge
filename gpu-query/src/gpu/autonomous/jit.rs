@@ -1820,4 +1820,483 @@ mod tests {
             "same structure with different literals should share PSO (cache hit)"
         );
     }
+
+    // ===================================================================
+    // Comprehensive source generation tests (per-pattern)
+    // ===================================================================
+
+    /// Helper: build a filter node with arbitrary op.
+    fn filter_op(
+        column: &str,
+        op: CompareOp,
+        val: Value,
+        input: PhysicalPlan,
+    ) -> PhysicalPlan {
+        PhysicalPlan::GpuFilter {
+            compare_op: op,
+            column: column.into(),
+            value: val,
+            input: Box::new(input),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: COUNT uses atomic_fetch_add in global reduction
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_count_uses_atomic_fetch_add() {
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("atomic_fetch_add_explicit"),
+            "COUNT must use atomic_fetch_add_explicit for global count merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: SUM(int) uses jit_simd_sum_int64
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_sum_int_uses_simd_sum() {
+        let plan = aggregate(vec![(AggFunc::Sum, "amount")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("jit_simd_sum_int64"),
+            "SUM(int) must use jit_simd_sum_int64 for SIMD reduction"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: MIN(int) uses jit_simd_min_int64
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_min_int_uses_simd_min() {
+        let plan = aggregate(vec![(AggFunc::Min, "amount")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("jit_simd_min_int64"),
+            "MIN(int) must use jit_simd_min_int64 for SIMD reduction"
+        );
+        assert!(
+            src.contains("atomic_min_int64"),
+            "MIN(int) must use atomic_min_int64 for global merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: MAX(int) uses jit_simd_max_int64
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_max_int_uses_simd_max() {
+        let plan = aggregate(vec![(AggFunc::Max, "amount")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("jit_simd_max_int64"),
+            "MAX(int) must use jit_simd_max_int64 for SIMD reduction"
+        );
+        assert!(
+            src.contains("atomic_max_int64"),
+            "MAX(int) must use atomic_max_int64 for global merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: SUM(float) uses simd_sum built-in
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_sum_float_uses_simd_sum() {
+        let plan = aggregate(vec![(AggFunc::Sum, "price")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema_with_float());
+
+        assert!(
+            src.contains("simd_sum(local_agg_0)"),
+            "SUM(float) must use Metal's simd_sum"
+        );
+        assert!(
+            src.contains("atomic_add_float"),
+            "SUM(float) must use atomic_add_float for global merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: MIN(float) uses simd_min built-in
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_min_float_uses_simd_min() {
+        let plan = aggregate(vec![(AggFunc::Min, "price")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema_with_float());
+
+        assert!(
+            src.contains("simd_min(local_agg_0)"),
+            "MIN(float) must use Metal's simd_min"
+        );
+        assert!(
+            src.contains("atomic_min_float"),
+            "MIN(float) must use atomic_min_float for global merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: MAX(float) uses simd_max built-in
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_max_float_uses_simd_max() {
+        let plan = aggregate(vec![(AggFunc::Max, "price")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema_with_float());
+
+        assert!(
+            src.contains("simd_max(local_agg_0)"),
+            "MAX(float) must use Metal's simd_max"
+        );
+        assert!(
+            src.contains("atomic_max_float"),
+            "MAX(float) must use atomic_max_float for global merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: filter LT operator
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_filter_lt_operator() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_op("amount", CompareOp::Lt, Value::Int(500), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("< params->filters[0].value_int"),
+            "LT filter must use < operator"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: filter EQ operator
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_filter_eq_operator() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_op("amount", CompareOp::Eq, Value::Int(500), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("== params->filters[0].value_int"),
+            "EQ filter must use == operator"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: filter GE operator
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_filter_ge_operator() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_op("amount", CompareOp::Ge, Value::Int(500), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains(">= params->filters[0].value_int"),
+            "GE filter must use >= operator"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: filter LE operator
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_filter_le_operator() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_op("amount", CompareOp::Le, Value::Int(500), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("<= params->filters[0].value_int"),
+            "LE filter must use <= operator"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: filter NE operator
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_filter_ne_operator() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_op("amount", CompareOp::Ne, Value::Int(500), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("!= params->filters[0].value_int"),
+            "NE filter must use != operator"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Negative: no GROUP BY means no bucket/hash code emitted
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_no_groupby_no_hash_table() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+            vec![],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            !src.contains("% MAX_GROUPS"),
+            "no GROUP BY must NOT emit modular hash bucketing"
+        );
+        assert!(
+            !src.contains("Serial per-thread accumulation"),
+            "no GROUP BY must NOT use serial merge"
+        );
+        assert!(
+            src.contains("SIMD reduction"),
+            "no GROUP BY should use SIMD reduction path"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Negative: no filter means no FILTER PHASE section
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_no_filter_no_filter_section() {
+        let plan = aggregate(
+            vec![(AggFunc::Sum, "amount")],
+            vec!["region"],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            !src.contains("FILTER PHASE"),
+            "no filters must NOT emit FILTER PHASE section"
+        );
+        assert!(
+            src.contains("GROUP BY PHASE"),
+            "GROUP BY should still be present"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: multi-agg without GROUP BY (all SIMD reduced)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_multi_agg_no_groupby() {
+        let plan = aggregate(
+            vec![
+                (AggFunc::Count, "*"),
+                (AggFunc::Sum, "amount"),
+                (AggFunc::Min, "amount"),
+                (AggFunc::Max, "amount"),
+            ],
+            vec![],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("AGGREGATE PHASE (4 aggs)"),
+            "must report 4 aggs in phase comment"
+        );
+        // Each agg should have its own SIMD reduction variable
+        assert!(src.contains("simd_agg_0"), "must have simd_agg_0");
+        assert!(src.contains("simd_agg_1"), "must have simd_agg_1");
+        assert!(src.contains("simd_agg_2"), "must have simd_agg_2");
+        assert!(src.contains("simd_agg_3"), "must have simd_agg_3");
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: GROUP BY uses serial merge, not SIMD
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_groupby_uses_serial_merge() {
+        let plan = aggregate(
+            vec![(AggFunc::Sum, "amount")],
+            vec!["region"],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("Serial per-thread accumulation"),
+            "GROUP BY must use serial per-thread merge"
+        );
+        assert!(
+            !src.contains("SIMD reduction (no GROUP BY"),
+            "GROUP BY must NOT use SIMD reduction comment"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: JIT source inlines header (no #include types)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_jit_source_inlines_header() {
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source_for_jit(&plan, &test_schema());
+
+        assert!(
+            !src.contains("#include \"autonomous_types.h\""),
+            "JIT source must NOT use #include for types (header inlined)"
+        );
+        assert!(
+            src.contains("Inlined autonomous_types.h"),
+            "JIT source must have inlined header comment"
+        );
+        // Verify key struct definitions are inlined
+        assert!(
+            src.contains("struct QueryParamsSlot"),
+            "JIT source must inline QueryParamsSlot definition"
+        );
+        assert!(
+            src.contains("struct OutputBuffer"),
+            "JIT source must inline OutputBuffer definition"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: column type read functions used correctly
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_float_column_uses_read_float32() {
+        let plan = aggregate(
+            vec![(AggFunc::Sum, "price")],
+            vec![],
+            filter_op("price", CompareOp::Gt, Value::Float(100.0), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema_with_float());
+
+        assert!(
+            src.contains("read_float32"),
+            "float column must use read_float32 helper"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile test: invalid Metal source returns Err
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_invalid_source_returns_err() {
+        let gpu = GpuDevice::new();
+
+        // Directly test that invalid MSL fails gracefully
+        let invalid_source = "kernel void bad_kernel() { this_is_invalid_code; }";
+        let ns_source = NSString::from_str(invalid_source);
+        let result = gpu
+            .device
+            .newLibraryWithSource_options_error(&ns_source, None);
+
+        assert!(
+            result.is_err(),
+            "invalid Metal source must return Err from newLibraryWithSource"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: output metadata sets correct agg count
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_output_metadata_agg_count() {
+        let plan = aggregate(
+            vec![
+                (AggFunc::Count, "*"),
+                (AggFunc::Sum, "amount"),
+                (AggFunc::Min, "amount"),
+            ],
+            vec![],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("output->result_col_count = 3"),
+            "output metadata must set result_col_count to agg count (3)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Source pattern: single agg array size matches agg count in JIT
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_accumulator_sized_to_agg_count() {
+        // 2-agg plan: accum arrays should be sized [2], not [5]
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+            vec![],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("long sum_int[2]"),
+            "accumulator sum_int array must be sized to exact agg_count=2"
+        );
+        assert!(
+            !src.contains("long sum_int[5]"),
+            "JIT must NOT use MAX_AGGS=5 for accumulator arrays"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile: GROUP BY query compiles successfully
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_group_by_query() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+            vec!["region"],
+            filter_gt("amount", Value::Int(100), scan("sales")),
+        );
+
+        let result = jit.compile(&plan, &test_schema());
+        assert!(
+            result.is_ok(),
+            "GROUP BY query JIT compile failed: {:?}",
+            result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile: MIN/MAX query compiles successfully
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_min_max_query() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        let plan = aggregate(
+            vec![(AggFunc::Min, "amount"), (AggFunc::Max, "amount")],
+            vec![],
+            scan("sales"),
+        );
+
+        let result = jit.compile(&plan, &test_schema());
+        assert!(
+            result.is_ok(),
+            "MIN/MAX query JIT compile failed: {:?}",
+            result.err()
+        );
+    }
 }
