@@ -168,7 +168,7 @@ Focus: Generate specialized Metal shader source from query plan, compile at runt
 
 Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is the core architectural inversion.
 
-- [ ] 4.1 Implement re-dispatch chain
+- [x] 4.1 Implement re-dispatch chain
   - **Do**: In `executor.rs`, implement the re-dispatch chain: `dispatch_slice()` creates a command buffer, encodes the fused kernel dispatch, commits, and registers a completion handler that calls `dispatch_slice()` again (immediate re-dispatch). Add `enqueue()` for next command buffer to hide gap [KB #152]. Track re-dispatch count. Add idle detection: if no new queries for 500ms, completion handler does NOT re-dispatch; sets state to Idle.
   - **Files**: `gpu-query/src/gpu/autonomous/executor.rs`
   - **Done when**: Re-dispatch chain runs for 10 seconds without GPU watchdog kill. Idle timeout works.

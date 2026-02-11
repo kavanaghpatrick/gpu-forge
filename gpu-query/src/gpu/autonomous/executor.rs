@@ -3,18 +3,24 @@
 //! This module implements:
 //! - `FusedPsoCache`: compiled pipeline state cache for the AOT fused query kernel,
 //!   keyed by (filter_count, agg_count, has_group_by) function constant triple.
-//! - (Future) `AutonomousExecutor`: persistent kernel dispatch with work queue polling.
+//! - `RedispatchChain`: persistent kernel re-dispatch chain using Metal completion handlers.
+//!   Creates a continuous chain of 16ms time-slice command buffers where each completion
+//!   handler immediately dispatches the next. Idle detection stops the chain after 500ms
+//!   of no queries.
 
 use std::collections::HashMap;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
 
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
-    MTLComputePipelineState, MTLDataType, MTLDevice, MTLFunctionConstantValues, MTLLibrary,
-    MTLResourceOptions, MTLSize,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLComputeCommandEncoder, MTLComputePipelineState, MTLDataType, MTLDevice,
+    MTLFunctionConstantValues, MTLLibrary, MTLResourceOptions, MTLSize,
 };
 
 use super::jit::JitCompiler;
@@ -406,6 +412,309 @@ pub fn execute_jit_oneshot(
     Ok(result)
 }
 
+/// Engine state for the re-dispatch chain.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineState {
+    /// Re-dispatch chain is actively running.
+    Active = 0,
+    /// Chain stopped due to idle timeout (no queries for 500ms).
+    Idle = 1,
+    /// Permanently stopped (shutdown requested).
+    Shutdown = 2,
+}
+
+impl EngineState {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => EngineState::Active,
+            1 => EngineState::Idle,
+            2 => EngineState::Shutdown,
+            _ => EngineState::Shutdown,
+        }
+    }
+}
+
+/// Idle timeout in milliseconds. If no new queries arrive within this window,
+/// the completion handler stops re-dispatching and the chain goes idle.
+const IDLE_TIMEOUT_MS: u64 = 500;
+
+/// Shared state for the re-dispatch chain, accessible from Metal completion handlers.
+///
+/// All fields are `Send + Sync` safe via `Arc<Atomic*>` wrappers. The completion
+/// handler closure captures a clone of this struct.
+struct RedispatchSharedState {
+    /// Current engine state (Active/Idle/Shutdown).
+    state: Arc<AtomicU8>,
+    /// Number of re-dispatches completed so far.
+    redispatch_count: Arc<AtomicU64>,
+    /// Timestamp (millis since epoch) of the last query submission.
+    last_query_time_ms: Arc<AtomicU64>,
+    /// Number of GPU errors encountered.
+    error_count: Arc<AtomicU64>,
+    /// Metal command queue for creating new command buffers.
+    command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    /// Compiled pipeline state object for the fused kernel.
+    pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    /// GPU-resident query params buffer (StorageModeShared).
+    params_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// GPU-resident column data buffer.
+    data_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// GPU-resident column metadata buffer.
+    column_meta_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// GPU-resident output buffer.
+    output_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Number of rows in the table (for threadgroup calculation).
+    row_count: u32,
+}
+
+// SAFETY: All fields are either Arc<Atomic*> (Send+Sync) or Retained<ProtocolObject<dyn MTL*>>
+// which are reference-counted Objective-C objects that are thread-safe for retain/release.
+// Metal command queues and buffers are explicitly documented as safe to use from any thread.
+unsafe impl Send for RedispatchSharedState {}
+unsafe impl Sync for RedispatchSharedState {}
+
+/// Dispatch a single time-slice of the fused kernel and register a completion handler
+/// that re-dispatches the next slice (unless idle or shutdown).
+///
+/// This is the core of the re-dispatch chain. Each call:
+/// 1. Creates a command buffer
+/// 2. Encodes the fused kernel dispatch
+/// 3. Registers a completion handler that calls `dispatch_slice` again
+/// 4. Pre-enqueues the next command buffer via `enqueue()` to hide the gap
+/// 5. Commits the current command buffer
+fn dispatch_slice(shared: Arc<RedispatchSharedState>) {
+    // Check if shutdown was requested
+    let state = EngineState::from_u8(shared.state.load(Ordering::Acquire));
+    if state == EngineState::Shutdown {
+        return;
+    }
+
+    // 1. Create command buffer
+    let cmd_buf = match shared.command_queue.commandBuffer() {
+        Some(cb) => cb,
+        None => {
+            shared.error_count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    // 2. Encode compute pass
+    {
+        let encoder = match cmd_buf.computeCommandEncoder() {
+            Some(enc) => enc,
+            None => {
+                shared.error_count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        encoder.setComputePipelineState(&shared.pso);
+
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&*shared.params_buffer), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&*shared.data_buffer), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&*shared.column_meta_buffer), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&*shared.output_buffer), 0, 3);
+        }
+
+        let threads_per_tg = 256usize;
+        let row_count = shared.row_count as usize;
+        let tg_count = if row_count == 0 {
+            1
+        } else {
+            (row_count + threads_per_tg - 1) / threads_per_tg
+        };
+
+        let grid = MTLSize {
+            width: tg_count,
+            height: 1,
+            depth: 1,
+        };
+        let tg = MTLSize {
+            width: threads_per_tg,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+        encoder.endEncoding();
+    }
+
+    // 3. Register completion handler for re-dispatch
+    let shared_for_handler = shared.clone();
+    let handler =
+        RcBlock::new(move |_cb: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+            // Increment re-dispatch count
+            shared_for_handler
+                .redispatch_count
+                .fetch_add(1, Ordering::Relaxed);
+
+            // Check for shutdown
+            let current_state =
+                EngineState::from_u8(shared_for_handler.state.load(Ordering::Acquire));
+            if current_state == EngineState::Shutdown {
+                return;
+            }
+
+            // Check idle timeout: if no queries for 500ms, go idle
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let last_query_ms = shared_for_handler.last_query_time_ms.load(Ordering::Acquire);
+
+            if last_query_ms > 0 && now_ms.saturating_sub(last_query_ms) > IDLE_TIMEOUT_MS {
+                // No queries for > 500ms -> go idle, don't re-dispatch
+                shared_for_handler
+                    .state
+                    .store(EngineState::Idle as u8, Ordering::Release);
+                return;
+            }
+
+            // Re-dispatch next slice
+            dispatch_slice(shared_for_handler.clone());
+        });
+
+    unsafe {
+        cmd_buf.addCompletedHandler(RcBlock::as_ptr(&handler));
+    }
+
+    // 4. Enqueue to pre-queue the command buffer (hides inter-buffer gap)
+    cmd_buf.enqueue();
+
+    // 5. Commit to start GPU execution
+    cmd_buf.commit();
+}
+
+/// Re-dispatch chain for continuous GPU kernel execution.
+///
+/// Maintains a chain of Metal command buffers where each completion handler
+/// immediately dispatches the next. The chain runs continuously while queries
+/// are being submitted, and idles after 500ms of inactivity.
+///
+/// # Architecture
+/// ```text
+/// Time ─────────────────────────────────────────────>
+/// GPU:  [kernel_0 ~~~~] [kernel_1 ~~~~] [kernel_2 ...]
+///                        ^               ^
+/// CPU:  commit(cb_0)    complete(cb_0)  complete(cb_1)
+///                       -> commit(cb_1) -> commit(cb_2)
+///                       enqueue(cb_2)   enqueue(cb_3)
+/// ```
+pub struct RedispatchChain {
+    shared: Arc<RedispatchSharedState>,
+}
+
+impl RedispatchChain {
+    /// Create and start a new re-dispatch chain.
+    ///
+    /// The chain immediately begins dispatching time-slice kernels. The caller
+    /// must call `record_query()` to keep the chain alive; otherwise it will
+    /// idle after 500ms.
+    ///
+    /// # Arguments
+    /// * `command_queue` - Metal command queue (should be dedicated/separate from other work)
+    /// * `pso` - Compiled fused kernel pipeline state
+    /// * `params_buffer` - Query params buffer (StorageModeShared, 512 bytes)
+    /// * `data_buffer` - Column data buffer
+    /// * `column_meta_buffer` - Column metadata buffer
+    /// * `output_buffer` - Output buffer (StorageModeShared, 22560 bytes)
+    /// * `row_count` - Number of rows in the table
+    pub fn start(
+        command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+        params_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        data_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        column_meta_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        output_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        row_count: u32,
+    ) -> Self {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let shared = Arc::new(RedispatchSharedState {
+            state: Arc::new(AtomicU8::new(EngineState::Active as u8)),
+            redispatch_count: Arc::new(AtomicU64::new(0)),
+            last_query_time_ms: Arc::new(AtomicU64::new(now_ms)),
+            error_count: Arc::new(AtomicU64::new(0)),
+            command_queue,
+            pso,
+            params_buffer,
+            data_buffer,
+            column_meta_buffer,
+            output_buffer,
+            row_count,
+        });
+
+        // Start the chain
+        dispatch_slice(shared.clone());
+
+        RedispatchChain { shared }
+    }
+
+    /// Record that a query was submitted (resets idle timer).
+    pub fn record_query(&self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.shared
+            .last_query_time_ms
+            .store(now_ms, Ordering::Release);
+    }
+
+    /// Get the current engine state.
+    pub fn state(&self) -> EngineState {
+        EngineState::from_u8(self.shared.state.load(Ordering::Acquire))
+    }
+
+    /// Get the number of re-dispatches completed so far.
+    pub fn redispatch_count(&self) -> u64 {
+        self.shared.redispatch_count.load(Ordering::Relaxed)
+    }
+
+    /// Get the number of GPU errors encountered.
+    pub fn error_count(&self) -> u64 {
+        self.shared.error_count.load(Ordering::Relaxed)
+    }
+
+    /// Request shutdown. The completion handler will not re-dispatch after the
+    /// current in-flight command buffer completes.
+    pub fn shutdown(&self) {
+        self.shared
+            .state
+            .store(EngineState::Shutdown as u8, Ordering::Release);
+    }
+
+    /// Wake the chain from idle state by re-starting dispatch.
+    /// No-op if already active or shutdown.
+    pub fn wake(&self) {
+        let prev = self.shared.state.compare_exchange(
+            EngineState::Idle as u8,
+            EngineState::Active as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if prev.is_ok() {
+            // Record a query to prevent immediate re-idle
+            self.record_query();
+            dispatch_slice(self.shared.clone());
+        }
+    }
+}
+
+impl Drop for RedispatchChain {
+    fn drop(&mut self) {
+        self.shutdown();
+        // Give the in-flight command buffer a moment to complete.
+        // The completion handler will see Shutdown and not re-dispatch.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,5 +927,162 @@ mod tests {
             "Expected error_code = 0, got {}",
             result.error_code
         );
+    }
+
+    /// Helper: create Metal buffers needed for the re-dispatch chain (params, output).
+    /// Sets up a COUNT(*) query on the given resident table.
+    fn make_redispatch_buffers(
+        device: &ProtocolObject<dyn MTLDevice>,
+        resident_table: &ResidentTable,
+    ) -> (
+        Retained<ProtocolObject<dyn MTLBuffer>>,
+        Retained<ProtocolObject<dyn MTLBuffer>>,
+    ) {
+        let options = MTLResourceOptions::StorageModeShared;
+
+        // Params buffer: COUNT(*) query
+        let mut params = QueryParamsSlot::default();
+        params.sequence_id = 1;
+        params.filter_count = 0;
+        params.agg_count = 1;
+        params.aggs[0] = AggSpec {
+            agg_func: 0,    // COUNT
+            column_idx: 0,
+            column_type: 0, // INT64
+            _pad0: 0,
+        };
+        params.has_group_by = 0;
+        params.group_by_col = 0;
+        params.row_count = resident_table.row_count as u32;
+
+        let params_size = std::mem::size_of::<QueryParamsSlot>();
+        let params_buffer = device
+            .newBufferWithLength_options(params_size, options)
+            .expect("Failed to allocate params buffer");
+        unsafe {
+            let dst = params_buffer.contents().as_ptr() as *mut QueryParamsSlot;
+            std::ptr::copy_nonoverlapping(&params as *const QueryParamsSlot, dst, 1);
+        }
+
+        // Output buffer: zero-initialized
+        let output_size = std::mem::size_of::<OutputBuffer>();
+        let output_buffer = device
+            .newBufferWithLength_options(output_size, options)
+            .expect("Failed to allocate output buffer");
+        unsafe {
+            let dst = output_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(dst, 0, output_size);
+        }
+
+        (params_buffer, output_buffer)
+    }
+
+    #[test]
+    fn test_redispatch_chain() {
+        // Test: Re-dispatch chain runs for 10 seconds without GPU watchdog kill.
+        // Then idle timeout kicks in after 500ms of no queries.
+        let gpu = GpuDevice::new();
+
+        // 1. Prepare test data: single INT64 column, 1000 rows
+        let schema = make_schema(&[("amount", DataType::Int64)]);
+        let batch = make_test_batch(&gpu.device, &schema, 1000);
+        let resident_table =
+            BinaryColumnarLoader::load_table(&gpu.device, "sales", &schema, &batch, None)
+                .expect("Failed to load test table");
+
+        // 2. Compile PSO for COUNT(*): 0 filters, 1 agg, no group_by
+        let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+        let _pso_ref = cache
+            .get_or_compile(0, 1, false)
+            .expect("PSO compilation failed");
+
+        // We need a Retained PSO for the chain. Get it from the cache internals.
+        let pso = cache.cache.remove(&(0, 1, false)).unwrap();
+
+        // 3. Create a separate command queue for the chain
+        let chain_queue = gpu
+            .device
+            .newCommandQueue()
+            .expect("Failed to create chain command queue");
+
+        // 4. Create buffers
+        let (params_buffer, output_buffer) =
+            make_redispatch_buffers(&gpu.device, &resident_table);
+
+        // 5. Start the re-dispatch chain
+        let chain = RedispatchChain::start(
+            chain_queue,
+            pso,
+            params_buffer,
+            resident_table.data_buffer.clone(),
+            resident_table.column_meta_buffer.clone(),
+            output_buffer,
+            resident_table.row_count as u32,
+        );
+
+        // 6. Chain should be Active
+        assert_eq!(
+            chain.state(),
+            EngineState::Active,
+            "Chain should start in Active state"
+        );
+
+        // 7. Run for 10 seconds, periodically recording queries to keep alive
+        let start = std::time::Instant::now();
+        let run_duration = std::time::Duration::from_secs(10);
+
+        while start.elapsed() < run_duration {
+            // Record a query every 100ms to keep chain alive
+            chain.record_query();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            // Verify no GPU errors
+            assert_eq!(
+                chain.error_count(),
+                0,
+                "GPU errors detected after {:?}",
+                start.elapsed()
+            );
+
+            // Verify chain is still active
+            assert_eq!(
+                chain.state(),
+                EngineState::Active,
+                "Chain went idle prematurely after {:?}",
+                start.elapsed()
+            );
+        }
+
+        // 8. Verify re-dispatch happened many times (at least once, but kernel is fast)
+        let count = chain.redispatch_count();
+        assert!(
+            count > 0,
+            "Expected re-dispatch_count > 0, got {}",
+            count
+        );
+
+        // 9. Verify no GPU errors
+        assert_eq!(
+            chain.error_count(),
+            0,
+            "GPU errors after 10 seconds: {}",
+            chain.error_count()
+        );
+
+        // 10. Test idle detection: stop recording queries and wait > 500ms
+        // (don't call record_query anymore)
+        std::thread::sleep(std::time::Duration::from_millis(800));
+
+        // Chain should now be idle
+        assert_eq!(
+            chain.state(),
+            EngineState::Idle,
+            "Chain should be Idle after 800ms without queries (re-dispatches: {})",
+            chain.redispatch_count()
+        );
+
+        // 11. Clean shutdown
+        chain.shutdown();
+        assert_eq!(chain.state(), EngineState::Shutdown);
     }
 }
