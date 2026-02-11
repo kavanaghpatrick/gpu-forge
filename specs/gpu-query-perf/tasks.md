@@ -30,7 +30,7 @@ Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by addi
   - _Requirements: FR-1_
   - _Design: Component 3 (ScanCache)_
 
-- [ ] 1.3 Refactor resolve_input to return table key instead of owned ScanResult
+- [x] 1.3 Refactor resolve_input to return table key instead of owned ScanResult
   - **Do**: Change `resolve_input` return type from `Result<(ScanResult, Option<FilterResult>), String>` to `Result<(String, Option<FilterResult>), String>`. In each match arm: (a) `GpuScan`: call `self.ensure_scan_cached(table, catalog)?`, return `(key, None)`. (b) `GpuFilter`: get key from inner resolve_input or ensure_scan_cached, then `let scan = self.scan_cache.get(&key).unwrap();` and call `self.execute_filter(scan, ...)`. (c) `GpuCompoundFilter`: both `resolve_input(left)` and `resolve_input(right)` now naturally deduplicate via cache. (d) `GpuAggregate` and `GpuSort`: pass through. Update ALL callers of `resolve_input` in `execute()` to use the key pattern: `let scan = self.scan_cache.get(&key).unwrap();` for aggregate/sort operations. This is the core refactor that fixes the double-scan bug.
   - **Files**: `gpu-query/src/gpu/executor.rs`
   - **Done when**: `resolve_input` returns `(String, Option<FilterResult>)`; compound filters hit cache on second branch; all callers updated

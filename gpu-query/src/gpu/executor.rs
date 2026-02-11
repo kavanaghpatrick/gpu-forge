@@ -281,13 +281,14 @@ impl QueryExecutor {
                 group_by,
                 input,
             } => {
-                // Walk down to get scan and optional filter results
-                let (scan_result, filter_result) = self.resolve_input(input, catalog)?;
+                // Walk down to get scan key and optional filter results
+                let (key, filter_result) = self.resolve_input(input, catalog)?;
+                let scan_result = self.scan_cache.get(&key).unwrap();
                 if group_by.is_empty() {
-                    self.execute_aggregate(&scan_result, filter_result.as_ref(), functions)
+                    self.execute_aggregate(scan_result, filter_result.as_ref(), functions)
                 } else {
                     self.execute_aggregate_grouped(
-                        &scan_result,
+                        scan_result,
                         filter_result.as_ref(),
                         functions,
                         group_by,
@@ -297,7 +298,8 @@ impl QueryExecutor {
 
             PhysicalPlan::GpuFilter { .. } => {
                 // A filter without aggregate on top: return filtered row count
-                let (scan_result, filter_result) = self.resolve_input(plan, catalog)?;
+                let (key, filter_result) = self.resolve_input(plan, catalog)?;
+                let scan_result = self.scan_cache.get(&key).unwrap();
                 let count = filter_result
                     .as_ref()
                     .map(|f| f.match_count())
@@ -310,7 +312,8 @@ impl QueryExecutor {
             }
 
             PhysicalPlan::GpuScan { table, .. } => {
-                let scan_result = self.execute_scan_uncached(table, catalog)?;
+                let key = self.ensure_scan_cached(table, catalog)?;
+                let scan_result = self.scan_cache.get(&key).unwrap();
                 let row_count = scan_result.batch.row_count;
                 Ok(QueryResult {
                     columns: vec!["count(*)".to_string()],
@@ -335,7 +338,8 @@ impl QueryExecutor {
 
             PhysicalPlan::GpuCompoundFilter { .. } => {
                 // A compound filter without aggregate on top: return filtered row count
-                let (scan_result, filter_result) = self.resolve_input(plan, catalog)?;
+                let (key, filter_result) = self.resolve_input(plan, catalog)?;
+                let scan_result = self.scan_cache.get(&key).unwrap();
                 let count = filter_result
                     .as_ref()
                     .map(|f| f.match_count())
@@ -349,16 +353,17 @@ impl QueryExecutor {
         }
     }
 
-    /// Recursively resolve the input chain to get scan + optional filter results.
+    /// Recursively resolve the input chain to get cached scan key + optional filter results.
+    /// Returns the scan cache key (use `self.scan_cache.get(&key)` to access the ScanResult).
     fn resolve_input(
         &mut self,
         plan: &PhysicalPlan,
         catalog: &[TableEntry],
-    ) -> Result<(ScanResult, Option<FilterResult>), String> {
+    ) -> Result<(String, Option<FilterResult>), String> {
         match plan {
             PhysicalPlan::GpuScan { table, .. } => {
-                let scan = self.execute_scan_uncached(table, catalog)?;
-                Ok((scan, None))
+                let key = self.ensure_scan_cached(table, catalog)?;
+                Ok((key, None))
             }
 
             PhysicalPlan::GpuFilter {
@@ -367,23 +372,30 @@ impl QueryExecutor {
                 value,
                 input,
             } => {
-                // Get the scan from below the filter
-                let scan = match input.as_ref() {
-                    PhysicalPlan::GpuScan { table, .. } => self.execute_scan_uncached(table, catalog)?,
+                // Get the scan key from below the filter
+                let key = match input.as_ref() {
+                    PhysicalPlan::GpuScan { table, .. } => {
+                        self.ensure_scan_cached(table, catalog)?
+                    }
                     other => {
                         // Recurse for nested plans
-                        let (scan, _) = self.resolve_input(other, catalog)?;
-                        scan
+                        let (key, _) = self.resolve_input(other, catalog)?;
+                        key
                     }
                 };
 
+                // Temporarily remove scan from cache to avoid borrow conflict
+                // (execute_filter needs &mut self while scan is borrowed from self.scan_cache)
+                let scan = self.scan_cache.remove(&key).unwrap();
                 let filter = self.execute_filter(&scan, compare_op, column, value)?;
-                Ok((scan, Some(filter)))
+                self.scan_cache.insert(key.clone(), scan);
+                Ok((key, Some(filter)))
             }
 
             PhysicalPlan::GpuCompoundFilter { op, left, right } => {
                 // Execute both sub-filters to get their bitmasks, then combine.
-                let (scan_left, filter_left) = self.resolve_input(left, catalog)?;
+                // With scan cache, the second branch hits the cache instead of re-scanning.
+                let (key_left, filter_left) = self.resolve_input(left, catalog)?;
                 let (_, filter_right) = self.resolve_input(right, catalog)?;
 
                 let left_filter = filter_left.ok_or_else(|| {
@@ -396,7 +408,7 @@ impl QueryExecutor {
                 let compound_filter =
                     self.execute_compound_filter(&left_filter, &right_filter, *op)?;
 
-                Ok((scan_left, Some(compound_filter)))
+                Ok((key_left, Some(compound_filter)))
             }
 
             PhysicalPlan::GpuAggregate { input, .. } => {
@@ -1604,7 +1616,8 @@ impl QueryExecutor {
         input: &PhysicalPlan,
         catalog: &[TableEntry],
     ) -> Result<QueryResult, String> {
-        let (scan_result, filter_result) = self.resolve_input(input, catalog)?;
+        let (key, filter_result) = self.resolve_input(input, catalog)?;
+        let scan_result = self.scan_cache.get(&key).unwrap();
         let row_count = scan_result.batch.row_count as u32;
 
         // Build selection mask
