@@ -195,7 +195,7 @@ Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is 
   - _Requirements: FR-1 through FR-6_
   - _Design: Component 6_
 
-- [ ] 4.4 End-to-end autonomous query test
+- [x] 4.4 End-to-end autonomous query test
   - **Do**: Integration test that: (1) creates AutonomousExecutor, (2) loads 100K-row deterministic data, (3) submits headline query via submit_query(), (4) polls ready_flag, (5) reads result, (6) verifies correctness against known values. This is the first truly autonomous query -- no `waitUntilCompleted`, no per-query command buffer.
   - **Files**: `gpu-query/tests/autonomous_integration.rs`
   - **Done when**: Autonomous headline query returns correct result without `waitUntilCompleted`

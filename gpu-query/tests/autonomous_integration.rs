@@ -12,7 +12,9 @@
 //!   Column 1 (region): INT64, values = i%5 for i in 0..N
 //!   Column 2 (float_amount): FLOAT64->f32, values = ((i*7+13)%1000) as f32
 
-use gpu_query::gpu::autonomous::executor::{execute_fused_oneshot, execute_jit_oneshot, FusedPsoCache};
+use gpu_query::gpu::autonomous::executor::{
+    execute_fused_oneshot, execute_jit_oneshot, AutonomousExecutor, FusedPsoCache,
+};
 use gpu_query::gpu::autonomous::jit::JitCompiler;
 use gpu_query::gpu::autonomous::loader::{BinaryColumnarLoader, ColumnInfo};
 use gpu_query::gpu::autonomous::types::{AggSpec, FilterSpec, OutputBuffer, QueryParamsSlot};
@@ -1887,6 +1889,180 @@ fn jit_parity_group_by() {
             aot_result.group_keys[g]
         );
     }
+}
+
+// ============================================================================
+// Autonomous End-to-End Test: Headline query via AutonomousExecutor
+//
+// This is the first truly autonomous query — no waitUntilCompleted, no
+// per-query command buffer created from the CPU hot path. The GPU kernel
+// runs asynchronously; we poll ready_flag from unified memory and read
+// the result when ready.
+//
+// Query: SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount)
+//        FROM sales
+//        WHERE amount > 200 AND amount < 800
+//        GROUP BY region
+//
+// Data: 100K rows, amount = (i*7+13)%1000, region = i%5
+// ============================================================================
+#[test]
+fn test_autonomous_headline() {
+    let gpu = GpuDevice::new();
+
+    // 1. Create AutonomousExecutor
+    let mut executor = AutonomousExecutor::new(gpu.device.clone());
+
+    // 2. Load 100K-row deterministic data
+    let schema = test_schema(); // 2 INT64 columns: amount, region
+    let row_count = 100_000usize;
+    let batch = make_test_batch(&gpu.device, &schema, row_count);
+
+    executor
+        .load_table("sales", &schema, &batch)
+        .expect("load_table failed");
+
+    // 3. Pre-compute expected values on CPU
+    let amounts = cpu_amounts(row_count);
+    let regions = cpu_regions(row_count);
+
+    let mut expected_count = [0i64; 5];
+    let mut expected_sum = [0i64; 5];
+    let mut expected_min = [i64::MAX; 5];
+    let mut expected_max = [i64::MIN; 5];
+
+    for i in 0..row_count {
+        let v = amounts[i];
+        if v > 200 && v < 800 {
+            let g = regions[i] as usize;
+            expected_count[g] += 1;
+            expected_sum[g] += v;
+            if v < expected_min[g] {
+                expected_min[g] = v;
+            }
+            if v > expected_max[g] {
+                expected_max[g] = v;
+            }
+        }
+    }
+
+    let active_groups: usize = expected_count.iter().filter(|&&c| c > 0).count();
+    let total_passing: i64 = expected_count.iter().sum();
+    assert!(
+        total_passing > 0,
+        "Sanity: some rows should pass the filter (got {})",
+        total_passing
+    );
+
+    // 4. Build headline query PhysicalPlan
+    let left = plan_filter_gt("amount", 200, plan_scan("sales"));
+    let right = plan_filter_lt("amount", 800, plan_scan("sales"));
+    let compound = plan_compound_and(left, right);
+    let plan = plan_aggregate(
+        vec![
+            (AggFunc::Count, "*"),
+            (AggFunc::Sum, "amount"),
+            (AggFunc::Min, "amount"),
+            (AggFunc::Max, "amount"),
+        ],
+        vec!["region"],
+        compound,
+    );
+
+    let col_schema = jit_schema(); // amount: Int64, region: Int64
+
+    // 5. Submit query via submit_query() — non-blocking, no waitUntilCompleted
+    let seq_id = executor
+        .submit_query(&plan, &col_schema, "sales")
+        .expect("submit_query failed");
+
+    assert!(seq_id > 0, "sequence_id should be > 0, got {}", seq_id);
+
+    // 6. Poll ready_flag from unified memory (no GPU readback, no blocking)
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+    while !executor.poll_ready() {
+        if start.elapsed() > timeout {
+            panic!(
+                "Timed out waiting for autonomous headline query result (30s)"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
+
+    let poll_duration = start.elapsed();
+
+    // 7. Read result from unified memory
+    let result = executor.read_result();
+
+    // 8. Verify correctness
+    assert_eq!(result.ready_flag, 1, "ready_flag should be 1");
+    assert_eq!(result.error_code, 0, "error_code should be 0");
+    assert_eq!(
+        result.result_row_count, active_groups as u32,
+        "Expected {} active groups, got {}",
+        active_groups, result.result_row_count
+    );
+
+    // Verify each group
+    for g in 0..5usize {
+        if expected_count[g] == 0 {
+            continue;
+        }
+        let bucket = g; // abs(g) % 64 = g for g in 0..5
+
+        // COUNT
+        assert_eq!(
+            result.agg_results[bucket][0].value_int, expected_count[g],
+            "Autonomous group {}: COUNT expected {}, got {}",
+            g, expected_count[g], result.agg_results[bucket][0].value_int
+        );
+
+        // SUM
+        assert_eq!(
+            result.agg_results[bucket][1].value_int, expected_sum[g],
+            "Autonomous group {}: SUM expected {}, got {}",
+            g, expected_sum[g], result.agg_results[bucket][1].value_int
+        );
+
+        // MIN
+        assert_eq!(
+            result.agg_results[bucket][2].value_int, expected_min[g],
+            "Autonomous group {}: MIN expected {}, got {}",
+            g, expected_min[g], result.agg_results[bucket][2].value_int
+        );
+
+        // MAX
+        assert_eq!(
+            result.agg_results[bucket][3].value_int, expected_max[g],
+            "Autonomous group {}: MAX expected {}, got {}",
+            g, expected_max[g], result.agg_results[bucket][3].value_int
+        );
+
+        // Group key
+        assert_eq!(
+            result.group_keys[bucket], g as i64,
+            "Autonomous group key at bucket {}: expected {}, got {}",
+            bucket, g, result.group_keys[bucket]
+        );
+    }
+
+    // 9. Log performance (informational — not a pass/fail criterion for POC)
+    eprintln!(
+        "Autonomous headline query completed in {:?} (poll latency from submit to ready)",
+        poll_duration
+    );
+
+    // 10. Verify stats
+    let stats = executor.stats();
+    assert_eq!(
+        stats.total_queries, 1,
+        "Should have 1 total query, got {}",
+        stats.total_queries
+    );
+
+    // 11. Shutdown
+    executor.shutdown();
 }
 
 // ============================================================================
