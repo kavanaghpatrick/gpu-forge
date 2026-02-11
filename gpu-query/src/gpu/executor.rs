@@ -310,7 +310,7 @@ impl QueryExecutor {
             }
 
             PhysicalPlan::GpuScan { table, .. } => {
-                let scan_result = self.execute_scan(table, catalog)?;
+                let scan_result = self.execute_scan_uncached(table, catalog)?;
                 let row_count = scan_result.batch.row_count;
                 Ok(QueryResult {
                     columns: vec!["count(*)".to_string()],
@@ -357,7 +357,7 @@ impl QueryExecutor {
     ) -> Result<(ScanResult, Option<FilterResult>), String> {
         match plan {
             PhysicalPlan::GpuScan { table, .. } => {
-                let scan = self.execute_scan(table, catalog)?;
+                let scan = self.execute_scan_uncached(table, catalog)?;
                 Ok((scan, None))
             }
 
@@ -369,7 +369,7 @@ impl QueryExecutor {
             } => {
                 // Get the scan from below the filter
                 let scan = match input.as_ref() {
-                    PhysicalPlan::GpuScan { table, .. } => self.execute_scan(table, catalog)?,
+                    PhysicalPlan::GpuScan { table, .. } => self.execute_scan_uncached(table, catalog)?,
                     other => {
                         // Recurse for nested plans
                         let (scan, _) = self.resolve_input(other, catalog)?;
@@ -413,8 +413,23 @@ impl QueryExecutor {
         }
     }
 
+    /// Check if a scan result is cached; if not, execute the scan and cache it.
+    /// Returns the lowercase cache key for later retrieval via `self.scan_cache.get(&key)`.
+    fn ensure_scan_cached(
+        &mut self,
+        table: &str,
+        catalog: &[TableEntry],
+    ) -> Result<String, String> {
+        let key = table.to_ascii_lowercase();
+        if !self.scan_cache.contains_key(&key) {
+            let result = self.execute_scan_uncached(table, catalog)?;
+            self.scan_cache.insert(key.clone(), result);
+        }
+        Ok(key)
+    }
+
     /// Execute a table scan: mmap file -> GPU CSV/Parquet parse -> ColumnarBatch.
-    fn execute_scan(&self, table: &str, catalog: &[TableEntry]) -> Result<ScanResult, String> {
+    fn execute_scan_uncached(&self, table: &str, catalog: &[TableEntry]) -> Result<ScanResult, String> {
         // Find the table in the catalog
         let entry = catalog
             .iter()
@@ -2686,7 +2701,7 @@ impl QueryExecutor {
         catalog: &[TableEntry],
     ) -> Result<DescribeResult, String> {
         // Scan the table data (reuse existing scan logic)
-        let scan = self.execute_scan(table_name, catalog)?;
+        let scan = self.execute_scan_uncached(table_name, catalog)?;
         let row_count = scan.batch.row_count;
 
         if row_count == 0 {

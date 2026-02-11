@@ -21,7 +21,7 @@ Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by addi
   - _Requirements: FR-1, FR-2_
   - _Design: Component 3 (ScanCache)_
 
-- [ ] 1.2 Add ensure_scan_cached and execute_scan_uncached methods
+- [x] 1.2 Add ensure_scan_cached and execute_scan_uncached methods
   - **Do**: Rename current `execute_scan` to `execute_scan_uncached` (private). Create new `ensure_scan_cached(&mut self, table: &str, catalog: &[TableEntry]) -> Result<String, String>` that: (1) lowercases table name as key, (2) checks `self.scan_cache.contains_key(&key)`, (3) if miss, calls `self.execute_scan_uncached(table, catalog)?` and inserts result into `self.scan_cache`, (4) returns the lowercase key. Do NOT add file stat validation yet -- just get basic caching working.
   - **Files**: `gpu-query/src/gpu/executor.rs`
   - **Done when**: `ensure_scan_cached` populates cache on miss, returns key on hit; compiles
