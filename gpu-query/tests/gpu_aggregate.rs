@@ -25,7 +25,7 @@ fn build_all_ones_mask(
     device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
     row_count: usize,
 ) -> objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTLBuffer>> {
-    let num_words = (row_count + 31) / 32;
+    let num_words = row_count.div_ceil(32);
     let buf = encode::alloc_buffer(device, num_words * 4);
     unsafe {
         let ptr = buf.contents().as_ptr() as *mut u32;
@@ -58,7 +58,7 @@ fn run_filter_to_bitmask(
     u32,
 ) {
     let row_count = data.len() as u32;
-    let bitmask_words = ((row_count + 31) / 32) as usize;
+    let bitmask_words = row_count.div_ceil(32) as usize;
 
     let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
     let bitmask_buffer = encode::alloc_buffer(&gpu.device, bitmask_words * 4);
@@ -132,7 +132,7 @@ fn run_aggregate_count(
     mask_buffer: &objc2::runtime::ProtocolObject<dyn MTLBuffer>,
     row_count: u32,
 ) -> u64 {
-    let num_words = ((row_count + 31) / 32) as usize;
+    let num_words = row_count.div_ceil(32) as usize;
 
     // Result buffer: single uint32 (atomic_uint)
     let result_buffer = encode::alloc_buffer(&gpu.device, 4);
@@ -225,7 +225,7 @@ fn run_aggregate_sum_int64(
         }
 
         let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-        let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+        let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
         let grid_size = objc2_metal::MTLSize {
             width: threadgroup_count,
@@ -576,7 +576,7 @@ fn run_aggregate_min_int64(
 
     let pipeline = encode::make_pipeline(&gpu.library, "aggregate_min_int64");
     let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-    let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+    let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
     // Partials buffer: one i64 per threadgroup, initialized to INT64_MAX
     let partials_buffer =
@@ -655,7 +655,7 @@ fn run_aggregate_max_int64(
 
     let pipeline = encode::make_pipeline(&gpu.library, "aggregate_max_int64");
     let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-    let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+    let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
     // Partials buffer: one i64 per threadgroup, initialized to INT64_MIN
     let partials_buffer =
@@ -764,7 +764,7 @@ fn run_aggregate_sum_float(
         }
 
         let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-        let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+        let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
         let grid_size = objc2_metal::MTLSize {
             width: threadgroup_count,

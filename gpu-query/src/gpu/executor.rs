@@ -466,9 +466,9 @@ impl QueryExecutor {
                 .map_err(|e| format!("Failed to stat '{}': {}", entry.path.display(), e))?;
             let cached = self.scan_cache.get(&key).unwrap();
             let current_size = meta.len();
-            let current_mtime = meta
-                .modified()
-                .map_err(|e| format!("Failed to get mtime for '{}': {}", entry.path.display(), e))?;
+            let current_mtime = meta.modified().map_err(|e| {
+                format!("Failed to get mtime for '{}': {}", entry.path.display(), e)
+            })?;
             if current_size != cached.file_size || current_mtime != cached.file_modified {
                 // Stale entry -- remove and re-scan below
                 self.scan_cache.remove(&key);
@@ -484,9 +484,9 @@ impl QueryExecutor {
             let meta = std::fs::metadata(&entry.path)
                 .map_err(|e| format!("Failed to stat '{}': {}", entry.path.display(), e))?;
             let file_size = meta.len();
-            let file_modified = meta
-                .modified()
-                .map_err(|e| format!("Failed to get mtime for '{}': {}", entry.path.display(), e))?;
+            let file_modified = meta.modified().map_err(|e| {
+                format!("Failed to get mtime for '{}': {}", entry.path.display(), e)
+            })?;
             let result = self.execute_scan_uncached(table, catalog)?;
             // FIFO eviction: remove an entry when cache is at capacity
             if self.scan_cache.len() >= 8 {
@@ -506,7 +506,11 @@ impl QueryExecutor {
     }
 
     /// Execute a table scan: mmap file -> GPU CSV/Parquet parse -> ColumnarBatch.
-    fn execute_scan_uncached(&self, table: &str, catalog: &[TableEntry]) -> Result<ScanResult, String> {
+    fn execute_scan_uncached(
+        &self,
+        table: &str,
+        catalog: &[TableEntry],
+    ) -> Result<ScanResult, String> {
         // Find the table in the catalog
         let entry = catalog
             .iter()
@@ -1721,11 +1725,10 @@ impl QueryExecutor {
                         .count();
                     let dict_codes =
                         unsafe { scan_result.batch.read_string_dict_column(local_idx) };
-                    let dict = scan_result
-                        .batch
-                        .dictionaries
-                        .get(col_idx)
-                        .and_then(|d: &Option<crate::storage::dictionary::Dictionary>| d.as_ref());
+                    let dict =
+                        scan_result.batch.dictionaries.get(col_idx).and_then(
+                            |d: &Option<crate::storage::dictionary::Dictionary>| d.as_ref(),
+                        );
                     let vals: Vec<String> = dict_codes
                         .iter()
                         .map(|&code| {

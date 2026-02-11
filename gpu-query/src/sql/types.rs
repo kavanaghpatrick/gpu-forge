@@ -180,7 +180,9 @@ mod tests {
     #[test]
     fn test_value_display() {
         assert_eq!(Value::Int(42).to_string(), "42");
-        assert_eq!(Value::Float(3.14).to_string(), "3.14");
+        #[allow(clippy::approx_constant)]
+        let pi_approx = 3.14;
+        assert_eq!(Value::Float(pi_approx).to_string(), "3.14");
         assert_eq!(Value::Str("hello".into()).to_string(), "'hello'");
         assert_eq!(Value::Null.to_string(), "NULL");
     }

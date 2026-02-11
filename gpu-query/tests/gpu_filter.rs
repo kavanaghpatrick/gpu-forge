@@ -20,7 +20,7 @@ fn run_int64_filter(
     compare_value: i64,
 ) -> (Vec<u32>, u32) {
     let row_count = data.len() as u32;
-    let bitmask_words = ((row_count + 31) / 32) as usize;
+    let bitmask_words = row_count.div_ceil(32) as usize;
 
     // Allocate buffers
     let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
@@ -267,8 +267,8 @@ fn test_int64_filter_exactly_32_rows() {
     let indices = bitmask_to_indices(&bitmask, data.len());
     assert_eq!(indices.len(), 16);
     // rows 0..15 (values 1..16)
-    for i in 0..16 {
-        assert_eq!(indices[i], i);
+    for (i, &idx) in indices.iter().enumerate().take(16) {
+        assert_eq!(idx, i);
     }
 }
 
@@ -306,7 +306,7 @@ fn run_float_filter(
     compare_value: f32,
 ) -> (Vec<u32>, u32) {
     let row_count = data.len() as u32;
-    let bitmask_words = ((row_count + 31) / 32) as usize;
+    let bitmask_words = row_count.div_ceil(32) as usize;
 
     let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
     let bitmask_buffer = encode::alloc_buffer(&gpu.device, bitmask_words * 4);

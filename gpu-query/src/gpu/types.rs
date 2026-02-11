@@ -164,6 +164,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn filter_params_nonzero_round_trip() {
         let fp = FilterParams {
             compare_value_int: 42,

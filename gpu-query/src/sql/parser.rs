@@ -587,7 +587,7 @@ mod tests {
         let plan = parse_query("SELECT * FROM t ORDER BY id ASC").unwrap();
         match &plan {
             LogicalPlan::Sort { order_by, .. } => {
-                assert_eq!(order_by[0].1, true); // ASC
+                assert!(order_by[0].1); // ASC
             }
             _ => panic!("expected Sort"),
         }
@@ -645,6 +645,7 @@ mod tests {
     // ---- Value types ----
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_float_literal() {
         let plan = parse_query("SELECT * FROM t WHERE x > 3.14").unwrap();
         match &plan {
@@ -1316,6 +1317,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_negative_float() {
         let plan = parse_query("SELECT * FROM t WHERE x > -3.14").unwrap();
         match &plan {

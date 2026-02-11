@@ -228,8 +228,7 @@ fn execute_dot_command(app: &mut super::app::AppState) {
                     };
                     match executor_result {
                         Ok(mut executor) => {
-                            let desc_result =
-                                executor.execute_describe(&table_name, &catalog);
+                            let desc_result = executor.execute_describe(&table_name, &catalog);
                             // Put executor back before handling result
                             app.executor = Some(executor);
                             match desc_result {

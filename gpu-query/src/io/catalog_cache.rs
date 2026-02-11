@@ -155,7 +155,10 @@ mod tests {
         assert_eq!(entries1.len(), 1);
 
         // Second call should return cached data (is_valid == true).
-        assert!(cache.is_valid().unwrap(), "cache should be valid on unchanged dir");
+        assert!(
+            cache.is_valid().unwrap(),
+            "cache should be valid on unchanged dir"
+        );
         let entries2 = cache.get_or_refresh().unwrap();
         assert_eq!(entries2.len(), 1);
         assert_eq!(entries2[0].name, entries1[0].name);
@@ -178,7 +181,10 @@ mod tests {
         write_csv(tmp.path(), "b.csv", "x\n2\n");
 
         // Cache should detect new file via dir mtime change.
-        assert!(!cache.is_valid().unwrap(), "cache should be invalid after new file");
+        assert!(
+            !cache.is_valid().unwrap(),
+            "cache should be invalid after new file"
+        );
         let entries = cache.get_or_refresh().unwrap();
         assert_eq!(entries.len(), 2);
     }
@@ -199,7 +205,10 @@ mod tests {
         fs::write(&csv_path, "col\nnew_longer_content\n").unwrap();
 
         // Cache should detect modified file via fingerprint mismatch.
-        assert!(!cache.is_valid().unwrap(), "cache should be invalid after file modification");
+        assert!(
+            !cache.is_valid().unwrap(),
+            "cache should be invalid after file modification"
+        );
         let entries = cache.get_or_refresh().unwrap();
         assert_eq!(entries.len(), 1);
     }
@@ -218,7 +227,10 @@ mod tests {
 
         // Manual invalidation should clear everything.
         cache.invalidate();
-        assert!(!cache.is_valid().unwrap(), "cache should be invalid after invalidate()");
+        assert!(
+            !cache.is_valid().unwrap(),
+            "cache should be invalid after invalidate()"
+        );
         assert!(cache.entries.is_empty());
         assert!(cache.fingerprints.is_empty());
         assert!(cache.dir_modified.is_none());

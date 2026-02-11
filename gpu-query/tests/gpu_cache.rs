@@ -30,7 +30,9 @@ fn run_query_with(
     let cat = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
     let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
-    executor.execute(&physical_plan, &cat).expect("execute query")
+    executor
+        .execute(&physical_plan, &cat)
+        .expect("execute query")
 }
 
 // ============================================================
@@ -49,14 +51,14 @@ fn test_scan_cache_hit() {
     // First query scans the table
     let r1 = run_query_with(&mut executor, tmp.path(), "SELECT count(*) FROM sales");
     assert_eq!(r1.rows[0][0], "3");
-    assert_eq!(executor.scan_cache_len(), 1, "one entry cached after first query");
+    assert_eq!(
+        executor.scan_cache_len(),
+        1,
+        "one entry cached after first query"
+    );
 
     // Second query should hit cache (still 1 entry, not 2)
-    let r2 = run_query_with(
-        &mut executor,
-        tmp.path(),
-        "SELECT sum(amount) FROM sales",
-    );
+    let r2 = run_query_with(&mut executor, tmp.path(), "SELECT sum(amount) FROM sales");
     assert_eq!(r2.rows[0][0], "600");
     assert_eq!(
         executor.scan_cache_len(),
@@ -145,11 +147,7 @@ fn test_scan_cache_invalidation_on_file_change() {
     let mut executor = QueryExecutor::new().expect("create executor");
 
     // First query: populates cache
-    let r1 = run_query_with(
-        &mut executor,
-        tmp.path(),
-        "SELECT sum(amount) FROM sales",
-    );
+    let r1 = run_query_with(&mut executor, tmp.path(), "SELECT sum(amount) FROM sales");
     assert_eq!(r1.rows[0][0], "600", "sum before file change");
     assert_eq!(executor.scan_cache_len(), 1);
 
@@ -160,12 +158,11 @@ fn test_scan_cache_invalidation_on_file_change() {
     make_csv(tmp.path(), "sales.csv", csv_v2);
 
     // Second query: should detect stale cache entry and re-scan
-    let r2 = run_query_with(
-        &mut executor,
-        tmp.path(),
-        "SELECT sum(amount) FROM sales",
+    let r2 = run_query_with(&mut executor, tmp.path(), "SELECT sum(amount) FROM sales");
+    assert_eq!(
+        r2.rows[0][0], "1000",
+        "sum after file change reflects new data"
     );
-    assert_eq!(r2.rows[0][0], "1000", "sum after file change reflects new data");
     assert_eq!(
         executor.scan_cache_len(),
         1,

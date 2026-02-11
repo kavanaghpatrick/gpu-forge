@@ -229,9 +229,7 @@ fn bench_compound_warm_1m(c: &mut Criterion) {
 
     // Now benchmark warm iterations only -- scan cache is populated
     group.bench_function(BenchmarkId::new("compound_and_group_by", n_rows), |b| {
-        b.iter(|| {
-            executor.execute(&physical, &catalog).expect("execute")
-        });
+        b.iter(|| executor.execute(&physical, &catalog).expect("execute"));
     });
 
     group.finish();

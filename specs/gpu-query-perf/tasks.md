@@ -183,7 +183,7 @@ Focus: Add targeted tests for cache correctness, invalidation, and performance b
 
 Focus: Final polish, lint, and PR preparation.
 
-- [ ] 5.1 Clippy and formatting pass
+- [x] 5.1 Clippy and formatting pass
   - **Do**: Run `cargo clippy --lib --tests -- -D warnings` and `cargo fmt --check`. Fix any warnings. Common issues: unused imports from refactored code, missing `#[allow(dead_code)]` on temporary helpers, borrow pattern suggestions.
   - **Files**: Various
   - **Done when**: Zero clippy warnings, formatting clean

@@ -686,6 +686,7 @@ mod tests {
 
     // ── Execution tests ────────────────────────────────────────────────
 
+    #[allow(clippy::type_complexity)]
     fn make_ctx<'a>(
         tables: &'a [(String, String, Vec<(String, String)>)],
         history: &'a [String],
@@ -855,6 +856,7 @@ mod tests {
     #[test]
     fn test_handle_save_success() {
         let tmp = std::env::temp_dir().join("gpu_query_test_save.txt");
+        #[allow(clippy::type_complexity)]
         let tables: Vec<(String, String, Vec<(String, String)>)> = vec![];
         let history: Vec<String> = vec![];
         let ctx = DotCommandContext {
@@ -950,6 +952,7 @@ mod tests {
 
     #[test]
     fn test_handle_comparison_with_data() {
+        #[allow(clippy::type_complexity)]
         let tables: Vec<(String, String, Vec<(String, String)>)> = vec![];
         let history: Vec<String> = vec![];
         let ctx = DotCommandContext {

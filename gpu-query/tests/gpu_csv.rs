@@ -169,7 +169,7 @@ fn gpu_parse_csv(
         num_columns: schema.num_columns() as u32,
         delimiter: delimiter as u32,
         has_header: if has_header { 1 } else { 0 },
-        max_rows: max_rows,
+        max_rows,
         _pad0: 0,
     };
     let parse_params_buffer = encode::alloc_buffer_with_data(&gpu.device, &[parse_params]);
@@ -193,7 +193,7 @@ fn gpu_parse_csv(
         }
 
         let threads_per_tg = parse_pipeline.maxTotalThreadsPerThreadgroup().min(256);
-        let tg_count = (num_data_rows + threads_per_tg - 1) / threads_per_tg;
+        let tg_count = num_data_rows.div_ceil(threads_per_tg);
 
         let grid = objc2_metal::MTLSize {
             width: tg_count,

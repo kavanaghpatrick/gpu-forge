@@ -656,7 +656,9 @@ mod tests {
     #[test]
     fn test_format_f64_basic() {
         assert_eq!(format_f64(0.0), "0.00");
-        assert_eq!(format_f64(3.14), "3.14");
+        #[allow(clippy::approx_constant)]
+        let pi_approx = 3.14;
+        assert_eq!(format_f64(pi_approx), "3.14");
     }
 
     #[test]

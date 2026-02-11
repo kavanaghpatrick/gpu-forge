@@ -20,6 +20,7 @@ use objc2_metal::{
 
 // ---- Helper: run filter and return (bitmask_buffer, match_count_buffer) ----
 
+#[allow(clippy::type_complexity)]
 fn run_filter(
     gpu: &GpuDevice,
     pso_cache: &mut PsoCache,
@@ -32,7 +33,7 @@ fn run_filter(
     u32, // row_count
 ) {
     let row_count = data.len() as u32;
-    let bitmask_words = ((row_count + 31) / 32) as usize;
+    let bitmask_words = row_count.div_ceil(32) as usize;
 
     let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
     let bitmask_buffer = encode::alloc_buffer(&gpu.device, std::cmp::max(bitmask_words * 4, 4));
@@ -149,7 +150,7 @@ fn run_count_direct(
     mask_buffer: &objc2::runtime::ProtocolObject<dyn MTLBuffer>,
     row_count: u32,
 ) -> u32 {
-    let num_words = ((row_count + 31) / 32) as usize;
+    let num_words = row_count.div_ceil(32) as usize;
     let result_buffer = encode::alloc_buffer(&gpu.device, 4);
     unsafe {
         let ptr = result_buffer.contents().as_ptr() as *mut u32;
@@ -258,7 +259,7 @@ fn run_filter_indirect_count_single_cmdbuf(
     compare_value: i64,
 ) -> u32 {
     let row_count = data.len() as u32;
-    let bitmask_words = ((row_count + 31) / 32) as usize;
+    let bitmask_words = row_count.div_ceil(32) as usize;
 
     // Allocate all buffers upfront
     let data_buffer = encode::alloc_buffer_with_data(&gpu.device, data);
@@ -410,7 +411,7 @@ fn test_prepare_dispatch_basic() {
 
     let args = run_prepare_dispatch(&gpu, &match_count_buffer, threads_per_tg);
 
-    let expected_tg = (1000 + 255) / 256; // = 4
+    let expected_tg = 1000_u32.div_ceil(256); // = 4
     assert_eq!(args.threadgroups_x, expected_tg);
     assert_eq!(args.threadgroups_y, 1);
     assert_eq!(args.threadgroups_z, 1);
@@ -470,7 +471,7 @@ fn test_prepare_dispatch_large_count() {
 
     let args = run_prepare_dispatch(&gpu, &match_count_buffer, 256);
 
-    let expected = (1_000_000 + 255) / 256; // = 3907
+    let expected = 1_000_000_u32.div_ceil(256); // = 3907
     assert_eq!(args.threadgroups_x, expected);
 }
 
@@ -488,7 +489,7 @@ fn test_indirect_vs_direct_all_match() {
     let direct_count = run_count_direct(&gpu, &bitmask, row_count);
 
     // Prepare indirect dispatch args for aggregate (aggregate_count dispatches per bitmask word)
-    let num_words = ((row_count + 31) / 32) as u32;
+    let num_words = row_count.div_ceil(32);
     let word_count_buffer = encode::alloc_buffer_with_data(&gpu.device, &[num_words]);
     let threads_per_tg = 256u32;
     let args = run_prepare_dispatch(&gpu, &word_count_buffer, threads_per_tg);
@@ -515,7 +516,7 @@ fn test_indirect_vs_direct_none_match() {
     let direct_count = run_count_direct(&gpu, &bitmask, row_count);
 
     // Prepare indirect dispatch for bitmask word count
-    let num_words = ((row_count + 31) / 32) as u32;
+    let num_words = row_count.div_ceil(32);
     let word_count_buffer = encode::alloc_buffer_with_data(&gpu.device, &[num_words]);
     let args = run_prepare_dispatch(&gpu, &word_count_buffer, 256);
     let dispatch_args_buffer = encode::alloc_buffer_with_data(&gpu.device, &[args]);
@@ -537,7 +538,7 @@ fn test_indirect_vs_direct_partial_match() {
 
     let direct_count = run_count_direct(&gpu, &bitmask, row_count);
 
-    let num_words = ((row_count + 31) / 32) as u32;
+    let num_words = row_count.div_ceil(32);
     let word_count_buffer = encode::alloc_buffer_with_data(&gpu.device, &[num_words]);
     let args = run_prepare_dispatch(&gpu, &word_count_buffer, 256);
     let dispatch_args_buffer = encode::alloc_buffer_with_data(&gpu.device, &[args]);

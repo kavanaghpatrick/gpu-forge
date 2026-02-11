@@ -342,11 +342,15 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     app.status_message = "Executing query...".into();
 
     // Scan catalog
-    let catalog = app.catalog_cache.get_or_refresh().map(|s| s.to_vec()).map_err(|e| {
-        let msg = format!("Catalog scan error: {}", e);
-        app.set_error(msg.clone());
-        msg
-    })?;
+    let catalog = app
+        .catalog_cache
+        .get_or_refresh()
+        .map(|s| s.to_vec())
+        .map_err(|e| {
+            let msg = format!("Catalog scan error: {}", e);
+            app.set_error(msg.clone());
+            msg
+        })?;
 
     if catalog.is_empty() {
         let msg = format!("No data files in '{}'", app.data_dir.display());
@@ -372,13 +376,14 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     })?;
 
     // Execute on GPU -- use persistent executor from AppState (take/put-back for borrow safety)
-    let mut executor = app.executor.take().unwrap_or(
-        crate::gpu::executor::QueryExecutor::new().map_err(|e| {
-            let msg = format!("GPU init error: {}", e);
-            app.set_error(msg.clone());
-            msg
-        })?,
-    );
+    let mut executor =
+        app.executor
+            .take()
+            .unwrap_or(crate::gpu::executor::QueryExecutor::new().map_err(|e| {
+                let msg = format!("GPU init error: {}", e);
+                app.set_error(msg.clone());
+                msg
+            })?);
 
     let start = std::time::Instant::now();
     let result = executor.execute(&physical_plan, &catalog);
@@ -490,7 +495,7 @@ mod tests {
     #[test]
     fn test_layout_mode_all_variants() {
         // Ensure all three modes are reachable
-        let modes: Vec<LayoutMode> = (0..200).map(|w| layout_mode(w)).collect();
+        let modes: Vec<LayoutMode> = (0..200).map(layout_mode).collect();
         assert!(modes.contains(&LayoutMode::Minimal));
         assert!(modes.contains(&LayoutMode::TwoPanel));
         assert!(modes.contains(&LayoutMode::Full));
