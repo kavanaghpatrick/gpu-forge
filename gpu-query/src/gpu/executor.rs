@@ -254,6 +254,7 @@ impl FilterResult {
 pub struct QueryExecutor {
     device: GpuDevice,
     pso_cache: PsoCache,
+    scan_cache: HashMap<String, ScanResult>,
 }
 
 impl QueryExecutor {
@@ -261,7 +262,11 @@ impl QueryExecutor {
     pub fn new() -> Result<Self, String> {
         let device = GpuDevice::new();
         let pso_cache = PsoCache::new();
-        Ok(Self { device, pso_cache })
+        Ok(Self {
+            device,
+            pso_cache,
+            scan_cache: HashMap::new(),
+        })
     }
 
     /// Execute a physical plan against data in the catalog.

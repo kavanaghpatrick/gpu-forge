@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by adding a per-executor scan cache. This single change fixes B1, B3, and B4 for within-query deduplication.
 
-- [ ] 1.1 Add scan_cache field to QueryExecutor
+- [x] 1.1 Add scan_cache field to QueryExecutor
   - **Do**: Add `scan_cache: HashMap<String, ScanResult>` field to `QueryExecutor` struct at `src/gpu/executor.rs:254`. Initialize as `HashMap::new()` in `QueryExecutor::new()` at line 261. Add `use std::collections::HashMap;` if not already imported (it is, line 10). Ensure `ScanResult` derives or implements any needed traits -- it currently does not need `Clone` since it stays in the cache.
   - **Files**: `gpu-query/src/gpu/executor.rs`
   - **Done when**: `QueryExecutor` struct has `scan_cache` field; `new()` initializes it; project compiles
