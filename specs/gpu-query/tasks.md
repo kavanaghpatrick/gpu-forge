@@ -326,7 +326,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: NFR-13_
   - _Design: GPU Kernel Architecture_
 
-- [ ] 4.4 End-to-end SQL query tests with golden files
+- [x] 4.4 End-to-end SQL query tests with golden files
   - **Do**: Create golden file test framework: for each test query, store expected CSV output in `tests/golden/`. Test runner executes SQL against test data files, compares output against golden file (exact for integers, tolerance for floats). Cover: ~25 CSV queries, ~25 Parquet queries, ~20 JSON queries, ~10 cross-format consistency, ~10 CLI mode, ~15 error handling.
   - **Files**: `gpu-query/tests/e2e_csv.rs`, `gpu-query/tests/e2e_parquet.rs`, `gpu-query/tests/e2e_json.rs`, `gpu-query/tests/e2e_cross.rs`, `gpu-query/tests/e2e_cli.rs`, `gpu-query/tests/e2e_errors.rs`, `gpu-query/tests/golden/` directory
   - **Done when**: ~105 E2E tests pass against golden files
