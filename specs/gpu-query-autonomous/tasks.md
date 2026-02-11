@@ -158,7 +158,7 @@ Focus: Generate specialized Metal shader source from query plan, compile at runt
   - _Requirements: FR-6_
   - _Design: Component 4_
 
-- [ ] 3.5 JIT checkpoint
+- [x] 3.5 JIT checkpoint
   - **Do**: Verify JIT compilation, caching, and dispatch work end-to-end. Run full regression.
   - **Done when**: JIT produces correct results, cache hit is <0.01ms, all tests pass
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | tail -10`
