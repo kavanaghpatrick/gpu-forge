@@ -111,7 +111,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-2_
   - _Design: File I/O, gpu_io.rs_
 
-- [ ] 1.12 Port io/batch.rs -- batch file loading
+- [x] 1.12 Port io/batch.rs -- batch file loading
   - **Do**: Port `rust-experiment/src/gpu_os/batch_io.rs` (514 lines). Port `BatchLoadResult` and `BatchLoadHandle` types to objc2-metal. Batch multiple files into single MTLIOCommandBuffer for parallel loading.
   - **Files**: `gpu-search/src/io/batch.rs`, update `gpu-search/src/io/mod.rs`
   - **Done when**: 100 files loaded via MTLIOCommandQueue, contents verified
