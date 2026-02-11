@@ -353,7 +353,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: NFR-13_
   - _Design: Error Handling_
 
-- [ ] 4.7 CI/CD pipeline setup
+- [x] 4.7 CI/CD pipeline setup
   - **Do**: Create `.github/workflows/ci.yml` with: (a) unit tests on ubuntu-latest (no GPU), (b) GPU tests on macos-latest (Apple Silicon), (c) Metal Shader Validation on shader changes, (d) benchmarks on main only (save baseline), (e) fuzz nightly. Two-tier performance gate: 15% blocks merge, 5% warns.
   - **Files**: `gpu-query/.github/workflows/ci.yml`
   - **Done when**: CI pipeline runs on push; unit tests pass on Linux, GPU tests pass on macOS
