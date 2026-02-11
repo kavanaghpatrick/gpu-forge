@@ -21,7 +21,7 @@ Focus: Establish the shared data formats between Rust and MSL. Load data into GP
   - _Requirements: FR-1_
   - _Design: Component 6_
 
-- [ ] 1.2 Define #[repr(C)] shared types with layout tests
+- [x] 1.2 Define #[repr(C)] shared types with layout tests
   - **Do**: Create `src/gpu/autonomous/types.rs` with `FilterSpec` (48B), `AggSpec` (16B), `QueryParamsSlot` (512B), `ColumnMeta` (32B), `OutputBuffer` (~22KB), `AggResult` (16B). Follow exact struct definitions from design.md. Add comprehensive layout tests: size assertions (`assert_eq!(std::mem::size_of::<FilterSpec>(), 48)`), alignment assertions, offset assertions using `std::mem::offset_of!`, and non-zero round-trip tests. Follow existing pattern in `src/gpu/types.rs`.
   - **Files**: `gpu-query/src/gpu/autonomous/types.rs`
   - **Done when**: All size/alignment/offset tests pass. ~35 tests.
