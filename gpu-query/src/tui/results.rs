@@ -18,7 +18,7 @@ use ratatui::{
 use super::app::AppState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
-use crate::gpu::metrics::{self, QueryMetrics};
+use crate::gpu::metrics::{self, PipelineProfile, QueryMetrics};
 
 /// Pagination state for the results table.
 #[derive(Debug, Clone)]
@@ -313,7 +313,12 @@ pub fn render_results_table(
         }
         super::app::QueryState::Complete => {
             if let Some(ref result) = app.last_result {
-                render_data_table(f, area, result, &app.results_state, app.last_exec_us, app.last_query_metrics.as_ref(), theme, border_style, is_focused);
+                let profile_info = if app.profile_mode {
+                    app.last_pipeline_profile.as_ref()
+                } else {
+                    None
+                };
+                render_data_table(f, area, result, &app.results_state, app.last_exec_us, app.last_query_metrics.as_ref(), profile_info, theme, border_style, is_focused);
             } else {
                 render_placeholder(f, area, theme, border_style, "(no results)");
             }
@@ -378,6 +383,7 @@ fn render_data_table(
     results_state: &ResultsState,
     exec_time_us: Option<u64>,
     query_metrics: Option<&QueryMetrics>,
+    pipeline_profile: Option<&PipelineProfile>,
     theme: &Theme,
     border_style: Style,
     is_focused: bool,
@@ -404,8 +410,10 @@ fn render_data_table(
         return; // Too small to render
     }
 
-    // Reserve space: 1 line for perf info, 1 line for pagination status
-    let table_height = inner_area.height.saturating_sub(2) as usize;
+    // Reserve space: 1 line for perf info, 1 line for pagination status,
+    // + 10 lines for profile timeline when active (9 stages + 1 total)
+    let profile_lines: u16 = if pipeline_profile.is_some() { 10 } else { 0 };
+    let table_height = inner_area.height.saturating_sub(2 + profile_lines) as usize;
 
     // Compute column widths
     let col_widths = compute_column_widths(result, inner_area.width);
@@ -486,7 +494,8 @@ fn render_data_table(
     f.render_widget(table, table_area);
 
     // Performance line (with CPU comparison when metrics available)
-    let perf_y = inner_area.y + inner_area.height.saturating_sub(2);
+    let footer_start_y = inner_area.y + inner_area.height.saturating_sub(2 + profile_lines);
+    let perf_y = footer_start_y;
     if perf_y < inner_area.y + inner_area.height {
         let perf_text = if let Some(m) = query_metrics {
             // Full metrics-based line: "142M rows | 8.4 GB | 2.3ms (cold) | GPU 94% | ~312x vs CPU"
@@ -506,6 +515,27 @@ fn render_data_table(
             height: 1,
         };
         f.render_widget(ratatui::widgets::Paragraph::new(perf_line), perf_area);
+    }
+
+    // Profile timeline (when profile mode is on and profile data available)
+    if let Some(profile) = pipeline_profile {
+        let timeline_text = metrics::render_profile_timeline(profile);
+        let timeline_lines: Vec<Line> = timeline_text
+            .lines()
+            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.muted))))
+            .collect();
+        let timeline_y = perf_y + 1;
+        let timeline_height = profile_lines.min(inner_area.y + inner_area.height - timeline_y);
+        if timeline_height > 0 {
+            let timeline_area = Rect {
+                x: inner_area.x + 1,
+                y: timeline_y,
+                width: inner_area.width.saturating_sub(1),
+                height: timeline_height,
+            };
+            let timeline_widget = ratatui::widgets::Paragraph::new(timeline_lines);
+            f.render_widget(timeline_widget, timeline_area);
+        }
     }
 
     // Pagination status line

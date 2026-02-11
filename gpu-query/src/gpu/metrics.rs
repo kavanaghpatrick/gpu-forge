@@ -368,6 +368,150 @@ pub fn build_metrics_performance_line(metrics: &QueryMetrics, utilization: f32) 
     )
 }
 
+/// Per-stage timing profile for the query pipeline.
+///
+/// Each field represents wall-clock time in milliseconds for that pipeline stage.
+/// Uses CPU-side timing (Instant::now()) around each stage.
+/// Metal timestamp counters (MTLCounterSampleBuffer) can replace this for
+/// hardware-accurate GPU-side timing in the future.
+#[derive(Debug, Clone)]
+pub struct PipelineProfile {
+    /// SQL parsing time.
+    pub parse_ms: f64,
+    /// Query planning / optimization time.
+    pub plan_ms: f64,
+    /// mmap / buffer warming time.
+    pub mmap_ms: f64,
+    /// GPU scan (CSV/JSON/Parquet parse) time.
+    pub scan_ms: f64,
+    /// GPU filter kernel time.
+    pub filter_ms: f64,
+    /// GPU aggregation kernel time.
+    pub aggregate_ms: f64,
+    /// GPU sort kernel time.
+    pub sort_ms: f64,
+    /// GPU -> CPU data transfer / readback time.
+    pub transfer_ms: f64,
+    /// Result formatting time.
+    pub format_ms: f64,
+    /// Total end-to-end time.
+    pub total_ms: f64,
+}
+
+impl PipelineProfile {
+    /// Create a profile with all zeros.
+    pub fn zero() -> Self {
+        Self {
+            parse_ms: 0.0,
+            plan_ms: 0.0,
+            mmap_ms: 0.0,
+            scan_ms: 0.0,
+            filter_ms: 0.0,
+            aggregate_ms: 0.0,
+            sort_ms: 0.0,
+            transfer_ms: 0.0,
+            format_ms: 0.0,
+            total_ms: 0.0,
+        }
+    }
+
+    /// Return all stages as (label, time_ms) pairs.
+    pub fn stages(&self) -> Vec<(&'static str, f64)> {
+        vec![
+            ("Parse", self.parse_ms),
+            ("Plan", self.plan_ms),
+            ("mmap", self.mmap_ms),
+            ("Scan", self.scan_ms),
+            ("Filter", self.filter_ms),
+            ("Aggregate", self.aggregate_ms),
+            ("Sort", self.sort_ms),
+            ("Transfer", self.transfer_ms),
+            ("Format", self.format_ms),
+        ]
+    }
+
+    /// Sum of all individual stage times (for validation against total_ms).
+    pub fn stages_sum_ms(&self) -> f64 {
+        self.parse_ms
+            + self.plan_ms
+            + self.mmap_ms
+            + self.scan_ms
+            + self.filter_ms
+            + self.aggregate_ms
+            + self.sort_ms
+            + self.transfer_ms
+            + self.format_ms
+    }
+}
+
+/// Maximum bar width in characters for the profile timeline.
+const MAX_BAR_WIDTH: usize = 50;
+
+/// Render a proportional ASCII bar chart of the pipeline profile.
+///
+/// Output format:
+/// ```text
+/// Parse:      0.1ms  ██
+/// Plan:       0.0ms  █
+/// mmap:       0.3ms  ████
+/// Scan:      12.5ms  ████████████████████████████████████████████████
+/// Filter:     1.2ms  █████
+/// Aggregate:  0.8ms  ███
+/// Sort:       0.0ms
+/// Transfer:   0.2ms  █
+/// Format:     0.1ms  █
+/// Total:     15.2ms
+/// ```
+///
+/// Bar widths are proportional to the maximum stage time.
+/// Stages with zero time get no bar.
+pub fn render_profile_timeline(profile: &PipelineProfile) -> String {
+    let stages = profile.stages();
+
+    // Find maximum stage time for proportional bar calculation
+    let max_time = stages
+        .iter()
+        .map(|(_, t)| *t)
+        .fold(0.0_f64, f64::max);
+
+    let mut lines = Vec::with_capacity(stages.len() + 1);
+
+    for (label, time_ms) in &stages {
+        let bar = if max_time > 0.0 && *time_ms > 0.0 {
+            let width = ((*time_ms / max_time) * MAX_BAR_WIDTH as f64).round() as usize;
+            let width = width.max(1); // at least 1 block if > 0
+            "\u{2588}".repeat(width) // U+2588 FULL BLOCK
+        } else {
+            String::new()
+        };
+
+        lines.push(format!(
+            "{:<10} {:>6.1}ms  {}",
+            format!("{}:", label),
+            time_ms,
+            bar,
+        ));
+    }
+
+    // Total line (no bar)
+    lines.push(format!(
+        "{:<10} {:>6.1}ms",
+        "Total:", profile.total_ms,
+    ));
+
+    lines.join("\n")
+}
+
+/// Compute proportional bar width for a given value relative to max.
+/// Returns width in characters (0..=max_width).
+pub fn compute_bar_width(value: f64, max_value: f64, max_width: usize) -> usize {
+    if max_value <= 0.0 || value <= 0.0 {
+        return 0;
+    }
+    let width = ((value / max_value) * max_width as f64).round() as usize;
+    width.clamp(1, max_width) // at least 1 if value > 0
+}
+
 /// Push a value to a Vec, dropping the oldest if it exceeds max_len.
 fn push_bounded(vec: &mut Vec<f64>, value: f64, max_len: usize) {
     if vec.len() >= max_len {
@@ -763,5 +907,149 @@ mod tests {
         assert!(line.contains("50.0 MB"));
         assert!(line.contains("(warm)"));
         assert!(line.contains("GPU 50%"));
+    }
+
+    // ---- PipelineProfile tests ----
+
+    #[test]
+    fn test_pipeline_profile_zero() {
+        let p = PipelineProfile::zero();
+        assert_eq!(p.parse_ms, 0.0);
+        assert_eq!(p.scan_ms, 0.0);
+        assert_eq!(p.total_ms, 0.0);
+        assert_eq!(p.stages_sum_ms(), 0.0);
+    }
+
+    #[test]
+    fn test_pipeline_profile_stages() {
+        let p = PipelineProfile {
+            parse_ms: 0.1,
+            plan_ms: 0.05,
+            mmap_ms: 0.3,
+            scan_ms: 12.5,
+            filter_ms: 1.2,
+            aggregate_ms: 0.8,
+            sort_ms: 0.0,
+            transfer_ms: 0.2,
+            format_ms: 0.1,
+            total_ms: 15.2,
+        };
+        let stages = p.stages();
+        assert_eq!(stages.len(), 9);
+        assert_eq!(stages[0].0, "Parse");
+        assert_eq!(stages[0].1, 0.1);
+        assert_eq!(stages[3].0, "Scan");
+        assert_eq!(stages[3].1, 12.5);
+    }
+
+    #[test]
+    fn test_pipeline_profile_stages_sum() {
+        let p = PipelineProfile {
+            parse_ms: 1.0,
+            plan_ms: 2.0,
+            mmap_ms: 3.0,
+            scan_ms: 4.0,
+            filter_ms: 5.0,
+            aggregate_ms: 6.0,
+            sort_ms: 0.0,
+            transfer_ms: 1.0,
+            format_ms: 1.0,
+            total_ms: 23.0,
+        };
+        assert!((p.stages_sum_ms() - 23.0).abs() < 0.001);
+    }
+
+    // ---- render_profile_timeline tests ----
+
+    #[test]
+    fn test_render_profile_timeline_basic() {
+        let p = PipelineProfile {
+            parse_ms: 0.1,
+            plan_ms: 0.0,
+            mmap_ms: 0.3,
+            scan_ms: 12.5,
+            filter_ms: 1.2,
+            aggregate_ms: 0.8,
+            sort_ms: 0.0,
+            transfer_ms: 0.2,
+            format_ms: 0.1,
+            total_ms: 15.2,
+        };
+        let output = render_profile_timeline(&p);
+
+        // Should have 10 lines (9 stages + 1 total)
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 10, "expected 10 lines, got: {:?}", lines);
+
+        // First line should be Parse
+        assert!(lines[0].contains("Parse:"), "first line: {}", lines[0]);
+        assert!(lines[0].contains("0.1ms"), "first line: {}", lines[0]);
+
+        // Scan should have the longest bar (12.5ms is max)
+        assert!(lines[3].contains("Scan:"), "scan line: {}", lines[3]);
+        assert!(lines[3].contains("12.5ms"), "scan line: {}", lines[3]);
+        // Scan bar should contain the most blocks
+        let scan_blocks: usize = lines[3].matches('\u{2588}').count();
+        assert_eq!(scan_blocks, MAX_BAR_WIDTH, "scan should have max bar width");
+
+        // Total line should be last
+        assert!(lines[9].contains("Total:"), "last line: {}", lines[9]);
+        assert!(lines[9].contains("15.2ms"), "last line: {}", lines[9]);
+        // Total line should have no bar
+        assert_eq!(lines[9].matches('\u{2588}').count(), 0);
+    }
+
+    #[test]
+    fn test_render_profile_timeline_all_zero() {
+        let p = PipelineProfile::zero();
+        let output = render_profile_timeline(&p);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 10);
+        // No bars should appear
+        for line in &lines {
+            assert_eq!(line.matches('\u{2588}').count(), 0, "no bars expected in: {}", line);
+        }
+    }
+
+    #[test]
+    fn test_render_profile_timeline_single_stage() {
+        let mut p = PipelineProfile::zero();
+        p.scan_ms = 5.0;
+        p.total_ms = 5.0;
+        let output = render_profile_timeline(&p);
+        let lines: Vec<&str> = output.lines().collect();
+
+        // Only scan should have a bar (full width)
+        let scan_blocks: usize = lines[3].matches('\u{2588}').count();
+        assert_eq!(scan_blocks, MAX_BAR_WIDTH);
+
+        // Other stages (with 0.0) should have no bar
+        assert_eq!(lines[0].matches('\u{2588}').count(), 0); // Parse
+        assert_eq!(lines[1].matches('\u{2588}').count(), 0); // Plan
+    }
+
+    // ---- compute_bar_width tests ----
+
+    #[test]
+    fn test_compute_bar_width_basic() {
+        assert_eq!(compute_bar_width(50.0, 100.0, 50), 25);
+        assert_eq!(compute_bar_width(100.0, 100.0, 50), 50);
+        assert_eq!(compute_bar_width(0.0, 100.0, 50), 0);
+    }
+
+    #[test]
+    fn test_compute_bar_width_minimum() {
+        // Very small but positive value should get at least 1
+        assert_eq!(compute_bar_width(0.001, 100.0, 50), 1);
+    }
+
+    #[test]
+    fn test_compute_bar_width_zero_max() {
+        assert_eq!(compute_bar_width(10.0, 0.0, 50), 0);
+    }
+
+    #[test]
+    fn test_compute_bar_width_negative() {
+        assert_eq!(compute_bar_width(-5.0, 100.0, 50), 0);
     }
 }

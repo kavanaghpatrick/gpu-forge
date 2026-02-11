@@ -279,7 +279,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-27, FR-28, FR-29_
   - _Design: Dot Commands_
 
-- [ ] 3.9 Profile mode with kernel timeline
+- [x] 3.9 Profile mode with kernel timeline
   - **Do**: Implement `.profile on` mode that shows per-kernel timing after each query: Parse, Plan, mmap warm, GPU Scan, GPU Filter, GPU Agg, GPU Sort, Transfer, Format, Total. Use Metal timestamp counters [KB #258] for GPU-side timing. Proportional ASCII bar widths.
   - **Files**: update `gpu-query/src/gpu/metrics.rs`, `gpu-query/src/tui/results.rs`
   - **Done when**: `.profile on` then query shows kernel timeline with proportional bars

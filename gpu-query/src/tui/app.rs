@@ -7,7 +7,7 @@ use super::editor::EditorState;
 use super::results::ResultsState;
 use super::themes::Theme;
 use crate::gpu::executor::QueryResult;
-use crate::gpu::metrics::{GpuMetricsCollector, QueryMetrics};
+use crate::gpu::metrics::{GpuMetricsCollector, PipelineProfile, QueryMetrics};
 use std::path::PathBuf;
 
 /// Focus panel in the dashboard layout.
@@ -89,6 +89,12 @@ pub struct AppState {
 
     /// GPU metrics collector for dashboard sparklines and utilization bars.
     pub gpu_metrics: GpuMetricsCollector,
+
+    /// Whether profile mode is enabled (.profile on/off).
+    pub profile_mode: bool,
+
+    /// Last pipeline profile (per-kernel timing breakdown).
+    pub last_pipeline_profile: Option<PipelineProfile>,
 }
 
 impl AppState {
@@ -113,6 +119,8 @@ impl AppState {
             catalog_state: CatalogState::new(),
             editor_state: EditorState::new(),
             gpu_metrics: GpuMetricsCollector::new(),
+            profile_mode: false,
+            last_pipeline_profile: None,
         }
     }
 

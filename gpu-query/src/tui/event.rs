@@ -167,7 +167,7 @@ fn execute_dot_command(app: &mut super::app::AppState) {
         history: &app.history,
         last_result_text: last_result_ref,
         current_format: &format,
-        profile_on: app.last_query_metrics.is_some(), // proxy
+        profile_on: app.profile_mode,
         timer_on: true,
         gpu_device_name: "Apple Silicon GPU".into(),
         gpu_memory_bytes: app.gpu_metrics.peak_memory_bytes,
@@ -188,6 +188,12 @@ fn execute_dot_command(app: &mut super::app::AppState) {
             app.status_message = "Command executed.".into();
         }
         DotCommandResult::StateChange(msg) => {
+            // Parse state changes to update AppState fields
+            if msg.contains("Profile mode: ON") {
+                app.profile_mode = true;
+            } else if msg.contains("Profile mode: OFF") {
+                app.profile_mode = false;
+            }
             app.status_message = msg;
         }
         DotCommandResult::ClearScreen => {
