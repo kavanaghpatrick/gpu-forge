@@ -211,23 +211,37 @@ fn execute_dot_command(app: &mut super::app::AppState) {
             app.set_error(msg);
         }
         DotCommandResult::DescribeTable(table_name) => {
-            // Execute GPU-parallel DESCRIBE: use cached catalog and invoke executor
+            // Execute GPU-parallel DESCRIBE: use cached catalog and persistent executor
             match app.catalog_cache.get_or_refresh().map(|s| s.to_vec()) {
-                Ok(catalog) => match crate::gpu::executor::QueryExecutor::new() {
-                    Ok(mut executor) => match executor.execute_describe(&table_name, &catalog) {
-                        Ok(desc) => {
-                            let result = desc.to_query_result();
-                            app.set_result(result);
-                            app.status_message = format!("DESCRIBE {} complete.", table_name);
+                Ok(catalog) => {
+                    // Take/put-back pattern for borrow safety with persistent executor
+                    let executor_result = match app.executor.take() {
+                        Some(e) => Ok(e),
+                        None => crate::gpu::executor::QueryExecutor::new(),
+                    };
+                    match executor_result {
+                        Ok(mut executor) => {
+                            let desc_result =
+                                executor.execute_describe(&table_name, &catalog);
+                            // Put executor back before handling result
+                            app.executor = Some(executor);
+                            match desc_result {
+                                Ok(desc) => {
+                                    let result = desc.to_query_result();
+                                    app.set_result(result);
+                                    app.status_message =
+                                        format!("DESCRIBE {} complete.", table_name);
+                                }
+                                Err(e) => {
+                                    app.set_error(format!("DESCRIBE failed: {}", e));
+                                }
+                            }
                         }
                         Err(e) => {
-                            app.set_error(format!("DESCRIBE failed: {}", e));
+                            app.set_error(format!("GPU init error: {}", e));
                         }
-                    },
-                    Err(e) => {
-                        app.set_error(format!("GPU init error: {}", e));
                     }
-                },
+                }
                 Err(e) => {
                     app.set_error(format!("Catalog scan error: {}", e));
                 }

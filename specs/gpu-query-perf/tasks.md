@@ -96,7 +96,7 @@ Focus: Eliminate per-query Metal device + PSO cache recreation by persisting the
   - _Requirements: FR-5_
   - _Design: Component 1 Integration Points_
 
-- [ ] 2.4 Replace QueryExecutor::new() calls with persistent executor
+- [x] 2.4 Replace QueryExecutor::new() calls with persistent executor
   - **Do**: (1) In `gpu-query/src/tui/ui.rs:375`: Replace `crate::gpu::executor::QueryExecutor::new()` with `app.get_or_init_executor()`. Adjust borrow patterns -- the executor is `&mut` borrowed from app, so ensure the executor borrow ends before `app.set_result()`. Pattern: extract executor via `app.executor.take()`, use it, put it back with `app.executor = Some(executor)`. (2) In `gpu-query/src/tui/event.rs:216`: Same replacement for the DESCRIBE executor creation.
   - **Files**: `gpu-query/src/tui/ui.rs`, `gpu-query/src/tui/event.rs`
   - **Done when**: QueryExecutor created once per TUI session, reused across queries

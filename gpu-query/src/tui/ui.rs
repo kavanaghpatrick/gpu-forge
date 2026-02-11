@@ -371,20 +371,27 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
         msg
     })?;
 
-    // Execute on GPU
-    let mut executor = crate::gpu::executor::QueryExecutor::new().map_err(|e| {
-        let msg = format!("GPU init error: {}", e);
-        app.set_error(msg.clone());
-        msg
-    })?;
+    // Execute on GPU -- use persistent executor from AppState (take/put-back for borrow safety)
+    let mut executor = app.executor.take().unwrap_or(
+        crate::gpu::executor::QueryExecutor::new().map_err(|e| {
+            let msg = format!("GPU init error: {}", e);
+            app.set_error(msg.clone());
+            msg
+        })?,
+    );
 
     let start = std::time::Instant::now();
-    let result = executor.execute(&physical_plan, &catalog).map_err(|e| {
+    let result = executor.execute(&physical_plan, &catalog);
+    let elapsed = start.elapsed();
+
+    // Put executor back before handling result (which needs &mut app)
+    app.executor = Some(executor);
+
+    let result = result.map_err(|e| {
         let msg = format!("Execution error: {}", e);
         app.set_error(msg.clone());
         msg
     })?;
-    let elapsed = start.elapsed();
 
     // Update timing
     let exec_us = elapsed.as_micros() as u64;
