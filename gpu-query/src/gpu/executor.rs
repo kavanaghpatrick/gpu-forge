@@ -286,6 +286,7 @@ impl QueryExecutor {
         plan: &PhysicalPlan,
         catalog: &[TableEntry],
     ) -> Result<QueryResult, String> {
+        self.scan_cache.clear();
         match plan {
             PhysicalPlan::GpuAggregate {
                 functions,

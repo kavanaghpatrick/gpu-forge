@@ -48,7 +48,7 @@ Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by addi
   - _Requirements: FR-3_
   - _Design: Cache Invalidation Summary_
 
-- [ ] 1.5 Clear scan cache between query executions
+- [x] 1.5 Clear scan cache between query executions
   - **Do**: At the top of `QueryExecutor::execute()` (the public entry point), call `self.scan_cache.clear()`. This ensures per-query deduplication (fixes double-scan) while preventing stale data across queries. Cross-query caching will be added in Phase 3 when file validation is mature.
   - **Files**: `gpu-query/src/gpu/executor.rs`
   - **Done when**: Scan cache is cleared at start of each execute() call; within-query dedup still works
