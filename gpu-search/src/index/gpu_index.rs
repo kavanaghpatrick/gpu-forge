@@ -331,6 +331,17 @@ impl GpuResidentIndex {
     pub fn buffer_size_bytes(&self) -> usize {
         self.entries.len() * GpuPathEntry::SIZE
     }
+
+    /// Create an index directly from pre-built entries (e.g., loaded from cache).
+    ///
+    /// Unlike `build_from_paths`, this does NOT stat the filesystem.
+    /// The entries are used as-is with no GPU buffer (call `to_gpu_buffer()` if needed).
+    pub fn from_entries(entries: Vec<GpuPathEntry>) -> Self {
+        Self {
+            entries,
+            gpu_buffer: None,
+        }
+    }
 }
 
 // ============================================================================

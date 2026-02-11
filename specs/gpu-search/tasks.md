@@ -169,7 +169,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-4_
   - _Design: Filesystem Index_
 
-- [ ] 2.2 Port index/shared_index.rs -- shared index manager
+- [x] 2.2 Port index/shared_index.rs -- shared index manager
   - **Do**: Port `rust-experiment/src/gpu_os/shared_index.rs` (921 lines). Change cache path from `~/.gpu_os/` to `~/.gpu-search/`. Port GpuFilesystemIndex to objc2-metal types.
   - **Files**: `gpu-search/src/index/shared_index.rs`, update `gpu-search/src/index/mod.rs`
   - **Done when**: Index saved to ~/.gpu-search/, reloaded identically
