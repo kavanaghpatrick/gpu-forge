@@ -371,7 +371,7 @@ After POC validated, build the full query engine with all formats and operators.
   - **Verify**: `cargo test --all-targets && cargo clippy -- -D warnings && cargo fmt --check`
   - **Commit**: `fix(gpu-query): address lint/type issues` (if needed)
 
-- [ ] 5.2 Create PR and verify CI
+- [x] 5.2 Create PR and verify CI
   - **Do**: Push branch to remote. Create PR with `gh pr create` including summary of all features, architecture decisions, test counts, and performance data. Monitor CI with `gh pr checks --watch`. Address any CI failures.
   - **Files**: None
   - **Done when**: PR created, all CI checks green, ready for review
