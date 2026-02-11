@@ -57,7 +57,7 @@ Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by addi
   - _Requirements: FR-1_
   - _Design: Component 3_
 
-- [ ] 1.6 POC Checkpoint -- Verify double-scan eliminated
+- [x] 1.6 POC Checkpoint -- Verify double-scan eliminated
   - **Do**: Run full test suite. Verify all 494 lib tests pass. Run GPU integration tests if available. Check that compound filter queries produce identical results. Optionally add a temporary `eprintln!` counter in `execute_scan_uncached` to verify it's called once per table per compound filter query (remove before commit).
   - **Files**: None (verification only)
   - **Done when**: All tests pass; compound filter calls execute_scan_uncached exactly once per table
