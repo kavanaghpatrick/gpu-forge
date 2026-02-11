@@ -221,7 +221,7 @@ Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is 
 
 Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine status display.
 
-- [ ] 5.1 Add autonomous state fields to AppState
+- [x] 5.1 Add autonomous state fields to AppState
   - **Do**: In `src/tui/app.rs`, add fields: `autonomous_executor: Option<AutonomousExecutor>`, `live_mode: bool` (default false), `engine_status: EngineStatus` (enum Off/WarmingUp/Compiling/Live/Idle/Fallback/Error), `warmup_progress: f32`, `last_autonomous_us: Option<u64>`, `autonomous_stats: AutonomousStats` (struct with total_queries, fallback_queries, avg_latency_us, p99_latency_us, consecutive_sub_1ms), `sql_validity: SqlValidity` (enum Empty/Incomplete/ParseError/Valid), `query_compatibility: QueryCompatibility` (enum Unknown/Autonomous/Fallback/Invalid), `cached_plan: Option<PhysicalPlan>`. Also add `QueryState::AutonomousSubmitted` variant.
   - **Files**: `gpu-query/src/tui/app.rs`
   - **Done when**: AppState compiles with new fields. Existing TUI tests still pass.

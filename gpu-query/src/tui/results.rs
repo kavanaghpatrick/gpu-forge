@@ -308,6 +308,20 @@ pub fn render_results_table(f: &mut Frame, area: Rect, app: &AppState) {
                     .add_modifier(Modifier::BOLD),
             );
         }
+        super::app::QueryState::AutonomousSubmitted => {
+            let dots = ".".repeat(((app.frame_count / 10) % 4) as usize);
+            let msg = format!("Autonomous{}", dots);
+            render_placeholder_styled(
+                f,
+                area,
+                theme,
+                border_style,
+                &msg,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
         super::app::QueryState::Complete => {
             if let Some(ref result) = app.last_result {
                 let profile_info = if app.profile_mode {

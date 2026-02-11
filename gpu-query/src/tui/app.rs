@@ -6,9 +6,11 @@ use super::catalog::CatalogState;
 use super::editor::EditorState;
 use super::results::ResultsState;
 use super::themes::Theme;
+use crate::gpu::autonomous::executor::AutonomousExecutor;
 use crate::gpu::executor::{QueryExecutor, QueryResult};
 use crate::gpu::metrics::{GpuMetricsCollector, PipelineProfile, QueryMetrics};
 use crate::io::catalog_cache::CatalogCache;
+use crate::sql::physical_plan::PhysicalPlan;
 use std::path::PathBuf;
 
 /// Focus panel in the dashboard layout.
@@ -22,6 +24,78 @@ pub enum FocusPanel {
     Results,
 }
 
+/// Status of the autonomous GPU engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineStatus {
+    /// Engine not initialized.
+    Off,
+    /// Loading tables into GPU-resident buffers.
+    WarmingUp,
+    /// JIT-compiling a new kernel variant.
+    Compiling,
+    /// Engine ready and actively processing queries.
+    Live,
+    /// Engine idle (no recent queries, will wake on next submit).
+    Idle,
+    /// Query routed to standard executor (unsupported pattern).
+    Fallback,
+    /// Engine encountered an error.
+    Error,
+}
+
+/// SQL text validity state for live mode feedback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlValidity {
+    /// Editor is empty.
+    Empty,
+    /// SQL is syntactically incomplete (e.g., missing semicolon or clause).
+    Incomplete,
+    /// SQL has a parse error.
+    ParseError,
+    /// SQL parses successfully.
+    Valid,
+}
+
+/// Whether the current query can use the autonomous engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryCompatibility {
+    /// Not yet determined.
+    Unknown,
+    /// Query is compatible with autonomous engine.
+    Autonomous,
+    /// Query requires fallback to standard executor.
+    Fallback,
+    /// Query is invalid (cannot be executed by either path).
+    Invalid,
+}
+
+/// TUI-side statistics for autonomous engine display.
+#[derive(Debug, Clone)]
+pub struct TuiAutonomousStats {
+    /// Total autonomous queries executed.
+    pub total_queries: u64,
+    /// Queries that fell back to standard executor.
+    pub fallback_queries: u64,
+    /// Average latency in microseconds.
+    pub avg_latency_us: f64,
+    /// 99th percentile latency in microseconds.
+    pub p99_latency_us: u64,
+    /// Count of consecutive sub-1ms query results.
+    pub consecutive_sub_1ms: u64,
+}
+
+impl Default for TuiAutonomousStats {
+    fn default() -> Self {
+        Self {
+            total_queries: 0,
+            fallback_queries: 0,
+            avg_latency_us: 0.0,
+            p99_latency_us: 0,
+            consecutive_sub_1ms: 0,
+        }
+    }
+}
+
 /// Current state of query execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryState {
@@ -29,6 +103,8 @@ pub enum QueryState {
     Idle,
     /// Query is currently executing on GPU.
     Running,
+    /// Query submitted to autonomous engine (polling for result).
+    AutonomousSubmitted,
     /// Query completed with result.
     Complete,
     /// Query failed with error message.
@@ -102,6 +178,35 @@ pub struct AppState {
 
     /// Cached catalog of tables in the data directory.
     pub catalog_cache: CatalogCache,
+
+    // -- Autonomous engine state fields --
+
+    /// Autonomous GPU executor (initialized during warm-up).
+    pub autonomous_executor: Option<AutonomousExecutor>,
+
+    /// Whether live mode is active (queries execute on every keystroke).
+    pub live_mode: bool,
+
+    /// Current autonomous engine status.
+    pub engine_status: EngineStatus,
+
+    /// Warm-up progress (0.0 to 1.0).
+    pub warmup_progress: f32,
+
+    /// Last autonomous query latency in microseconds.
+    pub last_autonomous_us: Option<u64>,
+
+    /// Autonomous engine statistics for dashboard display.
+    pub autonomous_stats: TuiAutonomousStats,
+
+    /// Current SQL text validity for live mode feedback.
+    pub sql_validity: SqlValidity,
+
+    /// Whether current query is autonomous-compatible.
+    pub query_compatibility: QueryCompatibility,
+
+    /// Cached physical plan for current SQL (avoids re-planning on each tick).
+    pub cached_plan: Option<PhysicalPlan>,
 }
 
 impl AppState {
@@ -131,6 +236,15 @@ impl AppState {
             last_pipeline_profile: None,
             executor: None,
             catalog_cache,
+            autonomous_executor: None,
+            live_mode: false,
+            engine_status: EngineStatus::Off,
+            warmup_progress: 0.0,
+            last_autonomous_us: None,
+            autonomous_stats: TuiAutonomousStats::default(),
+            sql_validity: SqlValidity::Empty,
+            query_compatibility: QueryCompatibility::Unknown,
+            cached_plan: None,
         }
     }
 
