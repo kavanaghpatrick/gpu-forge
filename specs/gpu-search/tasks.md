@@ -66,7 +66,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1, FR-5_
   - _Design: GPU Device Layer_
 
-- [ ] 1.7 Create gpu/types.rs -- shared repr(C) types
+- [x] 1.7 Create gpu/types.rs -- shared repr(C) types
   - **Do**: Define `#[repr(C)]` structs matching `search_types.h`: SearchParams (pattern bytes, pattern_len, case_sensitive, total_bytes), GpuMatchResult (file_index, line_number, column, match_length, context), GpuPathEntry (256B: path[224], path_len, flags, parent_idx, size, mtime). Add compile-time `assert!(std::mem::size_of::<GpuPathEntry>() == 256)` and offset assertions.
   - **Files**: `gpu-search/src/gpu/types.rs`, update `gpu-search/src/gpu/mod.rs`
   - **Done when**: Type layout assertions compile and pass
