@@ -178,7 +178,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-4, FR-22_
   - _Design: Filesystem Index_
 
-- [ ] 2.3 Implement index/scanner.rs -- parallel filesystem scanner
+- [x] 2.3 Implement index/scanner.rs -- parallel filesystem scanner
   - **Do**: New module using rayon + ignore crate WalkBuilder. Parallel directory scan building `Vec<GpuPathEntry>`. Respect .gitignore, skip symlinks by default, skip hidden directories (.git/, .hg/).
   - **Files**: `gpu-search/src/index/scanner.rs`, update `gpu-search/src/index/mod.rs`
   - **Done when**: Scan test directory, correct entry count, paths match filesystem
