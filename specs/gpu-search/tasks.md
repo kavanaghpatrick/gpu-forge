@@ -30,7 +30,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1, FR-7, FR-10, FR-12_
   - _Design: Dependency Plan_
 
-- [ ] 1.3 Create build.rs for Metal shader compilation
+- [x] 1.3 Create build.rs for Metal shader compilation
   - **Do**: Port gpu-query's `build.rs` pattern. Discover `.metal` files in `shaders/`, compile each to `.air` via `xcrun -sdk macosx metal -c -I shaders/`, link all `.air` into `shaders.metallib`, copy to OUT_DIR. Add `cargo:rerun-if-changed` for each .metal and .h file.
   - **Files**: `gpu-search/build.rs`
   - **Done when**: `cargo build` compiles Metal shaders without errors
