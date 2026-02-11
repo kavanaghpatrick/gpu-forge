@@ -105,7 +105,7 @@ Focus: Eliminate per-query Metal device + PSO cache recreation by persisting the
   - _Requirements: FR-4, AC-3.1, AC-3.2_
   - _Design: Component 2 Integration Pattern_
 
-- [ ] 2.5 Phase 2 Checkpoint -- Persistent executor + cached catalog
+- [x] 2.5 Phase 2 Checkpoint -- Persistent executor + cached catalog
   - **Do**: Run full test suite. Verify TUI compiles and executor persists (second query should skip Metal init). Run GPU integration tests. Verify CLI path is unaffected.
   - **Files**: None (verification only)
   - **Done when**: All tests pass; TUI uses persistent executor and cached catalog
