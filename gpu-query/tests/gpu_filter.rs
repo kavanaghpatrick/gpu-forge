@@ -749,3 +749,231 @@ fn test_compound_same_column_or() {
     );
     assert_eq!(result.rows[0][0], "2", "OR: exclusive ranges on same column");
 }
+
+// ---- FLOAT filter additional operator tests ----
+
+#[test]
+fn test_float_filter_ge() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![1.0, 2.5, 3.0, 4.2, 5.9];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Ge, 3.0);
+
+    assert_eq!(count, 3, "GE 3.0: should match 3.0, 4.2, 5.9");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![2, 3, 4]);
+}
+
+#[test]
+fn test_float_filter_le() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![1.0, 2.5, 3.0, 4.2, 5.9];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Le, 3.0);
+
+    assert_eq!(count, 3, "LE 3.0: should match 1.0, 2.5, 3.0");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1, 2]);
+}
+
+#[test]
+fn test_float_filter_ne() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![1.0, 2.5, 2.5, 4.0, 2.5];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Ne, 2.5);
+
+    assert_eq!(count, 2, "NE 2.5: should match 1.0, 4.0");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 3]);
+}
+
+// ---- Edge value tests (INT64) ----
+
+#[test]
+fn test_int64_filter_compare_zero() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![-5, -1, 0, 1, 5];
+    let (bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Eq, 0);
+
+    assert_eq!(count, 1, "EQ 0: should match exactly 0");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![2]);
+}
+
+#[test]
+fn test_int64_filter_gt_zero() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![-5, -1, 0, 1, 5];
+    let (bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Gt, 0);
+
+    assert_eq!(count, 2, "GT 0: should match 1, 5");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![3, 4]);
+}
+
+#[test]
+fn test_int64_filter_lt_zero() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![-5, -1, 0, 1, 5];
+    let (bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Lt, 0);
+
+    assert_eq!(count, 2, "LT 0: should match -5, -1");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1]);
+}
+
+#[test]
+fn test_int64_filter_all_same_values() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![42, 42, 42, 42, 42];
+    let (bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Eq, 42);
+
+    assert_eq!(count, 5, "EQ 42: all values equal 42");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn test_int64_filter_all_same_no_match() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![42, 42, 42, 42, 42];
+    let (_bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Gt, 42);
+
+    assert_eq!(count, 0, "GT 42 on all-42: nothing matches");
+}
+
+#[test]
+fn test_int64_filter_boundary_value_exact() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    // Test GE on exact boundary: all values match
+    let data: Vec<i64> = vec![100, 200, 300];
+    let (bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Ge, 100);
+
+    assert_eq!(count, 3, "GE 100: all >= 100");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1, 2]);
+}
+
+#[test]
+fn test_int64_filter_large_negative() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<i64> = vec![-1_000_000, -500_000, 0, 500_000, 1_000_000];
+    let (bitmask, count) = run_int64_filter(&gpu, &mut cache, &data, CompareOp::Lt, -250_000);
+
+    assert_eq!(count, 2, "LT -250000: should match -1000000, -500000");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1]);
+}
+
+// ---- Float edge value tests ----
+
+#[test]
+fn test_float_filter_zero_value() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![-1.0, 0.0, 1.0, 2.0];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Eq, 0.0);
+
+    assert_eq!(count, 1, "EQ 0.0: should match 0.0");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![1]);
+}
+
+#[test]
+fn test_float_filter_negative_compare() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![-5.0, -2.5, 0.0, 2.5, 5.0];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Lt, 0.0);
+
+    assert_eq!(count, 2, "LT 0.0: should match -5.0, -2.5");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1]);
+}
+
+#[test]
+fn test_float_filter_small_differences() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![1.0, 1.1, 1.2, 1.3, 1.4];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Gt, 1.25);
+
+    assert_eq!(count, 2, "GT 1.25: should match 1.3, 1.4");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![3, 4]);
+}
+
+#[test]
+fn test_float_filter_all_match() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![10.0, 20.0, 30.0];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Gt, 0.0);
+
+    assert_eq!(count, 3, "GT 0.0: all positive values match");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0, 1, 2]);
+}
+
+#[test]
+fn test_float_filter_no_matches() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![1.0, 2.0, 3.0];
+    let (_bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Gt, 100.0);
+
+    assert_eq!(count, 0, "GT 100.0: no values match");
+}
+
+#[test]
+fn test_float_filter_single_value() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = vec![42.5];
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Eq, 42.5);
+
+    assert_eq!(count, 1, "EQ 42.5: single value matches");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices, vec![0]);
+}
+
+// ---- Large dataset float filter ----
+
+#[test]
+fn test_float_filter_100_elements() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    let data: Vec<f32> = (0..100).map(|i| i as f32 * 0.5).collect();
+    let (bitmask, count) = run_float_filter(&gpu, &mut cache, &data, CompareOp::Gt, 25.0);
+
+    // Values: 0.0, 0.5, 1.0, ..., 49.5. GT 25.0 means values 25.5, 26.0, ..., 49.5 => indices 51..99 = 49 elements
+    assert_eq!(count, 49, "GT 25.0 on [0.0..49.5]: 49 values");
+    let indices = bitmask_to_indices(&bitmask, data.len());
+    assert_eq!(indices.len(), 49);
+    assert_eq!(indices[0], 51); // 51 * 0.5 = 25.5
+}

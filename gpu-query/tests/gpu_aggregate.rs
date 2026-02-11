@@ -1163,3 +1163,249 @@ fn test_executor_group_by_filtered() {
     assert_eq!(result.rows[1][1], "1");
     assert_eq!(result.rows[1][2], "400");
 }
+
+// ============================================================
+// Additional edge case tests
+// ============================================================
+
+#[test]
+fn test_count_two_rows() {
+    let gpu = GpuDevice::new();
+
+    let mask = build_all_ones_mask(&gpu.device, 2);
+    let gpu_count = run_aggregate_count(&gpu, &mask, 2);
+    assert_eq!(gpu_count, 2, "COUNT of 2 rows");
+}
+
+#[test]
+fn test_sum_all_ones() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_sum, 10, "SUM of ten 1s");
+}
+
+#[test]
+fn test_sum_alternating_sign() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_sum, 0, "SUM of alternating +/- cancels to 0");
+}
+
+#[test]
+fn test_min_at_end() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![100, 200, 300, 400, 1];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 1, "MIN at last position");
+}
+
+#[test]
+fn test_max_at_beginning() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![999, 1, 2, 3, 4];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 999, "MAX at first position");
+}
+
+#[test]
+fn test_min_two_elements() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![50, 25];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 25, "MIN of two elements");
+}
+
+#[test]
+fn test_max_two_elements() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![25, 50];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 50, "MAX of two elements");
+}
+
+#[test]
+fn test_min_all_zero() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![0, 0, 0, 0, 0];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, 0, "MIN of all zeros");
+}
+
+#[test]
+fn test_max_all_zero() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = vec![0, 0, 0, 0, 0];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 0, "MAX of all zeros");
+}
+
+#[test]
+fn test_sum_float_single_value() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<f32> = vec![42.5];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
+    assert!((gpu_sum - 42.5).abs() < 0.01, "SUM float single value: expected 42.5, got {}", gpu_sum);
+}
+
+#[test]
+fn test_sum_float_large_values() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<f32> = vec![1000.0, 2000.0, 3000.0, 4000.0, 5000.0];
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
+    assert!((gpu_sum - 15000.0).abs() < 1.0, "SUM float large: expected 15000, got {}", gpu_sum);
+}
+
+#[test]
+fn test_count_100_filtered_ne() {
+    let gpu = GpuDevice::new();
+    let mut cache = PsoCache::new();
+
+    // 100 elements, filter NE 50 -> 99 matches
+    let data: Vec<i64> = (0..100).collect();
+    let (mask, _) = run_filter_to_bitmask(&gpu, &mut cache, &data, CompareOp::Ne, 50);
+
+    let gpu_count = run_aggregate_count(&gpu, &mask, data.len() as u32);
+    assert_eq!(gpu_count, 99, "COUNT NE 50 on 0..99: 99 rows");
+}
+
+#[test]
+fn test_sum_1000_negative() {
+    let gpu = GpuDevice::new();
+
+    // All negative: -1000 to -1
+    let data: Vec<i64> = (-1000..0).collect();
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
+    let cpu_sum: i64 = data.iter().sum();
+    assert_eq!(gpu_sum, cpu_sum, "SUM of -1000..-1");
+    // sum = -(1000*1001/2) = -500500
+    assert_eq!(gpu_sum, -500500);
+}
+
+#[test]
+fn test_min_1000_negative() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = (-500..500).collect();
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_min = run_aggregate_min_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_min, -500, "MIN of -500..499");
+}
+
+#[test]
+fn test_max_1000_negative() {
+    let gpu = GpuDevice::new();
+
+    let data: Vec<i64> = (-500..500).collect();
+    let mask = build_all_ones_mask(&gpu.device, data.len());
+
+    let gpu_max = run_aggregate_max_int64(&gpu, &data, &mask, data.len() as u32);
+    assert_eq!(gpu_max, 499, "MAX of -500..499");
+}
+
+// ============================================================
+// Additional executor tests
+// ============================================================
+
+#[test]
+fn test_executor_count_filtered_lt() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT count(*) FROM test WHERE amount < 300");
+    assert_eq!(result.rows[0][0], "2"); // 100, 200
+}
+
+#[test]
+fn test_executor_sum_filtered_ge() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT sum(amount) FROM test WHERE amount >= 300");
+    assert_eq!(result.rows[0][0], "1200"); // 300+400+500
+}
+
+#[test]
+fn test_executor_min_filtered() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT min(amount) FROM test WHERE amount > 200");
+    assert_eq!(result.rows[0][0], "300");
+}
+
+#[test]
+fn test_executor_max_filtered() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT max(amount) FROM test WHERE amount < 400");
+    assert_eq!(result.rows[0][0], "300");
+}
+
+#[test]
+fn test_executor_avg_filtered() {
+    let csv = "id,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(csv, "SELECT avg(amount) FROM test WHERE amount > 200");
+    // AVG of 300, 400, 500 = 400
+    assert_eq!(result.rows[0][0], "400");
+}
+
+#[test]
+fn test_executor_group_by_many_groups() {
+    let csv = "region,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
+    let result = run_query(
+        csv,
+        "SELECT region, sum(amount) FROM test GROUP BY region",
+    );
+    assert_eq!(result.row_count, 5, "Each region is unique -> 5 groups");
+    // Verify each group has its own value
+    for i in 0..5 {
+        assert_eq!(result.rows[i][0], format!("{}", i + 1));
+        assert_eq!(result.rows[i][1], format!("{}", (i + 1) * 100));
+    }
+}
+
+#[test]
+fn test_executor_group_by_min_max() {
+    let csv = "region,amount\n1,100\n2,200\n1,300\n2,400\n1,500\n";
+    let result = run_query(
+        csv,
+        "SELECT region, min(amount), max(amount) FROM test GROUP BY region",
+    );
+    assert_eq!(result.row_count, 2);
+    // Region 1: min=100, max=500
+    assert_eq!(result.rows[0][0], "1");
+    assert_eq!(result.rows[0][1], "100");
+    assert_eq!(result.rows[0][2], "500");
+    // Region 2: min=200, max=400
+    assert_eq!(result.rows[1][0], "2");
+    assert_eq!(result.rows[1][1], "200");
+    assert_eq!(result.rows[1][2], "400");
+}

@@ -432,3 +432,219 @@ fn test_gpu_csv_parse_many_rows() {
         }
     }
 }
+
+// ---- Edge case tests ----
+
+#[test]
+fn test_gpu_csv_parse_single_column() {
+    let csv = "value\n42\n100\n-7\n0\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![ColumnDef {
+        name: "value".to_string(),
+        data_type: DataType::Int64,
+        nullable: false,
+    }]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
+
+    assert_eq!(batch.row_count, 4);
+    unsafe {
+        let vals = batch.read_int_column(0);
+        assert_eq!(vals, vec![42, 100, -7, 0]);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_tab_delimiter() {
+    let csv = "id\tvalue\n1\t100\n2\t200\n3\t300\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![
+        ColumnDef {
+            name: "id".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "value".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+    ]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b'\t', true);
+
+    assert_eq!(batch.row_count, 3);
+    unsafe {
+        let ids = batch.read_int_column(0);
+        assert_eq!(ids, vec![1, 2, 3]);
+        let values = batch.read_int_column(1);
+        assert_eq!(values, vec![100, 200, 300]);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_large_int_values() {
+    let csv = "val\n1000000\n-999999\n2147483647\n-2147483648\n0\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![ColumnDef {
+        name: "val".to_string(),
+        data_type: DataType::Int64,
+        nullable: false,
+    }]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
+
+    assert_eq!(batch.row_count, 5);
+    unsafe {
+        let vals = batch.read_int_column(0);
+        assert_eq!(vals[0], 1_000_000);
+        assert_eq!(vals[1], -999_999);
+        assert_eq!(vals[2], 2_147_483_647);
+        assert_eq!(vals[3], -2_147_483_648);
+        assert_eq!(vals[4], 0);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_all_zeros() {
+    let csv = "a,b\n0,0\n0,0\n0,0\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![
+        ColumnDef {
+            name: "a".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "b".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+    ]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
+
+    assert_eq!(batch.row_count, 3);
+    unsafe {
+        let a_vals = batch.read_int_column(0);
+        let b_vals = batch.read_int_column(1);
+        assert_eq!(a_vals, vec![0, 0, 0]);
+        assert_eq!(b_vals, vec![0, 0, 0]);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_negative_floats() {
+    let csv = "val\n-1.5\n-0.25\n-100.75\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![ColumnDef {
+        name: "val".to_string(),
+        data_type: DataType::Float64,
+        nullable: false,
+    }]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
+
+    assert_eq!(batch.row_count, 3);
+    unsafe {
+        let vals = batch.read_float_column(0);
+        assert!((vals[0] - (-1.5)).abs() < 1e-5, "val[0] = {}", vals[0]);
+        assert!((vals[1] - (-0.25)).abs() < 1e-5, "val[1] = {}", vals[1]);
+        assert!((vals[2] - (-100.75)).abs() < 1e-2, "val[2] = {}", vals[2]);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_many_columns() {
+    let csv = "a,b,c,d,e\n1,2,3,4,5\n10,20,30,40,50\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![
+        ColumnDef { name: "a".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef { name: "b".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef { name: "c".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef { name: "d".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef { name: "e".to_string(), data_type: DataType::Int64, nullable: false },
+    ]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
+
+    assert_eq!(batch.row_count, 2);
+    unsafe {
+        let a = batch.read_int_column(0);
+        let e = batch.read_int_column(4);
+        assert_eq!(a, vec![1, 10]);
+        assert_eq!(e, vec![5, 50]);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_pipe_delimiter() {
+    let csv = "id|value\n1|100\n2|200\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![
+        ColumnDef { name: "id".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef { name: "value".to_string(), data_type: DataType::Int64, nullable: false },
+    ]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b'|', true);
+
+    assert_eq!(batch.row_count, 2);
+    unsafe {
+        let ids = batch.read_int_column(0);
+        let vals = batch.read_int_column(1);
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(vals, vec![100, 200]);
+    }
+}
+
+#[test]
+fn test_gpu_csv_parse_two_rows() {
+    let csv = "a,b\n10,20\n30,40\n";
+    let tmp = make_csv(csv);
+
+    let gpu = GpuDevice::new();
+    let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
+
+    let schema = RuntimeSchema::new(vec![
+        ColumnDef { name: "a".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef { name: "b".to_string(), data_type: DataType::Int64, nullable: false },
+    ]);
+
+    let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
+
+    assert_eq!(batch.row_count, 2);
+    unsafe {
+        let a = batch.read_int_column(0);
+        let b = batch.read_int_column(1);
+        assert_eq!(a, vec![10, 30]);
+        assert_eq!(b, vec![20, 40]);
+    }
+}

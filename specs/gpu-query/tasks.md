@@ -317,7 +317,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: NFR-13_
   - _Design: Query Compiler_
 
-- [ ] 4.3 GPU kernel integration tests
+- [x] 4.3 GPU kernel integration tests
   - **Do**: Create test harness (GpuTestContext with device, queue, library, pre-compiled PSOs). Write GPU integration tests: CSV parser (~20), filter kernel (~20 covering all operators and types), aggregation (~20 covering all functions + GROUP BY), sort (~15 covering all edge cases). Use `waitUntilCompleted` for synchronous assertions.
   - **Files**: `gpu-query/tests/gpu_csv.rs`, `gpu-query/tests/gpu_filter.rs`, `gpu-query/tests/gpu_aggregate.rs`, `gpu-query/tests/gpu_sort.rs`
   - **Done when**: ~75 GPU integration tests pass on Metal device
