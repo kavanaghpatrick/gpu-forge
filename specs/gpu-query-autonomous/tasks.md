@@ -328,7 +328,7 @@ Focus: Comprehensive test coverage. Benchmark validation. Stress testing for sta
   - **Commit**: `test(autonomous): add fallback integration tests`
   - _Requirements: FR-10_
 
-- [ ] 6.5 Create Criterion benchmark suite
+- [x] 6.5 Create Criterion benchmark suite
   - **Do**: Create `benches/autonomous_latency.rs`. Benchmarks: (1) BM-01: COUNT(*) 1M rows, (2) BM-02: SUM + filter 1M rows, (3) BM-03: headline query (compound filter + GROUP BY) 1M rows -- target p50 <1ms p99 <2ms, (4) BM-04: autonomous vs standard comparison, (5) BM-05: parameter handoff latency, (6) BM-06: JIT compile (cache miss), (7) BM-07: JIT cache hit, (8) BM-08: data loading 1M rows, (9) BM-09: poll_ready latency, (10) BM-10: read_result latency. Use 100 samples, 30s measurement time, 5s warm-up for BM-03.
   - **Files**: `gpu-query/benches/autonomous_latency.rs`, `gpu-query/Cargo.toml` (add criterion bench target)
   - **Done when**: All benchmarks run. BM-03 p50 < 1ms.

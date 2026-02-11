@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "query_latency"
 harness = false
+
+[[bench]]
+name = "autonomous_latency"
+harness = false
