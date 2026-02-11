@@ -38,6 +38,7 @@ use crate::storage::schema::RuntimeSchema;
 /// Each unique (filter_count, agg_count, has_group_by) combination produces a specialized
 /// Metal pipeline via function constants, avoiding runtime branches in the shader.
 pub struct FusedPsoCache {
+    #[allow(dead_code)]
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
     cache: HashMap<(u32, u32, bool), Retained<ProtocolObject<dyn MTLComputePipelineState>>>,
@@ -244,7 +245,7 @@ pub fn execute_fused_oneshot(
         let threadgroup_count = if row_count == 0 {
             1 // Must dispatch at least 1 threadgroup for metadata
         } else {
-            (row_count + threads_per_threadgroup - 1) / threads_per_threadgroup
+            row_count.div_ceil(threads_per_threadgroup)
         };
 
         let grid_size = MTLSize {
@@ -386,7 +387,7 @@ pub fn execute_jit_oneshot(
         let threadgroup_count = if row_count == 0 {
             1
         } else {
-            (row_count + threads_per_threadgroup - 1) / threads_per_threadgroup
+            row_count.div_ceil(threads_per_threadgroup)
         };
 
         let grid_size = MTLSize {
@@ -533,7 +534,7 @@ fn dispatch_slice(shared: Arc<RedispatchSharedState>) {
         let tg_count = if row_count == 0 {
             1
         } else {
-            (row_count + threads_per_tg - 1) / threads_per_tg
+            row_count.div_ceil(threads_per_tg)
         };
 
         let grid = MTLSize {
@@ -635,6 +636,7 @@ impl RedispatchChain {
     /// * `column_meta_buffer` - Column metadata buffer
     /// * `output_buffer` - Output buffer (StorageModeShared, 22560 bytes)
     /// * `row_count` - Number of rows in the table
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         device: &ProtocolObject<dyn MTLDevice>,
         command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -968,7 +970,7 @@ impl AutonomousExecutor {
             let tg_count = if row_count == 0 {
                 1
             } else {
-                (row_count + threads_per_tg - 1) / threads_per_tg
+                row_count.div_ceil(threads_per_tg)
             };
 
             let grid = MTLSize {
@@ -1012,7 +1014,7 @@ impl AutonomousExecutor {
     ///
     /// Resets the ready_flag to 0 after reading.
     pub fn read_result(&self) -> OutputBuffer {
-        let result = unsafe {
+        unsafe {
             std::sync::atomic::fence(Ordering::Acquire);
             let src = self.output_buffer.contents().as_ptr() as *const OutputBuffer;
             let r = std::ptr::read(src);
@@ -1020,8 +1022,7 @@ impl AutonomousExecutor {
             let flag_ptr = self.output_buffer.contents().as_ptr() as *mut u32;
             std::ptr::write_volatile(flag_ptr, 0);
             r
-        };
-        result
+        }
     }
 
     /// Shutdown the autonomous executor: stops re-dispatch chain, sets state to Shutdown.
@@ -1137,8 +1138,10 @@ fn build_query_params(
     schema: &[ColumnInfo],
     row_count: u32,
 ) -> Result<QueryParamsSlot, String> {
-    let mut params = QueryParamsSlot::default();
-    params.row_count = row_count;
+    let mut params = QueryParamsSlot {
+        row_count,
+        ..Default::default()
+    };
 
     // Collect filters, aggs, group_by from plan
     let mut filters: Vec<(String, CompareOp, Value)> = Vec::new();

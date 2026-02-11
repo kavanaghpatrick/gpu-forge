@@ -366,38 +366,31 @@ fn convert_autonomous_output(
     let mut columns: Vec<String> = Vec::new();
     let mut agg_funcs: Vec<(u32, u32)> = Vec::new(); // (agg_func, column_type)
 
-    if let Some(plan) = &app.cached_plan {
-        // Extract aggregate info from plan
-        if let crate::sql::physical_plan::PhysicalPlan::GpuAggregate {
-            functions,
-            group_by,
-            ..
-        } = plan
-        {
-            // Add GROUP BY column header first
-            if !group_by.is_empty() {
-                columns.push(group_by[0].clone());
-            }
-            // Add aggregate column headers
-            for (func, col_name) in functions {
-                let label = match func {
-                    crate::sql::types::AggFunc::Count => format!("COUNT({})", col_name),
-                    crate::sql::types::AggFunc::Sum => format!("SUM({})", col_name),
-                    crate::sql::types::AggFunc::Avg => format!("AVG({})", col_name),
-                    crate::sql::types::AggFunc::Min => format!("MIN({})", col_name),
-                    crate::sql::types::AggFunc::Max => format!("MAX({})", col_name),
-                };
-                columns.push(label);
-                // Track agg func code and column type for formatting
-                let func_code = func.to_gpu_code();
-                // Determine column type from plan (0=INT64, 1=FLOAT32)
-                let col_type = if col_name == "*" {
-                    0u32 // COUNT(*) always integer
-                } else {
-                    0u32 // Default to int, sufficient for display
-                };
-                agg_funcs.push((func_code, col_type));
-            }
+    if let Some(crate::sql::physical_plan::PhysicalPlan::GpuAggregate {
+        functions,
+        group_by,
+        ..
+    }) = &app.cached_plan
+    {
+        // Add GROUP BY column header first
+        if !group_by.is_empty() {
+            columns.push(group_by[0].clone());
+        }
+        // Add aggregate column headers
+        for (func, col_name) in functions {
+            let label = match func {
+                crate::sql::types::AggFunc::Count => format!("COUNT({})", col_name),
+                crate::sql::types::AggFunc::Sum => format!("SUM({})", col_name),
+                crate::sql::types::AggFunc::Avg => format!("AVG({})", col_name),
+                crate::sql::types::AggFunc::Min => format!("MIN({})", col_name),
+                crate::sql::types::AggFunc::Max => format!("MAX({})", col_name),
+            };
+            columns.push(label);
+            // Track agg func code and column type for formatting
+            let func_code = func.to_gpu_code();
+            // Column type: 0=INT64 for all (sufficient for display)
+            let col_type = 0u32;
+            agg_funcs.push((func_code, col_type));
         }
     }
 

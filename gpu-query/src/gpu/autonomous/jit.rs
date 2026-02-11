@@ -1158,14 +1158,14 @@ fn emit_output_metadata(src: &mut String, has_group_by: bool, agg_count: usize) 
     if has_group_by {
         // Count valid groups
         src.push_str("            uint group_count = 0;\n");
-        src.push_str(&format!(
-            "            for (uint g = 0; g < MAX_GROUPS; g++) {{\n\
+        src.push_str(
+            "            for (uint g = 0; g < MAX_GROUPS; g++) {\n\
              \x20               uint off = 2080 + (g * MAX_AGGS + 0) * 16;\n\
              \x20               device char* base = (device char*)output;\n\
              \x20               device atomic_uint* cnt = (device atomic_uint*)(base + off + 12);\n\
              \x20               if (atomic_load_explicit(cnt, memory_order_relaxed) > 0) group_count++;\n\
-             \x20           }}\n",
-        ));
+             \x20           }\n",
+        );
     } else {
         src.push_str("            uint group_count = 1;\n");
     }
