@@ -57,7 +57,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-7_
   - _Design: Components_
 
-- [ ] 1.6 Port gpu/device.rs -- Metal device initialization
+- [x] 1.6 Port gpu/device.rs -- Metal device initialization
   - **Do**: Copy gpu-query `gpu/device.rs` pattern. `MTLCreateSystemDefaultDevice()` init, device capability queries (max threadgroup size, max buffer length), device name validation. Export `GpuDevice` struct with `Retained<ProtocolObject<dyn MTLDevice>>`.
   - **Files**: `gpu-search/src/gpu/device.rs`, update `gpu-search/src/gpu/mod.rs`
   - **Done when**: Device initializes and reports Apple GPU name
