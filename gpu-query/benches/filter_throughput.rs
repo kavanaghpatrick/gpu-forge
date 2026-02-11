@@ -1,7 +1,9 @@
 //! Filter throughput benchmarks: measure GPU filter kernel performance
 //! at various selectivities (10%, 50%, 90%) on 100K rows.
+//! Also includes 1M-row warm-cache compound filter + GROUP BY benchmark.
 
 use std::path::Path;
+use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tempfile::TempDir;
@@ -163,10 +165,83 @@ fn bench_filter_operators(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================
+// 1M-row warm cache compound filter + GROUP BY benchmark
+// ============================================================
+
+/// Generate a 1M-row sales CSV with 10 columns:
+/// 5 INT64: id, status, quantity, year, month
+/// 3 FLOAT64: revenue, cost, margin
+/// 2 VARCHAR: region, category
+fn generate_sales_csv(n_rows: usize) -> String {
+    let regions = ["NORTH", "SOUTH", "EAST", "WEST", "CENTRAL"];
+    let categories = ["ELEC", "FOOD", "TOOL", "CLOTH", "AUTO"];
+    let mut s = String::with_capacity(n_rows * 80);
+    s.push_str("id,region,status,quantity,revenue,cost,margin,category,year,month\n");
+    for i in 0..n_rows {
+        let id = i;
+        let region = regions[i % regions.len()];
+        let status = (i % 5) as u64; // 0-4
+        let quantity = ((i * 3 + 7) % 100) as u64; // 0-99
+        let revenue = ((i * 7 + 13) % 100000) as f64 / 100.0; // 0..999.99
+        let cost = ((i * 5 + 3) % 80000) as f64 / 100.0; // 0..799.99
+        let margin = revenue - cost;
+        let category = categories[i % categories.len()];
+        let year = 2020 + (i % 5) as u64;
+        let month = (i % 12) as u64 + 1;
+        s.push_str(&format!(
+            "{},{},{},{},{:.2},{:.2},{:.2},{},{},{}\n",
+            id, region, status, quantity, revenue, cost, margin, category, year, month
+        ));
+    }
+    s
+}
+
+/// Benchmark warm compound filter + GROUP BY on 1M rows.
+///
+/// Uses a persistent QueryExecutor so the scan cache is populated on the
+/// first (cold) iteration and reused on subsequent (warm) iterations.
+/// The benchmark measures only the warm path via `iter_batched_ref` setup.
+fn bench_compound_warm_1m(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compound_warm_1m");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(10));
+
+    let n_rows = 1_000_000;
+    let csv = generate_sales_csv(n_rows);
+
+    let dir = TempDir::new().expect("tempdir");
+    write_csv(dir.path(), "sales.csv", &csv);
+
+    group.throughput(Throughput::Elements(n_rows as u64));
+
+    let sql = "SELECT region, count(*), sum(revenue) FROM sales WHERE status > 2 AND quantity < 50 GROUP BY region";
+
+    // Pre-build objects that are reused across iterations
+    let catalog = catalog::scan_directory(dir.path()).expect("scan dir");
+    let logical = gpu_query::sql::parser::parse_query(sql).expect("parse");
+    let optimized = gpu_query::sql::optimizer::optimize(logical);
+    let physical = gpu_query::sql::physical_plan::plan(&optimized).expect("plan");
+
+    // Create persistent executor and warm the scan cache with one cold call
+    let mut executor = QueryExecutor::new().expect("executor");
+    let _ = executor.execute(&physical, &catalog).expect("cold warmup");
+
+    // Now benchmark warm iterations only -- scan cache is populated
+    group.bench_function(BenchmarkId::new("compound_and_group_by", n_rows), |b| {
+        b.iter(|| {
+            executor.execute(&physical, &catalog).expect("execute")
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_filter_selectivity,
     bench_filter_compound,
-    bench_filter_operators
+    bench_filter_operators,
+    bench_compound_warm_1m
 );
 criterion_main!(benches);

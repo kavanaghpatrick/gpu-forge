@@ -163,7 +163,7 @@ Focus: Add targeted tests for cache correctness, invalidation, and performance b
   - **Commit**: `test(executor): add scan cache unit tests`
   - _Requirements: AC-2.1, AC-5.1, AC-5.3_
 
-- [ ] 4.3 Performance benchmark for warm compound filter query
+- [x] 4.3 Performance benchmark for warm compound filter query
   - **Do**: Add benchmark to `gpu-query/benches/filter_throughput.rs` or create new `benches/query_latency.rs`. Benchmark: (1) Generate 1M-row CSV (5 INT64, 3 FLOAT64, 2 VARCHAR cols). (2) Create persistent QueryExecutor. (3) First iteration: cold scan. (4) Subsequent iterations: warm cache -- compound AND filter + GROUP BY. Use Criterion with `sample_size(20)`, `measurement_time(10s)`. Assert warm iteration < 50ms.
   - **Files**: `gpu-query/benches/filter_throughput.rs` or `gpu-query/benches/query_latency.rs`
   - **Done when**: Benchmark runs; warm 1M-row compound filter + GROUP BY < 50ms
