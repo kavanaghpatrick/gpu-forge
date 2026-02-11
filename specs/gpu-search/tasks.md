@@ -147,7 +147,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-8, FR-9_
   - _Design: Search Engine, types.rs_
 
-- [ ] 1.16 POC Checkpoint: end-to-end GPU search
+- [x] 1.16 POC Checkpoint: end-to-end GPU search
   - **Do**: Wire together: load a test directory of files via batch I/O, search for a known pattern via content search kernel, collect results, print to stdout. Verify GPU results match CPU `grep` output. This validates the entire GPU pipeline works after the port.
   - **Files**: `gpu-search/src/main.rs` (temporary POC wiring)
   - **Done when**: `cargo run -- "pattern" ./test-dir` prints correct search results matching `grep -rn "pattern" ./test-dir`

@@ -371,14 +371,17 @@ impl StreamingSearchEngine {
             for sub_batch in file_contents.chunks(SUB_BATCH_SIZE) {
                 self.search_engine.reset();
 
-                // Track mapping: engine_file_index -> chunk_local_idx
-                let mut loaded_files: Vec<(u32, usize)> = Vec::new();
+                // Track mapping: engine_file_index -> (chunk_local_idx, start_chunk_offset)
+                // start_chunk_offset = engine chunk index where this file's data begins,
+                // used to convert engine-global byte_offset to file-relative byte_offset.
+                let mut loaded_files: Vec<(u32, usize, usize)> = Vec::new();
 
                 for (local_idx, content) in sub_batch {
                     let file_index = loaded_files.len() as u32;
+                    let start_chunk = self.search_engine.chunk_count();
                     let chunks_loaded = self.search_engine.load_content(content, file_index);
                     if chunks_loaded > 0 {
-                        loaded_files.push((file_index, *local_idx));
+                        loaded_files.push((file_index, *local_idx, start_chunk));
                         profile.bytes_processed += content.len() as u64;
                         profile.files_processed += 1;
                     }
@@ -395,18 +398,22 @@ impl StreamingSearchEngine {
                 for m in &gpu_results {
                     let engine_file_idx = m.file_index;
 
-                    let local_idx = loaded_files
+                    let file_info = loaded_files
                         .iter()
-                        .find(|(fi, _)| *fi as usize == engine_file_idx)
-                        .map(|(_, li)| *li);
+                        .find(|(fi, _, _)| *fi as usize == engine_file_idx);
 
-                    if let Some(local_idx) = local_idx {
-                        if let Some(path) = chunk.file_paths.get(local_idx) {
+                    if let Some((_, local_idx, start_chunk)) = file_info {
+                        if let Some(path) = chunk.file_paths.get(*local_idx) {
+                            // Convert engine-global byte_offset to file-relative:
+                            // byte_offset from GPU = global_chunk_index * 4096 + context_start
+                            // file-relative = byte_offset - (start_chunk * 4096)
+                            let file_byte_offset = m.byte_offset
+                                .saturating_sub((*start_chunk as u32) * 4096);
                             all_results.push(StreamingMatch {
                                 file_path: path.clone(),
                                 line_number: m.line_number,
                                 column: m.column,
-                                byte_offset: m.byte_offset,
+                                byte_offset: file_byte_offset,
                                 match_length: m.match_length,
                             });
                         }
