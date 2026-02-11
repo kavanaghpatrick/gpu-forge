@@ -123,7 +123,7 @@ fn render_full_layout(
     render_results_panel(f, v_chunks[1], app);
 
     // Right: GPU dashboard
-    dashboard::render_gpu_dashboard(f, h_chunks[2], metrics, &app.theme);
+    dashboard::render_gpu_dashboard(f, h_chunks[2], metrics, &app.theme, app);
 
     render_status_bar(f, main_chunks[2], app);
 }
@@ -170,7 +170,7 @@ fn render_two_panel_layout(
     render_results_panel(f, v_chunks[1], app);
 
     // Right: GPU dashboard
-    dashboard::render_gpu_dashboard(f, h_chunks[1], metrics, &app.theme);
+    dashboard::render_gpu_dashboard(f, h_chunks[1], metrics, &app.theme, app);
 
     render_status_bar(f, main_chunks[2], app);
 }

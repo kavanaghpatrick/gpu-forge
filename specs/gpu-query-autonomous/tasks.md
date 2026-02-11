@@ -255,7 +255,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - **Commit**: `feat(autonomous): add Ctrl+L live mode toggle`
   - _Requirements: UX-1_
 
-- [ ] 5.5 Add engine status badge to dashboard
+- [x] 5.5 Add engine status badge to dashboard
   - **Do**: In `src/tui/dashboard.rs`, add an "ENGINE" section after existing GPU metrics. Display: engine status badge ([LIVE]/[WARMING]/[IDLE]/[FALLBACK]/[OFF]/[ERROR]), last latency, average latency, queries processed count, JIT cache stats (plans compiled, misses). Follow existing dashboard rendering patterns.
   - **Files**: `gpu-query/src/tui/dashboard.rs`
   - **Done when**: Dashboard shows engine status section with correct badge

@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 use crate::gpu::metrics::{format_bytes, format_throughput, format_time, GpuMetricsCollector};
+use crate::tui::app::{AppState, EngineStatus};
 use crate::tui::gradient::Gradient;
 use crate::tui::themes::Theme;
 
@@ -24,6 +25,7 @@ pub fn render_gpu_dashboard(
     area: Rect,
     metrics: &GpuMetricsCollector,
     theme: &Theme,
+    app: &AppState,
 ) {
     let block = Block::default()
         .title(Span::styled(
@@ -42,7 +44,7 @@ pub fn render_gpu_dashboard(
         return; // Too small to render anything useful
     }
 
-    // Layout: utilization bar + memory bar + stats + sparkline
+    // Layout: utilization bar + memory bar + stats + sparkline + engine section
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -50,6 +52,10 @@ pub fn render_gpu_dashboard(
             Constraint::Length(1), // Memory bar
             Constraint::Length(1), // Throughput + query count
             Constraint::Length(1), // Average stats
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Engine header
+            Constraint::Length(1), // Engine latency
+            Constraint::Length(1), // Engine queries + JIT
             Constraint::Length(1), // Spacer
             Constraint::Min(2),    // Sparkline history
         ])
@@ -67,9 +73,14 @@ pub fn render_gpu_dashboard(
     // 4. Average stats
     render_avg_line(f, chunks[3], metrics, theme);
 
-    // 5. Sparkline history (throughput over time)
-    if chunks[5].height >= 2 {
-        render_sparkline(f, chunks[5], metrics, theme);
+    // 5-7. Engine status section
+    render_engine_status(f, chunks[5], app, theme);
+    render_engine_latency(f, chunks[6], app, theme);
+    render_engine_jit_stats(f, chunks[7], app, theme);
+
+    // 8. Sparkline history (throughput over time)
+    if chunks[9].height >= 2 {
+        render_sparkline(f, chunks[9], metrics, theme);
     }
 }
 
@@ -193,6 +204,92 @@ fn render_avg_line(f: &mut Frame, area: Rect, metrics: &GpuMetricsCollector, the
         Span::styled(avg_throughput.to_string(), Style::default().fg(theme.text)),
         Span::styled(" | peak: ", Style::default().fg(theme.muted)),
         Span::styled(peak_mem.to_string(), Style::default().fg(theme.text)),
+    ]);
+
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// Render engine status badge line.
+///
+/// Format: `ENGINE [LIVE]` or `ENGINE [OFF]` etc.
+fn render_engine_status(f: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
+    let (badge_text, badge_color) = match app.engine_status {
+        EngineStatus::Live => ("[LIVE]", ratatui::style::Color::Green),
+        EngineStatus::WarmingUp => ("[WARMING]", ratatui::style::Color::Yellow),
+        EngineStatus::Compiling => ("[COMPILING]", ratatui::style::Color::Yellow),
+        EngineStatus::Idle => ("[IDLE]", ratatui::style::Color::Rgb(100, 100, 120)),
+        EngineStatus::Fallback => ("[FALLBACK]", ratatui::style::Color::Rgb(255, 165, 0)),
+        EngineStatus::Off => ("[OFF]", ratatui::style::Color::Rgb(80, 80, 90)),
+        EngineStatus::Error => ("[ERROR]", ratatui::style::Color::Red),
+    };
+
+    let line = Line::from(vec![
+        Span::styled(
+            "ENGINE ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            badge_text,
+            Style::default()
+                .fg(badge_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// Render engine latency line.
+///
+/// Format: `last: 420us | avg: 380us`
+fn render_engine_latency(f: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
+    let last_str = match app.last_autonomous_us {
+        Some(us) => format!("{}us", us),
+        None => "--".to_string(),
+    };
+
+    let avg_str = if app.autonomous_stats.avg_latency_us > 0.0 {
+        format!("{:.0}us", app.autonomous_stats.avg_latency_us)
+    } else {
+        "--".to_string()
+    };
+
+    let line = Line::from(vec![
+        Span::styled("  last: ", Style::default().fg(theme.muted)),
+        Span::styled(last_str, Style::default().fg(theme.text)),
+        Span::styled(" | avg: ", Style::default().fg(theme.muted)),
+        Span::styled(avg_str, Style::default().fg(theme.text)),
+    ]);
+
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// Render engine queries processed + JIT cache stats line.
+///
+/// Format: `  Q:123 | JIT: 5/2 (compiled/miss)`
+fn render_engine_jit_stats(f: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
+    let total_q = app.autonomous_stats.total_queries;
+
+    // JIT stats: compiled = total unique plans, misses = cache misses
+    // If we have an autonomous executor, read its stats; otherwise show defaults
+    let (jit_compiled, jit_misses) = if let Some(ref executor) = app.autonomous_executor {
+        let stats = executor.stats();
+        (stats.jit_cache_misses, stats.jit_cache_misses)
+    } else {
+        (0, 0)
+    };
+
+    let line = Line::from(vec![
+        Span::styled("  Q:", Style::default().fg(theme.muted)),
+        Span::styled(format!("{}", total_q), Style::default().fg(theme.text)),
+        Span::styled(" | JIT: ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{}/{}", jit_compiled, jit_misses),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(" (plans/miss)", Style::default().fg(theme.muted)),
     ]);
 
     f.render_widget(Paragraph::new(line), area);
