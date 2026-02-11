@@ -344,7 +344,7 @@ Focus: Comprehensive test coverage. Benchmark validation. Stress testing for sta
   - **Commit**: `test(autonomous): add stress tests (memory leak, watchdog, concurrency)`
   - _Requirements: NFR-8_
 
-- [ ] 6.7 Testing checkpoint
+- [x] 6.7 Testing checkpoint
   - **Do**: All tests pass. Benchmarks validate <1ms target. Stress tests clean.
   - **Done when**: Full test suite green. Benchmark results documented.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 && cargo bench -- autonomous 2>&1 | grep "time:"`
