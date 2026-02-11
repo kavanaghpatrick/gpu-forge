@@ -191,7 +191,7 @@ Focus: Final polish, lint, and PR preparation.
   - **Commit**: `fix(lint): resolve clippy warnings and formatting issues`
   - _Requirements: NFR-7_
 
-- [ ] 5.2 Final performance verification
+- [x] 5.2 Final performance verification
   - **Do**: Run the benchmark suite and verify: (1) Warm 1M-row compound filter GROUP BY < 50ms. (2) All existing benchmarks show no regression (or improvement). (3) Run `cargo test --all-targets` one final time to confirm 100% pass rate.
   - **Files**: None (verification only)
   - **Done when**: All performance targets met; all tests green
