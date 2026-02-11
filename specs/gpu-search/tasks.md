@@ -187,7 +187,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-4, FR-12_
   - _Design: Filesystem Index, scanner.rs_
 
-- [ ] 2.4 Implement index/cache.rs -- binary index persistence
+- [x] 2.4 Implement index/cache.rs -- binary index persistence
   - **Do**: Save/load binary index at `~/.gpu-search/index/`. Header with version, entry count, root path hash. Pack GpuPathEntry array. mmap for loading.
   - **Files**: `gpu-search/src/index/cache.rs`, update `gpu-search/src/index/mod.rs`
   - **Done when**: Save index, restart, load cached, verify identical entries
