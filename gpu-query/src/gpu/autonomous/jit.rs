@@ -3,7 +3,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use crate::gpu::autonomous::loader::ColumnInfo;
 use crate::sql::physical_plan::PhysicalPlan;
+use crate::sql::types::{AggFunc, CompareOp};
 
 /// Compute a structure-only hash of a physical plan.
 ///
@@ -83,6 +85,873 @@ fn hash_plan_node(plan: &PhysicalPlan, hasher: &mut DefaultHasher) {
             hash_plan_node(input, hasher);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Extracted plan components for code generation
+// ---------------------------------------------------------------------------
+
+/// A filter predicate extracted from the plan tree.
+#[derive(Debug, Clone)]
+struct ExtractedFilter {
+    column_name: String,
+    compare_op: CompareOp,
+}
+
+/// All components extracted from a PhysicalPlan for Metal source generation.
+#[derive(Debug)]
+struct ExtractedPlan {
+    filters: Vec<ExtractedFilter>,
+    aggregates: Vec<(AggFunc, String)>,
+    group_by: Vec<String>,
+}
+
+/// Extract filters, aggs, and group_by from a PhysicalPlan tree.
+fn extract_plan(plan: &PhysicalPlan) -> ExtractedPlan {
+    let mut filters = Vec::new();
+    let mut aggregates = Vec::new();
+    let mut group_by = Vec::new();
+
+    fn collect_filters(node: &PhysicalPlan, out: &mut Vec<ExtractedFilter>) {
+        match node {
+            PhysicalPlan::GpuFilter {
+                compare_op,
+                column,
+                input,
+                ..
+            } => {
+                out.push(ExtractedFilter {
+                    column_name: column.clone(),
+                    compare_op: *compare_op,
+                });
+                collect_filters(input, out);
+            }
+            PhysicalPlan::GpuCompoundFilter { left, right, .. } => {
+                collect_filters(left, out);
+                collect_filters(right, out);
+            }
+            _ => {}
+        }
+    }
+
+    // Walk plan tree to find the aggregate and its input
+    match plan {
+        PhysicalPlan::GpuAggregate {
+            functions,
+            group_by: gb,
+            input,
+        } => {
+            aggregates = functions.clone();
+            group_by = gb.clone();
+            collect_filters(input, &mut filters);
+        }
+        _ => {
+            // Non-aggregate plan: just collect filters
+            collect_filters(plan, &mut filters);
+        }
+    }
+
+    ExtractedPlan {
+        filters,
+        aggregates,
+        group_by,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JIT Metal source generator
+// ---------------------------------------------------------------------------
+
+/// JIT compiler that generates specialized Metal source from a PhysicalPlan.
+pub struct JitCompiler;
+
+impl JitCompiler {
+    /// Generate specialized Metal shader source code from a physical plan.
+    ///
+    /// The generated kernel has the same buffer interface as the AOT fused_query
+    /// kernel (buffers 0-3: params, data, columns, output) but with specialized
+    /// inner logic: exact filter predicates inlined, exact aggregate functions,
+    /// and GROUP BY handling baked in.
+    ///
+    /// The `schema` parameter maps column names to indices and types.
+    pub fn generate_metal_source(plan: &PhysicalPlan, schema: &[ColumnInfo]) -> String {
+        let extracted = extract_plan(plan);
+        let mut src = String::with_capacity(4096);
+
+        // --- Header ---
+        emit_header(&mut src);
+
+        // --- SIMD helpers (always included for reductions) ---
+        emit_simd_helpers(&mut src);
+
+        // --- Column read helpers ---
+        emit_column_readers(&mut src);
+
+        // --- Device atomic helpers ---
+        emit_atomic_helpers(&mut src);
+
+        // --- Main kernel ---
+        emit_kernel(
+            &mut src,
+            &extracted.filters,
+            &extracted.aggregates,
+            &extracted.group_by,
+            schema,
+        );
+
+        src
+    }
+}
+
+/// Resolve a column name to its index in the schema. Returns 0 if not found.
+fn column_index(schema: &[ColumnInfo], name: &str) -> usize {
+    schema.iter().position(|c| c.name == name).unwrap_or(0)
+}
+
+/// Map a ColumnInfo data type to a MSL column type constant.
+fn column_type_constant(schema: &[ColumnInfo], name: &str) -> &'static str {
+    use crate::storage::schema::DataType;
+    if let Some(col) = schema.iter().find(|c| c.name == name) {
+        match col.data_type {
+            DataType::Int64 => "COLUMN_TYPE_INT64",
+            DataType::Float64 => "COLUMN_TYPE_FLOAT32", // loader downcasts to f32
+            DataType::Varchar => "COLUMN_TYPE_DICT_U32",
+            DataType::Bool | DataType::Date => "COLUMN_TYPE_INT64",
+        }
+    } else {
+        "COLUMN_TYPE_INT64"
+    }
+}
+
+/// Map a CompareOp to its MSL operator string.
+fn compare_op_str(op: CompareOp) -> &'static str {
+    match op {
+        CompareOp::Eq => "==",
+        CompareOp::Ne => "!=",
+        CompareOp::Lt => "<",
+        CompareOp::Le => "<=",
+        CompareOp::Gt => ">",
+        CompareOp::Ge => ">=",
+    }
+}
+
+/// Map a CompareOp to its MSL column read function.
+fn read_func_for_type(type_const: &str) -> &'static str {
+    match type_const {
+        "COLUMN_TYPE_INT64" => "read_int64",
+        "COLUMN_TYPE_FLOAT32" => "read_float32",
+        "COLUMN_TYPE_DICT_U32" => "read_dict_u32",
+        _ => "read_int64",
+    }
+}
+
+/// MSL type name for a column type constant.
+fn msl_type_for_column(type_const: &str) -> &'static str {
+    match type_const {
+        "COLUMN_TYPE_INT64" => "long",
+        "COLUMN_TYPE_FLOAT32" => "float",
+        "COLUMN_TYPE_DICT_U32" => "uint",
+        _ => "long",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Code emission helpers
+// ---------------------------------------------------------------------------
+
+fn emit_header(src: &mut String) {
+    src.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+    src.push_str("#include \"autonomous_types.h\"\n\n");
+    src.push_str("#define THREADGROUP_SIZE 256\n");
+    src.push_str("#define INT64_MAX_VAL  0x7FFFFFFFFFFFFFFF\n");
+    src.push_str("#define INT64_MIN_VAL  0x8000000000000000\n");
+    src.push_str("#define FLOAT_MAX_VAL  3.402823466e+38f\n");
+    src.push_str("#define FLOAT_MIN_VAL  (-3.402823466e+38f)\n\n");
+}
+
+fn emit_simd_helpers(src: &mut String) {
+    src.push_str(
+        "static inline long jit_simd_sum_int64(long value, uint simd_lane) {\n\
+         \x20   int2 val;\n\
+         \x20   val.x = static_cast<int>(static_cast<ulong>(value));\n\
+         \x20   val.y = static_cast<int>(static_cast<ulong>(value) >> 32);\n\
+         \x20   for (ushort offset = 16; offset > 0; offset >>= 1) {\n\
+         \x20       int2 other;\n\
+         \x20       other.x = simd_shuffle_down(val.x, offset);\n\
+         \x20       other.y = simd_shuffle_down(val.y, offset);\n\
+         \x20       uint a_lo = static_cast<uint>(val.x);\n\
+         \x20       uint b_lo = static_cast<uint>(other.x);\n\
+         \x20       uint new_lo = a_lo + b_lo;\n\
+         \x20       uint carry = (new_lo < a_lo) ? 1u : 0u;\n\
+         \x20       val.x = static_cast<int>(new_lo);\n\
+         \x20       val.y = val.y + other.y + static_cast<int>(carry);\n\
+         \x20   }\n\
+         \x20   ulong result = static_cast<ulong>(static_cast<uint>(val.x))\n\
+         \x20                | (static_cast<ulong>(static_cast<uint>(val.y)) << 32);\n\
+         \x20   return static_cast<long>(result);\n\
+         }\n\n",
+    );
+    src.push_str(
+        "static inline long jit_simd_min_int64(long value, uint simd_lane) {\n\
+         \x20   int2 val;\n\
+         \x20   val.x = static_cast<int>(static_cast<ulong>(value));\n\
+         \x20   val.y = static_cast<int>(static_cast<ulong>(value) >> 32);\n\
+         \x20   for (ushort offset = 16; offset > 0; offset >>= 1) {\n\
+         \x20       int2 other;\n\
+         \x20       other.x = simd_shuffle_down(val.x, offset);\n\
+         \x20       other.y = simd_shuffle_down(val.y, offset);\n\
+         \x20       bool other_less = (other.y < val.y) || (other.y == val.y && static_cast<uint>(other.x) < static_cast<uint>(val.x));\n\
+         \x20       if (other_less) { val.x = other.x; val.y = other.y; }\n\
+         \x20   }\n\
+         \x20   ulong result = static_cast<ulong>(static_cast<uint>(val.x))\n\
+         \x20                | (static_cast<ulong>(static_cast<uint>(val.y)) << 32);\n\
+         \x20   return static_cast<long>(result);\n\
+         }\n\n",
+    );
+    src.push_str(
+        "static inline long jit_simd_max_int64(long value, uint simd_lane) {\n\
+         \x20   int2 val;\n\
+         \x20   val.x = static_cast<int>(static_cast<ulong>(value));\n\
+         \x20   val.y = static_cast<int>(static_cast<ulong>(value) >> 32);\n\
+         \x20   for (ushort offset = 16; offset > 0; offset >>= 1) {\n\
+         \x20       int2 other;\n\
+         \x20       other.x = simd_shuffle_down(val.x, offset);\n\
+         \x20       other.y = simd_shuffle_down(val.y, offset);\n\
+         \x20       bool other_greater = (other.y > val.y) || (other.y == val.y && static_cast<uint>(other.x) > static_cast<uint>(val.x));\n\
+         \x20       if (other_greater) { val.x = other.x; val.y = other.y; }\n\
+         \x20   }\n\
+         \x20   ulong result = static_cast<ulong>(static_cast<uint>(val.x))\n\
+         \x20                | (static_cast<ulong>(static_cast<uint>(val.y)) << 32);\n\
+         \x20   return static_cast<long>(result);\n\
+         }\n\n",
+    );
+}
+
+fn emit_column_readers(src: &mut String) {
+    src.push_str(
+        "static inline long read_int64(device const char* data, device const ColumnMeta& meta, uint row) {\n\
+         \x20   return ((device const long*)(data + meta.offset))[row];\n\
+         }\n\n",
+    );
+    src.push_str(
+        "static inline float read_float32(device const char* data, device const ColumnMeta& meta, uint row) {\n\
+         \x20   return ((device const float*)(data + meta.offset))[row];\n\
+         }\n\n",
+    );
+    src.push_str(
+        "static inline uint read_dict_u32(device const char* data, device const ColumnMeta& meta, uint row) {\n\
+         \x20   return ((device const uint*)(data + meta.offset))[row];\n\
+         }\n\n",
+    );
+}
+
+fn emit_atomic_helpers(src: &mut String) {
+    // atomic_add_int64
+    src.push_str(
+        "static inline void atomic_add_int64(device atomic_uint* lo_ptr, device atomic_uint* hi_ptr, long value) {\n\
+         \x20   ulong val_u = static_cast<ulong>(value);\n\
+         \x20   uint lo = static_cast<uint>(val_u);\n\
+         \x20   uint hi = static_cast<uint>(val_u >> 32);\n\
+         \x20   uint old_lo = atomic_fetch_add_explicit(lo_ptr, lo, memory_order_relaxed);\n\
+         \x20   ulong sum_lo = static_cast<ulong>(old_lo) + static_cast<ulong>(lo);\n\
+         \x20   uint carry = (sum_lo > 0xFFFFFFFFUL) ? 1u : 0u;\n\
+         \x20   atomic_fetch_add_explicit(hi_ptr, hi + carry, memory_order_relaxed);\n\
+         }\n\n",
+    );
+    // atomic_add_float
+    src.push_str(
+        "static inline void atomic_add_float(device atomic_uint* ptr, float value) {\n\
+         \x20   if (value == 0.0f) return;\n\
+         \x20   uint expected = atomic_load_explicit(ptr, memory_order_relaxed);\n\
+         \x20   for (int i = 0; i < 64; i++) {\n\
+         \x20       float cur = as_type<float>(expected);\n\
+         \x20       float desired = cur + value;\n\
+         \x20       uint desired_bits = as_type<uint>(desired);\n\
+         \x20       if (atomic_compare_exchange_weak_explicit(ptr, &expected, desired_bits, memory_order_relaxed, memory_order_relaxed)) return;\n\
+         \x20   }\n\
+         }\n\n",
+    );
+    // atomic_min_int64
+    src.push_str(
+        "static inline void atomic_min_int64(device atomic_uint* lo_ptr, device atomic_uint* hi_ptr, long new_val) {\n\
+         \x20   ulong new_u = static_cast<ulong>(new_val);\n\
+         \x20   uint new_lo = static_cast<uint>(new_u); uint new_hi = static_cast<uint>(new_u >> 32);\n\
+         \x20   for (int i = 0; i < 128; i++) {\n\
+         \x20       uint cur_hi = atomic_load_explicit(hi_ptr, memory_order_relaxed);\n\
+         \x20       uint cur_lo = atomic_load_explicit(lo_ptr, memory_order_relaxed);\n\
+         \x20       uint cur_hi2 = atomic_load_explicit(hi_ptr, memory_order_relaxed);\n\
+         \x20       if (cur_hi != cur_hi2) continue;\n\
+         \x20       long cur_val = static_cast<long>(static_cast<ulong>(cur_lo) | (static_cast<ulong>(cur_hi) << 32));\n\
+         \x20       if (new_val >= cur_val) return;\n\
+         \x20       if (atomic_compare_exchange_weak_explicit(lo_ptr, &cur_lo, new_lo, memory_order_relaxed, memory_order_relaxed)) {\n\
+         \x20           if (atomic_compare_exchange_weak_explicit(hi_ptr, &cur_hi, new_hi, memory_order_relaxed, memory_order_relaxed)) return;\n\
+         \x20           atomic_store_explicit(lo_ptr, cur_lo, memory_order_relaxed);\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\n",
+    );
+    // atomic_max_int64
+    src.push_str(
+        "static inline void atomic_max_int64(device atomic_uint* lo_ptr, device atomic_uint* hi_ptr, long new_val) {\n\
+         \x20   ulong new_u = static_cast<ulong>(new_val);\n\
+         \x20   uint new_lo = static_cast<uint>(new_u); uint new_hi = static_cast<uint>(new_u >> 32);\n\
+         \x20   for (int i = 0; i < 128; i++) {\n\
+         \x20       uint cur_hi = atomic_load_explicit(hi_ptr, memory_order_relaxed);\n\
+         \x20       uint cur_lo = atomic_load_explicit(lo_ptr, memory_order_relaxed);\n\
+         \x20       uint cur_hi2 = atomic_load_explicit(hi_ptr, memory_order_relaxed);\n\
+         \x20       if (cur_hi != cur_hi2) continue;\n\
+         \x20       long cur_val = static_cast<long>(static_cast<ulong>(cur_lo) | (static_cast<ulong>(cur_hi) << 32));\n\
+         \x20       if (new_val <= cur_val) return;\n\
+         \x20       if (atomic_compare_exchange_weak_explicit(lo_ptr, &cur_lo, new_lo, memory_order_relaxed, memory_order_relaxed)) {\n\
+         \x20           if (atomic_compare_exchange_weak_explicit(hi_ptr, &cur_hi, new_hi, memory_order_relaxed, memory_order_relaxed)) return;\n\
+         \x20           atomic_store_explicit(lo_ptr, cur_lo, memory_order_relaxed);\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\n",
+    );
+    // atomic_min_float / atomic_max_float
+    src.push_str(
+        "static inline void atomic_min_float(device atomic_uint* ptr, float value) {\n\
+         \x20   uint expected = atomic_load_explicit(ptr, memory_order_relaxed);\n\
+         \x20   for (int i = 0; i < 64; i++) {\n\
+         \x20       float cur = as_type<float>(expected);\n\
+         \x20       if (value >= cur) return;\n\
+         \x20       uint desired_bits = as_type<uint>(value);\n\
+         \x20       if (atomic_compare_exchange_weak_explicit(ptr, &expected, desired_bits, memory_order_relaxed, memory_order_relaxed)) return;\n\
+         \x20   }\n\
+         }\n\n",
+    );
+    src.push_str(
+        "static inline void atomic_max_float(device atomic_uint* ptr, float value) {\n\
+         \x20   uint expected = atomic_load_explicit(ptr, memory_order_relaxed);\n\
+         \x20   for (int i = 0; i < 64; i++) {\n\
+         \x20       float cur = as_type<float>(expected);\n\
+         \x20       if (value <= cur) return;\n\
+         \x20       uint desired_bits = as_type<uint>(value);\n\
+         \x20       if (atomic_compare_exchange_weak_explicit(ptr, &expected, desired_bits, memory_order_relaxed, memory_order_relaxed)) return;\n\
+         \x20   }\n\
+         }\n\n",
+    );
+}
+
+fn emit_kernel(
+    src: &mut String,
+    filters: &[ExtractedFilter],
+    aggregates: &[(AggFunc, String)],
+    group_by: &[String],
+    schema: &[ColumnInfo],
+) {
+    let has_group_by = !group_by.is_empty();
+    let filter_count = filters.len();
+    let agg_count = aggregates.len();
+
+    // Kernel signature
+    src.push_str(
+        "kernel void fused_query_jit(\n\
+         \x20   device const QueryParamsSlot* params [[buffer(0)]],\n\
+         \x20   device const char* data [[buffer(1)]],\n\
+         \x20   device const ColumnMeta* columns [[buffer(2)]],\n\
+         \x20   device OutputBuffer* output [[buffer(3)]],\n\
+         \x20   uint tid [[thread_position_in_grid]],\n\
+         \x20   uint tgid [[threadgroup_position_in_grid]],\n\
+         \x20   uint lid [[thread_position_in_threadgroup]],\n\
+         \x20   uint simd_lane [[thread_index_in_simdgroup]],\n\
+         \x20   uint simd_id [[simdgroup_index_in_threadgroup]]\n\
+         ) {\n",
+    );
+
+    // Threadgroup accumulators
+    if has_group_by || agg_count > 0 {
+        emit_threadgroup_accumulators(src, agg_count);
+    }
+
+    // Row bounds check
+    src.push_str("    uint row_count = params->row_count;\n");
+    src.push_str("    bool row_passes = (tid < row_count);\n\n");
+
+    // --- Filter phase (inlined) ---
+    if filter_count > 0 {
+        src.push_str(&format!(
+            "    // === FILTER PHASE ({} predicates, inlined) ===\n",
+            filter_count
+        ));
+        for (i, f) in filters.iter().enumerate() {
+            let col_idx = column_index(schema, &f.column_name);
+            let col_type = column_type_constant(schema, &f.column_name);
+            let read_fn = read_func_for_type(col_type);
+            let msl_type = msl_type_for_column(col_type);
+            let op_str = compare_op_str(f.compare_op);
+
+            // Read column value (reuse if same column as previous filter)
+            src.push_str(&format!(
+                "    if (row_passes) {{\n\
+                 \x20       {msl_type} filter_{i}_val = {read_fn}(data, columns[{col_idx}], tid);\n",
+            ));
+
+            // Comparison value comes from params (literal values stored there)
+            match col_type {
+                "COLUMN_TYPE_INT64" => {
+                    src.push_str(&format!(
+                        "        if (!(filter_{i}_val {op_str} params->filters[{i}].value_int)) row_passes = false;\n",
+                    ));
+                }
+                "COLUMN_TYPE_FLOAT32" => {
+                    src.push_str(&format!(
+                        "        float filter_{i}_threshold = as_type<float>(params->filters[{i}].value_float_bits);\n\
+                         \x20       if (!(filter_{i}_val {op_str} filter_{i}_threshold)) row_passes = false;\n",
+                    ));
+                }
+                "COLUMN_TYPE_DICT_U32" => {
+                    src.push_str(&format!(
+                        "        if (!(filter_{i}_val {op_str} static_cast<uint>(params->filters[{i}].value_int))) row_passes = false;\n",
+                    ));
+                }
+                _ => {}
+            }
+            src.push_str("    }\n");
+        }
+        src.push('\n');
+    }
+
+    // --- GROUP BY phase ---
+    src.push_str("    // === GROUP BY PHASE ===\n");
+    src.push_str("    uint bucket = 0;\n");
+    if has_group_by {
+        let gb_col = &group_by[0]; // single GROUP BY column
+        let gb_idx = column_index(schema, gb_col);
+        let gb_type = column_type_constant(schema, gb_col);
+        let gb_read = read_func_for_type(gb_type);
+        let gb_msl = msl_type_for_column(gb_type);
+
+        src.push_str(&format!(
+            "    if (row_passes) {{\n\
+             \x20       {gb_msl} group_val = {gb_read}(data, columns[{gb_idx}], tid);\n\
+             \x20       bucket = static_cast<uint>((group_val >= 0 ? group_val : -group_val) % MAX_GROUPS);\n\
+             \x20       accum[bucket].group_key = static_cast<long>(group_val);\n\
+             \x20       accum[bucket].valid = 1;\n\
+             \x20   }}\n\n",
+        ));
+    } else {
+        src.push_str(
+            "    if (row_passes) {\n\
+             \x20       accum[0].valid = 1;\n\
+             \x20   }\n\n",
+        );
+    }
+
+    // --- Aggregate phase ---
+    if agg_count > 0 {
+        src.push_str(&format!(
+            "    // === AGGREGATE PHASE ({} aggs) ===\n",
+            agg_count
+        ));
+        emit_aggregate_phase(src, aggregates, schema, has_group_by, agg_count);
+    }
+
+    // --- Global reduction ---
+    emit_global_reduction(src, aggregates, schema, agg_count);
+
+    // --- Output metadata ---
+    emit_output_metadata(src, has_group_by, agg_count);
+
+    src.push_str("}\n");
+}
+
+fn emit_threadgroup_accumulators(src: &mut String, agg_count: usize) {
+    src.push_str("    // Threadgroup-local group accumulators\n");
+    src.push_str("    struct GroupAccumulator {\n");
+    src.push_str("        long count;\n");
+    src.push_str(&format!(
+        "        long sum_int[{agg_count}];\n\
+         \x20       float sum_float[{agg_count}];\n\
+         \x20       long min_int[{agg_count}];\n\
+         \x20       long max_int[{agg_count}];\n\
+         \x20       float min_float[{agg_count}];\n\
+         \x20       float max_float[{agg_count}];\n",
+    ));
+    src.push_str("        long group_key;\n        uint valid;\n    };\n");
+    src.push_str("    threadgroup GroupAccumulator accum[MAX_GROUPS];\n\n");
+
+    // Initialize accumulators
+    src.push_str("    // Init accumulators\n");
+    src.push_str(
+        "    uint groups_per_thread = (MAX_GROUPS + THREADGROUP_SIZE - 1) / THREADGROUP_SIZE;\n",
+    );
+    src.push_str("    for (uint i = 0; i < groups_per_thread; i++) {\n");
+    src.push_str("        uint g = lid * groups_per_thread + i;\n");
+    src.push_str("        if (g < MAX_GROUPS) {\n");
+    src.push_str("            accum[g].count = 0;\n");
+    for a in 0..agg_count {
+        src.push_str(&format!(
+            "            accum[g].sum_int[{a}] = 0; accum[g].sum_float[{a}] = 0.0f;\n\
+             \x20           accum[g].min_int[{a}] = static_cast<long>(INT64_MAX_VAL);\n\
+             \x20           accum[g].max_int[{a}] = static_cast<long>(INT64_MIN_VAL);\n\
+             \x20           accum[g].min_float[{a}] = FLOAT_MAX_VAL;\n\
+             \x20           accum[g].max_float[{a}] = FLOAT_MIN_VAL;\n",
+        ));
+    }
+    src.push_str("            accum[g].group_key = 0; accum[g].valid = 0;\n");
+    src.push_str("        }\n    }\n");
+    src.push_str("    threadgroup_barrier(mem_flags::mem_threadgroup);\n\n");
+}
+
+fn emit_aggregate_phase(
+    src: &mut String,
+    aggregates: &[(AggFunc, String)],
+    schema: &[ColumnInfo],
+    has_group_by: bool,
+    agg_count: usize,
+) {
+    // Per-thread local values
+    src.push_str("    long local_count = row_passes ? 1 : 0;\n");
+    for (a, (func, col_name)) in aggregates.iter().enumerate() {
+        let col_type = column_type_constant(schema, col_name);
+        let col_idx = column_index(schema, col_name);
+        let read_fn = read_func_for_type(col_type);
+
+        match func {
+            AggFunc::Count => {
+                src.push_str(&format!("    long local_agg_{a} = row_passes ? 1 : 0;\n"));
+            }
+            AggFunc::Sum | AggFunc::Avg => {
+                if col_type == "COLUMN_TYPE_FLOAT32" {
+                    src.push_str(&format!(
+                        "    float local_agg_{a} = row_passes ? {read_fn}(data, columns[{col_idx}], tid) : 0.0f;\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "    long local_agg_{a} = row_passes ? {read_fn}(data, columns[{col_idx}], tid) : 0;\n",
+                    ));
+                }
+            }
+            AggFunc::Min => {
+                if col_type == "COLUMN_TYPE_FLOAT32" {
+                    src.push_str(&format!(
+                        "    float local_agg_{a} = row_passes ? {read_fn}(data, columns[{col_idx}], tid) : FLOAT_MAX_VAL;\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "    long local_agg_{a} = row_passes ? {read_fn}(data, columns[{col_idx}], tid) : static_cast<long>(INT64_MAX_VAL);\n",
+                    ));
+                }
+            }
+            AggFunc::Max => {
+                if col_type == "COLUMN_TYPE_FLOAT32" {
+                    src.push_str(&format!(
+                        "    float local_agg_{a} = row_passes ? {read_fn}(data, columns[{col_idx}], tid) : FLOAT_MIN_VAL;\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "    long local_agg_{a} = row_passes ? {read_fn}(data, columns[{col_idx}], tid) : static_cast<long>(INT64_MIN_VAL);\n",
+                    ));
+                }
+            }
+        }
+    }
+    src.push('\n');
+
+    // Merge into threadgroup accumulators
+    if !has_group_by {
+        // Strategy A: simd reduction for single-bucket
+        emit_simd_merge(src, aggregates, schema, agg_count);
+    } else {
+        // Strategy B: serial per-thread accumulation for GROUP BY
+        emit_serial_merge(src, aggregates, schema, agg_count);
+    }
+}
+
+fn emit_simd_merge(
+    src: &mut String,
+    aggregates: &[(AggFunc, String)],
+    schema: &[ColumnInfo],
+    _agg_count: usize,
+) {
+    src.push_str("    // SIMD reduction (no GROUP BY, single bucket)\n");
+    src.push_str("    long simd_count = jit_simd_sum_int64(local_count, simd_lane);\n");
+
+    for (a, (func, col_name)) in aggregates.iter().enumerate() {
+        let col_type = column_type_constant(schema, col_name);
+        let is_float = col_type == "COLUMN_TYPE_FLOAT32";
+
+        match func {
+            AggFunc::Count => {
+                src.push_str(&format!(
+                    "    long simd_agg_{a} = jit_simd_sum_int64(local_agg_{a}, simd_lane);\n"
+                ));
+            }
+            AggFunc::Sum | AggFunc::Avg => {
+                if is_float {
+                    src.push_str(&format!(
+                        "    float simd_agg_{a} = simd_sum(local_agg_{a});\n"
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "    long simd_agg_{a} = jit_simd_sum_int64(local_agg_{a}, simd_lane);\n"
+                    ));
+                }
+            }
+            AggFunc::Min => {
+                if is_float {
+                    src.push_str(&format!(
+                        "    float simd_agg_{a} = simd_min(local_agg_{a});\n"
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "    long simd_agg_{a} = jit_simd_min_int64(local_agg_{a}, simd_lane);\n"
+                    ));
+                }
+            }
+            AggFunc::Max => {
+                if is_float {
+                    src.push_str(&format!(
+                        "    float simd_agg_{a} = simd_max(local_agg_{a});\n"
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "    long simd_agg_{a} = jit_simd_max_int64(local_agg_{a}, simd_lane);\n"
+                    ));
+                }
+            }
+        }
+    }
+
+    // Merge simdgroups into threadgroup accumulator (serialized)
+    src.push_str(
+        "\n    uint num_simdgroups = (THREADGROUP_SIZE + 31) / 32;\n\
+         \x20   for (uint sg = 0; sg < num_simdgroups; sg++) {\n\
+         \x20       if (simd_id == sg && simd_lane == 0 && simd_count > 0) {\n\
+         \x20           accum[0].count += simd_count;\n\
+         \x20           accum[0].valid = 1;\n",
+    );
+
+    for (a, (func, col_name)) in aggregates.iter().enumerate() {
+        let col_type = column_type_constant(schema, col_name);
+        let is_float = col_type == "COLUMN_TYPE_FLOAT32";
+
+        match func {
+            AggFunc::Count => {
+                src.push_str(&format!(
+                    "            accum[0].sum_int[{a}] += simd_agg_{a};\n"
+                ));
+            }
+            AggFunc::Sum | AggFunc::Avg => {
+                if is_float {
+                    src.push_str(&format!(
+                        "            accum[0].sum_float[{a}] += simd_agg_{a};\n"
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "            accum[0].sum_int[{a}] += simd_agg_{a};\n"
+                    ));
+                }
+            }
+            AggFunc::Min => {
+                if is_float {
+                    src.push_str(&format!(
+                        "            if (simd_agg_{a} < accum[0].min_float[{a}]) accum[0].min_float[{a}] = simd_agg_{a};\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "            if (simd_agg_{a} < accum[0].min_int[{a}]) accum[0].min_int[{a}] = simd_agg_{a};\n",
+                    ));
+                }
+            }
+            AggFunc::Max => {
+                if is_float {
+                    src.push_str(&format!(
+                        "            if (simd_agg_{a} > accum[0].max_float[{a}]) accum[0].max_float[{a}] = simd_agg_{a};\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "            if (simd_agg_{a} > accum[0].max_int[{a}]) accum[0].max_int[{a}] = simd_agg_{a};\n",
+                    ));
+                }
+            }
+        }
+    }
+
+    src.push_str(
+        "        }\n\
+         \x20       threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20   }\n\n",
+    );
+}
+
+fn emit_serial_merge(
+    src: &mut String,
+    aggregates: &[(AggFunc, String)],
+    schema: &[ColumnInfo],
+    _agg_count: usize,
+) {
+    src.push_str("    // Serial per-thread accumulation (GROUP BY)\n");
+    src.push_str(
+        "    for (uint t = 0; t < THREADGROUP_SIZE; t++) {\n\
+         \x20       if (lid == t && local_count > 0) {\n\
+         \x20           uint b = bucket;\n\
+         \x20           accum[b].count += 1;\n\
+         \x20           accum[b].valid = 1;\n",
+    );
+
+    for (a, (func, col_name)) in aggregates.iter().enumerate() {
+        let col_type = column_type_constant(schema, col_name);
+        let is_float = col_type == "COLUMN_TYPE_FLOAT32";
+
+        match func {
+            AggFunc::Count => {
+                src.push_str(&format!(
+                    "            accum[b].sum_int[{a}] += local_agg_{a};\n"
+                ));
+            }
+            AggFunc::Sum | AggFunc::Avg => {
+                if is_float {
+                    src.push_str(&format!(
+                        "            accum[b].sum_float[{a}] += local_agg_{a};\n"
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "            accum[b].sum_int[{a}] += local_agg_{a};\n"
+                    ));
+                }
+            }
+            AggFunc::Min => {
+                if is_float {
+                    src.push_str(&format!(
+                        "            if (local_agg_{a} < accum[b].min_float[{a}]) accum[b].min_float[{a}] = local_agg_{a};\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "            if (local_agg_{a} < accum[b].min_int[{a}]) accum[b].min_int[{a}] = local_agg_{a};\n",
+                    ));
+                }
+            }
+            AggFunc::Max => {
+                if is_float {
+                    src.push_str(&format!(
+                        "            if (local_agg_{a} > accum[b].max_float[{a}]) accum[b].max_float[{a}] = local_agg_{a};\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "            if (local_agg_{a} > accum[b].max_int[{a}]) accum[b].max_int[{a}] = local_agg_{a};\n",
+                    ));
+                }
+            }
+        }
+    }
+
+    src.push_str(
+        "        }\n\
+         \x20       threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20   }\n\n",
+    );
+}
+
+fn emit_global_reduction(
+    src: &mut String,
+    aggregates: &[(AggFunc, String)],
+    schema: &[ColumnInfo],
+    agg_count: usize,
+) {
+    src.push_str("    // === GLOBAL REDUCTION (device atomics) ===\n");
+    src.push_str("    if (lid == 0) {\n");
+    src.push_str("        for (uint g = 0; g < MAX_GROUPS; g++) {\n");
+    src.push_str("            if (accum[g].valid == 0) continue;\n");
+    src.push_str("            output->group_keys[g] = accum[g].group_key;\n");
+
+    for (a, (func, col_name)) in aggregates.iter().enumerate() {
+        let col_type = column_type_constant(schema, col_name);
+        let is_float = col_type == "COLUMN_TYPE_FLOAT32";
+
+        src.push_str(&format!(
+            "            // Agg {a}: {func}\n\
+             \x20           {{\n\
+             \x20               uint off = 2080 + (g * {agg_count} + {a}) * 16;\n\
+             \x20               device char* base = (device char*)output;\n\
+             \x20               device atomic_uint* val_int_lo = (device atomic_uint*)(base + off);\n\
+             \x20               device atomic_uint* val_int_hi = (device atomic_uint*)(base + off + 4);\n\
+             \x20               device atomic_uint* val_float = (device atomic_uint*)(base + off + 8);\n\
+             \x20               device atomic_uint* val_count = (device atomic_uint*)(base + off + 12);\n\
+             \x20               atomic_fetch_add_explicit(val_count, static_cast<uint>(accum[g].count), memory_order_relaxed);\n",
+        ));
+
+        match func {
+            AggFunc::Count => {
+                src.push_str(&format!(
+                    "                atomic_add_int64(val_int_lo, val_int_hi, accum[g].sum_int[{a}]);\n",
+                ));
+            }
+            AggFunc::Sum | AggFunc::Avg => {
+                if is_float {
+                    src.push_str(&format!(
+                        "                atomic_add_float(val_float, accum[g].sum_float[{a}]);\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "                atomic_add_int64(val_int_lo, val_int_hi, accum[g].sum_int[{a}]);\n",
+                    ));
+                }
+            }
+            AggFunc::Min => {
+                if is_float {
+                    src.push_str(&format!(
+                        "                atomic_min_float(val_float, accum[g].min_float[{a}]);\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "                atomic_min_int64(val_int_lo, val_int_hi, accum[g].min_int[{a}]);\n",
+                    ));
+                }
+            }
+            AggFunc::Max => {
+                if is_float {
+                    src.push_str(&format!(
+                        "                atomic_max_float(val_float, accum[g].max_float[{a}]);\n",
+                    ));
+                } else {
+                    src.push_str(&format!(
+                        "                atomic_max_int64(val_int_lo, val_int_hi, accum[g].max_int[{a}]);\n",
+                    ));
+                }
+            }
+        }
+        src.push_str("            }\n");
+    }
+
+    src.push_str("        }\n    }\n\n");
+}
+
+fn emit_output_metadata(src: &mut String, has_group_by: bool, agg_count: usize) {
+    src.push_str("    // === OUTPUT METADATA ===\n");
+    src.push_str("    device atomic_uint* tg_done_counter = (device atomic_uint*)&output->error_code;\n");
+    src.push_str("    uint total_tgs = (row_count + THREADGROUP_SIZE - 1) / THREADGROUP_SIZE;\n");
+    src.push_str("    threadgroup_barrier(mem_flags::mem_device);\n\n");
+    src.push_str("    if (lid == 0) {\n");
+    src.push_str("        uint prev_done = atomic_fetch_add_explicit(tg_done_counter, 1u, memory_order_relaxed);\n");
+    src.push_str("        if (prev_done + 1 == total_tgs) {\n");
+
+    if has_group_by {
+        // Count valid groups
+        src.push_str("            uint group_count = 0;\n");
+        src.push_str(&format!(
+            "            for (uint g = 0; g < MAX_GROUPS; g++) {{\n\
+             \x20               uint off = 2080 + (g * {agg_count} + 0) * 16;\n\
+             \x20               device char* base = (device char*)output;\n\
+             \x20               device atomic_uint* cnt = (device atomic_uint*)(base + off + 12);\n\
+             \x20               if (atomic_load_explicit(cnt, memory_order_relaxed) > 0) group_count++;\n\
+             \x20           }}\n",
+        ));
+    } else {
+        src.push_str("            uint group_count = 1;\n");
+    }
+
+    src.push_str("            output->result_row_count = group_count;\n");
+    src.push_str(&format!(
+        "            output->result_col_count = {agg_count};\n"
+    ));
+    src.push_str("            output->sequence_id = params->sequence_id;\n");
+    src.push_str("            output->error_code = 0;\n");
+    src.push_str("            threadgroup_barrier(mem_flags::mem_device);\n");
+    src.push_str("            output->ready_flag = 1;\n");
+    src.push_str("        }\n    }\n");
 }
 
 #[cfg(test)]
@@ -293,6 +1162,272 @@ mod tests {
             plan_structure_hash(&plan_a),
             plan_structure_hash(&plan_b),
             "different filter column must produce different hash"
+        );
+    }
+
+    // ===================================================================
+    // Metal source generation tests
+    // ===================================================================
+
+    use crate::gpu::autonomous::loader::ColumnInfo;
+    use crate::storage::schema::DataType;
+
+    /// Helper: create a test schema with amount (INT64) and region (INT64).
+    fn test_schema() -> Vec<ColumnInfo> {
+        vec![
+            ColumnInfo {
+                name: "amount".into(),
+                data_type: DataType::Int64,
+            },
+            ColumnInfo {
+                name: "region".into(),
+                data_type: DataType::Int64,
+            },
+        ]
+    }
+
+    /// Helper: create a test schema with amount (INT64), region (INT64), price (FLOAT64).
+    #[allow(dead_code)]
+    fn test_schema_with_float() -> Vec<ColumnInfo> {
+        vec![
+            ColumnInfo {
+                name: "amount".into(),
+                data_type: DataType::Int64,
+            },
+            ColumnInfo {
+                name: "region".into(),
+                data_type: DataType::Int64,
+            },
+            ColumnInfo {
+                name: "price".into(),
+                data_type: DataType::Float64,
+            },
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 1: COUNT(*) no filter — kernel name, no filter code
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_count_star() {
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("fused_query_jit"),
+            "must contain kernel name fused_query_jit"
+        );
+        assert!(
+            !src.contains("FILTER PHASE"),
+            "COUNT(*) without filter should not have FILTER PHASE"
+        );
+        assert!(
+            src.contains("AGGREGATE PHASE"),
+            "must have aggregate phase"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 2: SUM — contains sum accumulation
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_sum() {
+        let plan = aggregate(vec![(AggFunc::Sum, "amount")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("jit_simd_sum_int64"),
+            "SUM(int) must use jit_simd_sum_int64"
+        );
+        assert!(
+            src.contains("atomic_add_int64"),
+            "SUM must use atomic_add_int64 for global merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 3: filter GT — contains > comparison
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_filter_gt() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_gt("amount", Value::Int(500), scan("sales")),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("FILTER PHASE"),
+            "must have FILTER PHASE when filter present"
+        );
+        assert!(
+            src.contains("> params->filters[0].value_int"),
+            "GT filter must use > operator"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 4: compound filter — contains both predicates
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_compound_filter() {
+        let left = filter_gt("amount", Value::Int(100), scan("sales"));
+        let right = PhysicalPlan::GpuFilter {
+            compare_op: CompareOp::Lt,
+            column: "amount".into(),
+            value: Value::Int(1000),
+            input: Box::new(scan("sales")),
+        };
+        let compound = compound_and(left, right);
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], compound);
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("2 predicates"),
+            "compound filter must show 2 predicates"
+        );
+        assert!(
+            src.contains("> params->filters[0].value_int"),
+            "first filter must be GT"
+        );
+        assert!(
+            src.contains("< params->filters[1].value_int"),
+            "second filter must be LT"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 5: GROUP BY — contains bucket calculation
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_group_by() {
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec!["region"],
+            scan("sales"),
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("% MAX_GROUPS"),
+            "GROUP BY must have modular hash bucketing"
+        );
+        assert!(
+            src.contains("Serial per-thread accumulation"),
+            "GROUP BY uses serial merge strategy"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 6: headline query — filters + GROUP BY + multi-agg
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_headline_query() {
+        // SELECT COUNT(*), SUM(amount) FROM sales
+        // WHERE amount > 100 AND amount < 1000
+        // GROUP BY region
+        let left = filter_gt("amount", Value::Int(100), scan("sales"));
+        let right = PhysicalPlan::GpuFilter {
+            compare_op: CompareOp::Lt,
+            column: "amount".into(),
+            value: Value::Int(1000),
+            input: Box::new(scan("sales")),
+        };
+        let compound = compound_and(left, right);
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+            vec!["region"],
+            compound,
+        );
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        // Must have all components
+        assert!(src.contains("FILTER PHASE"), "headline: filters");
+        assert!(src.contains("% MAX_GROUPS"), "headline: GROUP BY");
+        assert!(src.contains("AGGREGATE PHASE (2 aggs)"), "headline: 2 aggs");
+        assert!(
+            src.contains("atomic_add_int64"),
+            "headline: int64 SUM atomic merge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 7: no dead code — filter_count=0 means no filter code
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_no_dead_code() {
+        // No filters, no GROUP BY
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            !src.contains("FILTER PHASE"),
+            "no filter should not emit FILTER PHASE"
+        );
+        assert!(
+            !src.contains("% MAX_GROUPS"),
+            "no GROUP BY should not emit bucket code"
+        );
+        assert!(
+            src.contains("SIMD reduction"),
+            "no GROUP BY should use SIMD reduction"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 8: different plans produce different source
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_different_plans_different_source() {
+        let plan_a = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let plan_b = aggregate(
+            vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+            vec!["region"],
+            filter_gt("amount", Value::Int(100), scan("sales")),
+        );
+        let src_a = JitCompiler::generate_metal_source(&plan_a, &test_schema());
+        let src_b = JitCompiler::generate_metal_source(&plan_b, &test_schema());
+
+        assert_ne!(
+            src_a, src_b,
+            "different plans must produce different source"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 9: includes autonomous_types.h
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_includes_header() {
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("#include \"autonomous_types.h\""),
+            "must include autonomous_types.h"
+        );
+        assert!(
+            src.contains("#include <metal_stdlib>"),
+            "must include metal_stdlib"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generate test 10: kernel function name is fused_query_jit
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_generate_kernel_function_name() {
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let src = JitCompiler::generate_metal_source(&plan, &test_schema());
+
+        assert!(
+            src.contains("kernel void fused_query_jit("),
+            "kernel function must be named fused_query_jit"
+        );
+        assert!(
+            !src.contains("kernel void fused_query("),
+            "must NOT contain the AOT kernel name 'fused_query(' without _jit"
         );
     }
 }

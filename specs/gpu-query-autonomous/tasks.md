@@ -131,7 +131,7 @@ Focus: Generate specialized Metal shader source from query plan, compile at runt
   - _Requirements: FR-6_
   - _Design: Component 4_
 
-- [ ] 3.2 Implement Metal source generator
+- [x] 3.2 Implement Metal source generator
   - **Do**: In `jit.rs`, implement `JitCompiler::generate_metal_source(plan, schema) -> String`. Template engine emits specialized MSL: (1) header with includes, (2) inline filter functions per predicate (baked comparison operator, no branches), (3) inline aggregate accumulation per function, (4) main `fused_query` kernel with exact operations inlined. The generated kernel reads params from `QueryParamsSlot` for literal values but has specialized code structure.
   - **Files**: `gpu-query/src/gpu/autonomous/jit.rs`
   - **Done when**: Generated MSL for headline query is syntactically valid (contains expected patterns). ~10 source generation tests pass.
