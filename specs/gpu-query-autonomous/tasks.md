@@ -336,7 +336,7 @@ Focus: Comprehensive test coverage. Benchmark validation. Stress testing for sta
   - **Commit**: `bench(autonomous): add Criterion benchmark suite`
   - _Requirements: NFR-1, NFR-2_
 
-- [ ] 6.6 Add stress tests
+- [x] 6.6 Add stress tests
   - **Do**: Create `tests/autonomous_stress.rs` with `#[ignore]` tests: (1) `stress_memory_leak`: run 100K queries, verify Metal allocated size growth < 1%. (2) `stress_watchdog_survival`: continuous queries for 2 minutes, zero watchdog errors. (3) `stress_concurrent_submit_poll`: one thread submits at max rate, main thread polls, verify all received results correct. All tests use `--ignored` flag.
   - **Files**: `gpu-query/tests/autonomous_stress.rs`
   - **Done when**: All stress tests pass (run with `--ignored`)
