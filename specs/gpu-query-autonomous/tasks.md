@@ -238,7 +238,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - **Commit**: `feat(autonomous): implement query compatibility checking`
   - _Requirements: FR-10, UX-9_
 
-- [ ] 5.3 Integrate autonomous executor into event loop
+- [x] 5.3 Integrate autonomous executor into event loop
   - **Do**: Modify `src/tui/mod.rs` event loop: (1) Poll `autonomous_executor.poll_ready()` on every tick -- if ready, read result, update app state. (2) In live mode with valid autonomous-compatible SQL, call `submit_query()` on every keystroke (0ms debounce). (3) For fallback queries in live mode, use existing `execute_editor_query()`. (4) Check warm-up progress via channel.
   - **Files**: `gpu-query/src/tui/mod.rs`
   - **Done when**: Autonomous queries execute via event loop polling. Live mode works.
