@@ -39,7 +39,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1_
   - _Design: GPU Device Layer_
 
-- [ ] 1.4 Create placeholder Metal shader files
+- [x] 1.4 Create placeholder Metal shader files
   - **Do**: Create stub `.metal` files with `#include <metal_stdlib>` and empty kernel functions. Create `search_types.h` with basic shared type definitions (SearchParams, GpuMatchResult, GpuPathEntry stubs).
   - **Files**: `gpu-search/shaders/search_types.h`, `gpu-search/shaders/content_search.metal`, `gpu-search/shaders/turbo_search.metal`, `gpu-search/shaders/batch_search.metal`, `gpu-search/shaders/path_filter.metal`
   - **Done when**: `cargo build` compiles all shaders
@@ -48,7 +48,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1_
   - _Design: GPU Device Layer_
 
-- [ ] 1.5 Create stub main.rs and lib.rs
+- [x] 1.5 Create stub main.rs and lib.rs
   - **Do**: `main.rs`: minimal entry point that prints "gpu-search" and exits (eframe launch comes later). `lib.rs`: declare modules `pub mod gpu; pub mod search; pub mod io; pub mod index; pub mod ui;`. Each module's `mod.rs`: empty or with `// TODO` comments.
   - **Files**: `gpu-search/src/main.rs`, `gpu-search/src/lib.rs`
   - **Done when**: `cargo build` produces a binary
