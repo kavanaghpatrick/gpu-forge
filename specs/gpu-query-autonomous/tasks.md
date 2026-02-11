@@ -30,7 +30,7 @@ Focus: Establish the shared data formats between Rust and MSL. Load data into GP
   - _Requirements: FR-2, FR-3, FR-5_
   - _Design: Shared Struct Definitions_
 
-- [ ] 1.3 Create MSL shared type header
+- [x] 1.3 Create MSL shared type header
   - **Do**: Create `shaders/autonomous_types.h` with MSL counterparts of all Rust types: `FilterSpec`, `AggSpec`, `QueryParamsSlot`, `ColumnMeta`, `OutputBuffer`, `AggResult`. Byte-identical layouts. Include `#pragma once` and `#include <metal_stdlib>`. Add `#define MAX_GROUPS 64`, `#define MAX_AGGS 5`, `#define MAX_FILTERS 4`.
   - **Files**: `gpu-query/shaders/autonomous_types.h`
   - **Done when**: Header compiles when included by a .metal file (verified via build.rs)
