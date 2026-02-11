@@ -4,28 +4,85 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Search parameters passed from CPU to GPU
-struct SearchParams {
-    uchar pattern[256];     // Search pattern bytes
-    uint pattern_len;       // Length of the pattern
-    uint total_bytes;       // Total bytes in the input buffer
-    uint case_sensitive;    // 1 = case sensitive, 0 = case insensitive
-    uint max_matches;       // Maximum number of matches to return
-    uint file_count;        // Number of files in the batch
-    uint reserved[2];       // Padding for alignment
+// ============================================================================
+// Common Constants
+// ============================================================================
+
+#define CHUNK_SIZE 4096
+#define MAX_PATTERN_LEN 64
+#define MAX_CONTEXT 80
+#define THREADGROUP_SIZE 256
+#define BYTES_PER_THREAD 64
+#define MAX_MATCHES_PER_THREAD 4
+
+// ============================================================================
+// Content Search Structures (content_search + turbo_search kernels)
+// ============================================================================
+
+// Metadata for each chunk of file data loaded into the GPU buffer
+struct ChunkMetadata {
+    uint file_index;
+    uint chunk_index;
+    ulong offset_in_file;
+    uint chunk_length;
+    uint flags;  // Bit 0: is_text, Bit 1: is_first, Bit 2: is_last
 };
 
-// A single match result written by the GPU
-struct GpuMatchResult {
-    uint file_index;        // Index of the file containing the match
-    uint byte_offset;       // Byte offset of the match in the file
-    uint line_number;       // Line number (computed post-search or in kernel)
-    uint column;            // Column offset within the line
-    uint match_length;      // Length of the matched region
-    uint context_start;     // Start offset of surrounding context
-    uint context_len;       // Length of surrounding context
-    uint reserved;          // Padding for alignment
+// Search parameters for chunked content search kernels
+struct SearchParams {
+    uint chunk_count;
+    uint pattern_len;
+    uint case_sensitive;
+    uint total_bytes;  // Total bytes across all chunks
 };
+
+// Match result written by GPU search kernels
+struct MatchResult {
+    uint file_index;
+    uint chunk_index;
+    uint line_number;
+    uint column;
+    uint match_length;
+    uint context_start;
+    uint context_len;
+    uint _padding;
+};
+
+// ============================================================================
+// Batch/Persistent Search Structures (batch_search_kernel)
+// ============================================================================
+
+constant uint STATUS_EMPTY = 0;
+constant uint STATUS_READY = 1;
+constant uint STATUS_PROCESSING = 2;
+constant uint STATUS_DONE = 3;
+
+struct SearchWorkItem {
+    uchar pattern[64];
+    uint pattern_len;
+    uint case_sensitive;
+    uint data_buffer_id;
+    atomic_uint status;
+    atomic_uint result_count;
+    uint _padding[2];
+};
+
+struct PersistentKernelControl {
+    atomic_uint head;
+    atomic_uint tail;
+    atomic_uint shutdown;
+    atomic_uint heartbeat;
+};
+
+struct DataBufferDescriptor {
+    ulong offset;
+    uint size;
+    uint _padding;
+};
+
+// ============================================================================
+// Path Filter Structures (path_filter_kernel)
+// ============================================================================
 
 // A filesystem path entry for the GPU-resident index (256 bytes)
 struct GpuPathEntry {
@@ -38,5 +95,25 @@ struct GpuPathEntry {
     uint mtime;             // Last modification time (unix timestamp)
     uint reserved[2];       // Padding to reach 256 bytes total
 };
+
+// Path filter parameters
+struct PathFilterParams {
+    uint entry_count;       // Number of entries in the index
+    uint pattern_len;       // Length of the filter pattern
+    uint case_sensitive;    // 1 = case sensitive, 0 = case insensitive
+    uint max_matches;       // Maximum number of matches to return
+};
+
+// ============================================================================
+// Shared Utility Functions
+// ============================================================================
+
+// Case-insensitive character compare
+inline bool char_eq_fast(uchar a, uchar b, bool case_sensitive) {
+    if (case_sensitive) return a == b;
+    uchar a_lower = (a >= 'A' && a <= 'Z') ? a + 32 : a;
+    uchar b_lower = (b >= 'A' && b <= 'Z') ? b + 32 : b;
+    return a_lower == b_lower;
+}
 
 #endif // SEARCH_TYPES_H

@@ -84,7 +84,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1_
   - _Design: GPU Device Layer, pipeline.rs_
 
-- [ ] 1.9 Extract Metal shaders from rust-experiment
+- [x] 1.9 Extract Metal shaders from rust-experiment
   - **Do**: Extract MSL source from inline Rust string constants: `CONTENT_SEARCH_SHADER` from `content_search.rs:95`, turbo kernel from `content_search.rs`, `PERSISTENT_SEARCH_SHADER` from `persistent_search.rs:173`, path filter from `filesystem.rs`. Place into standalone `.metal` files. Update `search_types.h` with actual struct definitions matching the Rust types. Remove the `{{APP_SHADER_HEADER}}` template and replace with actual includes.
   - **Files**: `gpu-search/shaders/content_search.metal`, `gpu-search/shaders/turbo_search.metal`, `gpu-search/shaders/batch_search.metal`, `gpu-search/shaders/path_filter.metal`, `gpu-search/shaders/search_types.h`
   - **Done when**: `cargo build` compiles all extracted shaders, PSOs load successfully
