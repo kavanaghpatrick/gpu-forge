@@ -211,8 +211,8 @@ fn execute_dot_command(app: &mut super::app::AppState) {
             app.set_error(msg);
         }
         DotCommandResult::DescribeTable(table_name) => {
-            // Execute GPU-parallel DESCRIBE: re-scan catalog and invoke executor
-            match crate::io::catalog::scan_directory(&app.data_dir) {
+            // Execute GPU-parallel DESCRIBE: use cached catalog and invoke executor
+            match app.catalog_cache.get_or_refresh().map(|s| s.to_vec()) {
                 Ok(catalog) => match crate::gpu::executor::QueryExecutor::new() {
                     Ok(mut executor) => match executor.execute_describe(&table_name, &catalog) {
                         Ok(desc) => {

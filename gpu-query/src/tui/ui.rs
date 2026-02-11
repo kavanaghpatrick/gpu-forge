@@ -342,7 +342,7 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     app.status_message = "Executing query...".into();
 
     // Scan catalog
-    let catalog = crate::io::catalog::scan_directory(&app.data_dir).map_err(|e| {
+    let catalog = app.catalog_cache.get_or_refresh().map(|s| s.to_vec()).map_err(|e| {
         let msg = format!("Catalog scan error: {}", e);
         app.set_error(msg.clone());
         msg

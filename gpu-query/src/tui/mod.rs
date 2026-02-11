@@ -62,7 +62,7 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
     let mut app = AppState::new(data_dir.clone(), theme_name);
 
     // Scan for tables in data directory and populate catalog tree
-    if let Ok(catalog_entries) = crate::io::catalog::scan_directory(&data_dir) {
+    if let Ok(catalog_entries) = app.catalog_cache.get_or_refresh().map(|s| s.to_vec()) {
         app.tables = catalog_entries.iter().map(|e| e.name.clone()).collect();
 
         let tree_entries: Vec<catalog::CatalogEntry> = catalog_entries

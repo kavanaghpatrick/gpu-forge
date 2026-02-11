@@ -87,7 +87,7 @@ Focus: Eliminate per-query Metal device + PSO cache recreation by persisting the
   - _Requirements: FR-4, FR-5_
   - _Design: Component 2 (Persistent QueryExecutor)_
 
-- [ ] 2.3 Replace scan_directory calls with CatalogCache in TUI
+- [x] 2.3 Replace scan_directory calls with CatalogCache in TUI
   - **Do**: (1) In `gpu-query/src/tui/ui.rs:345`: Replace `crate::io::catalog::scan_directory(&app.data_dir)` with `app.catalog_cache.get_or_refresh()`. Handle the `io::Result` -> `String` error conversion. Clone the entries to `Vec<TableEntry>` for ownership (catalog_cache returns `&[TableEntry]`). (2) In `gpu-query/src/tui/event.rs:215`: Same replacement for the DESCRIBE path. (3) In `gpu-query/src/tui/mod.rs:65`: Replace the initial `scan_directory` call with `app.catalog_cache.get_or_refresh()`.
   - **Files**: `gpu-query/src/tui/ui.rs`, `gpu-query/src/tui/event.rs`, `gpu-query/src/tui/mod.rs`
   - **Done when**: All 3 `scan_directory` calls in TUI replaced with `catalog_cache.get_or_refresh()`
