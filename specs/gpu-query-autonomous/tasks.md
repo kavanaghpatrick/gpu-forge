@@ -39,7 +39,7 @@ Focus: Establish the shared data formats between Rust and MSL. Load data into GP
   - _Requirements: FR-3_
   - _Design: Shared Struct Definitions_
 
-- [ ] 1.4 Implement triple-buffered work queue
+- [x] 1.4 Implement triple-buffered work queue
   - **Do**: Create `src/gpu/autonomous/work_queue.rs`. Implement `WorkQueue` struct wrapping a Metal buffer (3 x 512B = 1536B, StorageModeShared). Methods: `new(device) -> Self` (allocate buffer), `write_params(params: &QueryParamsSlot)` (write to current slot, bump sequence_id with Release ordering, advance write_idx mod 3), `read_latest_sequence_id() -> u32` (for CPU-side debug). Add unit tests: buffer size, shared mode, write_idx cycles 0->1->2->0, sequence_id monotonic, slot population correctness.
   - **Files**: `gpu-query/src/gpu/autonomous/work_queue.rs`
   - **Done when**: ~12 unit tests pass. Work queue allocates and writes correctly.
