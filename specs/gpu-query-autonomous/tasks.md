@@ -287,7 +287,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - **Commit**: `feat(autonomous): wire fallback path for unsupported queries`
   - _Requirements: FR-10_
 
-- [ ] 5.9 TUI integration checkpoint
+- [x] 5.9 TUI integration checkpoint
   - **Do**: Full TUI works with autonomous engine: live mode, fallback, status display, warm-up. Run full regression.
   - **Done when**: TUI functional with both autonomous and standard paths. All tests pass.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | tail -10`
