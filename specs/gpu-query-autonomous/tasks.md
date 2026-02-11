@@ -313,7 +313,7 @@ Focus: Comprehensive test coverage. Benchmark validation. Stress testing for sta
   - **Commit**: `test(autonomous): comprehensive JIT compiler tests`
   - _Requirements: FR-6_
 
-- [ ] 6.3 Add edge case integration tests
+- [x] 6.3 Add edge case integration tests
   - **Do**: Add tests for: (1) empty table (0 rows) -> count=0, no crash, (2) single row -> correct scalar, (3) 257 rows (2 threadgroups boundary) -> correct cross-threadgroup reduction, (4) all identical values -> correct, (5) negative values -> sign preserved, (6) 64 distinct groups (max GROUP BY) -> all 64 present, (7) 65 groups -> falls back to standard. (8) NULL handling tests if null bitmaps implemented.
   - **Files**: `gpu-query/tests/autonomous_integration.rs`
   - **Done when**: All edge case tests pass. ~12 tests.

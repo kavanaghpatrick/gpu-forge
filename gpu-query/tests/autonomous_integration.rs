@@ -2347,3 +2347,906 @@ fn jit_parity_headline() {
         );
     }
 }
+
+// ============================================================================
+// Edge Case Tests: boundary conditions and degenerate inputs
+// ============================================================================
+
+/// Helper: create a custom single-column INT64 schema.
+fn single_col_schema() -> RuntimeSchema {
+    RuntimeSchema::new(vec![ColumnDef {
+        name: "val".to_string(),
+        data_type: DataType::Int64,
+        nullable: false,
+    }])
+}
+
+/// Helper: create a 2-column schema where column 1 is the group key.
+fn two_col_edge_schema() -> RuntimeSchema {
+    RuntimeSchema::new(vec![
+        ColumnDef {
+            name: "val".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "grp".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+    ])
+}
+
+/// Helper: create a single-column batch with explicit values.
+fn make_single_col_batch(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+    schema: &RuntimeSchema,
+    values: &[i64],
+) -> ColumnarBatch {
+    use objc2_metal::MTLBuffer;
+
+    let row_count = values.len();
+    let mut batch = ColumnarBatch::allocate(device, schema, row_count);
+    batch.row_count = row_count;
+
+    unsafe {
+        let ptr = batch.int_buffer.contents().as_ptr() as *mut i64;
+        for (i, &v) in values.iter().enumerate() {
+            *ptr.add(i) = v;
+        }
+    }
+
+    batch
+}
+
+/// Helper: create a 2-column batch (val, grp) with explicit values.
+fn make_two_col_edge_batch(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+    schema: &RuntimeSchema,
+    vals: &[i64],
+    grps: &[i64],
+) -> ColumnarBatch {
+    use objc2_metal::MTLBuffer;
+
+    assert_eq!(vals.len(), grps.len());
+    let row_count = vals.len();
+    let mut batch = ColumnarBatch::allocate(device, schema, row_count);
+    batch.row_count = row_count;
+
+    unsafe {
+        let ptr = batch.int_buffer.contents().as_ptr() as *mut i64;
+        // Column 0 (val): local_int_idx=0, offset = 0 * max_rows
+        for (i, &v) in vals.iter().enumerate() {
+            *ptr.add(i) = v;
+        }
+        // Column 1 (grp): local_int_idx=1, offset = 1 * max_rows
+        let offset = batch.max_rows;
+        for (i, &g) in grps.iter().enumerate() {
+            *ptr.add(offset + i) = g;
+        }
+    }
+
+    batch
+}
+
+// ============================================================================
+// Edge 1: Empty table (0 rows) — kernel completes without crash
+//   When row_count=0, the shader computes total_tgs=0, so the "last threadgroup"
+//   metadata phase never triggers. The ready_flag stays 0, COUNT stays 0 from
+//   zero-initialization. This test verifies no GPU crash occurs with empty data.
+// ============================================================================
+#[test]
+fn edge_empty_table_no_crash() {
+    let gpu = GpuDevice::new();
+    let schema = single_col_schema();
+    let values: Vec<i64> = vec![];
+    let batch = make_single_col_batch(&gpu.device, &schema, &values);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_empty", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 300;
+    params.filter_count = 0;
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0, // INT64
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = 0;
+
+    // This should not crash — the kernel dispatches 1 threadgroup but row_count=0
+    // means no threads pass the row filter and total_tgs computes as 0.
+    let result = run_query(&gpu, &mut cache, &params, 0, 1, false, &resident_table);
+
+    // ready_flag = 0 because the shader's total_tgs = (0 + 255) / 256 = 0,
+    // and prev_done + 1 == 0 is never true, so metadata never gets written.
+    // COUNT stays 0 from zero-initialization of the output buffer.
+    assert_eq!(
+        result.agg_results[0][0].value_int, 0,
+        "COUNT(*) on empty table should be 0 (zero-init), got {}",
+        result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// Edge 2: Empty table SUM — kernel completes without crash, SUM = 0 from zero-init
+// ============================================================================
+#[test]
+fn edge_empty_table_sum_no_crash() {
+    let gpu = GpuDevice::new();
+    let schema = single_col_schema();
+    let values: Vec<i64> = vec![];
+    let batch = make_single_col_batch(&gpu.device, &schema, &values);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_empty_sum", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 301;
+    params.filter_count = 0;
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0, // INT64
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = 0;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 1, false, &resident_table);
+
+    // SUM stays 0 from zero-initialization
+    assert_eq!(
+        result.agg_results[0][0].value_int, 0,
+        "SUM on empty table should be 0 (zero-init), got {}",
+        result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// Edge 3: Single row — correct scalar COUNT/SUM/MIN/MAX
+// ============================================================================
+#[test]
+fn edge_single_row() {
+    let gpu = GpuDevice::new();
+    let schema = single_col_schema();
+    let values = vec![42i64];
+    let batch = make_single_col_batch(&gpu.device, &schema, &values);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_single", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 302;
+    params.filter_count = 0;
+    params.agg_count = 4;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[2] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[3] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = 1;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 4, false, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(result.result_row_count, 1);
+    assert_eq!(
+        result.agg_results[0][0].value_int, 1,
+        "Single row COUNT should be 1"
+    );
+    assert_eq!(
+        result.agg_results[0][1].value_int, 42,
+        "Single row SUM should be 42"
+    );
+    assert_eq!(
+        result.agg_results[0][2].value_int, 42,
+        "Single row MIN should be 42"
+    );
+    assert_eq!(
+        result.agg_results[0][3].value_int, 42,
+        "Single row MAX should be 42"
+    );
+}
+
+// ============================================================================
+// Edge 4: 257 rows — crosses 2 threadgroup boundary (256 + 1)
+//   Verifies correct cross-threadgroup reduction via device atomics.
+// ============================================================================
+#[test]
+fn edge_257_rows_cross_threadgroup() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let row_count = 257usize;
+    let batch = make_test_batch(&gpu.device, &schema, row_count);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_257", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    // CPU expected
+    let amounts = cpu_amounts(row_count);
+    let expected_count = row_count as i64;
+    let expected_sum: i64 = amounts.iter().sum();
+    let expected_min = *amounts.iter().min().unwrap();
+    let expected_max = *amounts.iter().max().unwrap();
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 303;
+    params.filter_count = 0;
+    params.agg_count = 4;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[2] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[3] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = row_count as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 4, false, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(result.result_row_count, 1);
+    assert_eq!(
+        result.agg_results[0][0].value_int, expected_count,
+        "257 rows COUNT: expected {}, got {}",
+        expected_count, result.agg_results[0][0].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][1].value_int, expected_sum,
+        "257 rows SUM: expected {}, got {}",
+        expected_sum, result.agg_results[0][1].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][2].value_int, expected_min,
+        "257 rows MIN: expected {}, got {}",
+        expected_min, result.agg_results[0][2].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][3].value_int, expected_max,
+        "257 rows MAX: expected {}, got {}",
+        expected_max, result.agg_results[0][3].value_int
+    );
+}
+
+// ============================================================================
+// Edge 5: 257 rows with GROUP BY — cross-threadgroup grouped reduction
+// ============================================================================
+#[test]
+fn edge_257_rows_grouped_cross_threadgroup() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let row_count = 257usize;
+    let batch = make_test_batch(&gpu.device, &schema, row_count);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_257_grp", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    // CPU expected: region = i%5
+    let amounts = cpu_amounts(row_count);
+    let regions = cpu_regions(row_count);
+
+    let mut expected_count = [0i64; 5];
+    let mut expected_sum = [0i64; 5];
+    for i in 0..row_count {
+        let g = regions[i] as usize;
+        expected_count[g] += 1;
+        expected_sum[g] += amounts[i];
+    }
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 304;
+    params.filter_count = 0;
+    params.agg_count = 2;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1;
+    params.row_count = row_count as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 2, true, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(
+        result.result_row_count, 5,
+        "257 rows should have 5 groups, got {}",
+        result.result_row_count
+    );
+
+    for g in 0..5usize {
+        assert_eq!(
+            result.agg_results[g][0].value_int, expected_count[g],
+            "257 rows group {}: COUNT expected {}, got {}",
+            g, expected_count[g], result.agg_results[g][0].value_int
+        );
+        assert_eq!(
+            result.agg_results[g][1].value_int, expected_sum[g],
+            "257 rows group {}: SUM expected {}, got {}",
+            g, expected_sum[g], result.agg_results[g][1].value_int
+        );
+    }
+}
+
+// ============================================================================
+// Edge 6: All identical values — SUM = val*N, MIN = MAX = val
+// ============================================================================
+#[test]
+fn edge_all_identical_values() {
+    let gpu = GpuDevice::new();
+    let schema = single_col_schema();
+    let n = 500usize;
+    let val = 77i64;
+    let values: Vec<i64> = vec![val; n];
+    let batch = make_single_col_batch(&gpu.device, &schema, &values);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_identical", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 305;
+    params.filter_count = 0;
+    params.agg_count = 4;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[2] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[3] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = n as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 4, false, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(result.result_row_count, 1);
+    assert_eq!(
+        result.agg_results[0][0].value_int, n as i64,
+        "Identical values COUNT: expected {}, got {}",
+        n, result.agg_results[0][0].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][1].value_int, val * n as i64,
+        "Identical values SUM: expected {}, got {}",
+        val * n as i64, result.agg_results[0][1].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][2].value_int, val,
+        "Identical values MIN: expected {}, got {}",
+        val, result.agg_results[0][2].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][3].value_int, val,
+        "Identical values MAX: expected {}, got {}",
+        val, result.agg_results[0][3].value_int
+    );
+}
+
+// ============================================================================
+// Edge 7: Negative values — sign preserved in SUM, MIN, MAX
+// ============================================================================
+#[test]
+fn edge_negative_values() {
+    let gpu = GpuDevice::new();
+    let schema = single_col_schema();
+    let values: Vec<i64> = vec![-100, -50, -1, 0, 1, 50, 100];
+    let batch = make_single_col_batch(&gpu.device, &schema, &values);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_negative", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let expected_sum: i64 = values.iter().sum(); // 0
+    let expected_min = -100i64;
+    let expected_max = 100i64;
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 306;
+    params.filter_count = 0;
+    params.agg_count = 4;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[2] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[3] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = values.len() as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 4, false, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(result.result_row_count, 1);
+    assert_eq!(
+        result.agg_results[0][0].value_int,
+        values.len() as i64,
+        "Negative values COUNT: expected {}, got {}",
+        values.len(),
+        result.agg_results[0][0].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][1].value_int, expected_sum,
+        "Negative values SUM: expected {}, got {}",
+        expected_sum, result.agg_results[0][1].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][2].value_int, expected_min,
+        "Negative values MIN: expected {}, got {}",
+        expected_min, result.agg_results[0][2].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][3].value_int, expected_max,
+        "Negative values MAX: expected {}, got {}",
+        expected_max, result.agg_results[0][3].value_int
+    );
+}
+
+// ============================================================================
+// Edge 8: All negative values — SUM is negative, MIN < MAX < 0
+// ============================================================================
+#[test]
+fn edge_all_negative_values() {
+    let gpu = GpuDevice::new();
+    let schema = single_col_schema();
+    let values: Vec<i64> = vec![-500, -300, -100, -99, -1];
+    let batch = make_single_col_batch(&gpu.device, &schema, &values);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_all_neg", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let expected_sum: i64 = values.iter().sum(); // -1000
+    let expected_min = -500i64;
+    let expected_max = -1i64;
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 307;
+    params.filter_count = 0;
+    params.agg_count = 3;
+    params.aggs[0] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[2] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = values.len() as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 3, false, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(result.result_row_count, 1);
+    assert_eq!(
+        result.agg_results[0][0].value_int, expected_sum,
+        "All-negative SUM: expected {}, got {}",
+        expected_sum, result.agg_results[0][0].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][1].value_int, expected_min,
+        "All-negative MIN: expected {}, got {}",
+        expected_min, result.agg_results[0][1].value_int
+    );
+    assert_eq!(
+        result.agg_results[0][2].value_int, expected_max,
+        "All-negative MAX: expected {}, got {}",
+        expected_max, result.agg_results[0][2].value_int
+    );
+}
+
+// ============================================================================
+// Edge 9: 64 distinct groups (MAX_GROUPS) — all 64 buckets occupied
+// ============================================================================
+#[test]
+fn edge_64_groups_max() {
+    let gpu = GpuDevice::new();
+    let schema = two_col_edge_schema();
+
+    // 640 rows: 10 rows per group, groups 0..63
+    let n = 640usize;
+    let vals: Vec<i64> = (0..n).map(|i| (i * 3 + 1) as i64).collect();
+    let grps: Vec<i64> = (0..n).map(|i| (i % 64) as i64).collect();
+    let batch = make_two_col_edge_batch(&gpu.device, &schema, &vals, &grps);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_64g", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    // CPU expected: 64 groups, each with 10 rows
+    let mut expected_count = [0i64; 64];
+    let mut expected_sum = [0i64; 64];
+    for i in 0..n {
+        let g = grps[i] as usize;
+        expected_count[g] += 1;
+        expected_sum[g] += vals[i];
+    }
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 308;
+    params.filter_count = 0;
+    params.agg_count = 2;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1; // grp column
+    params.row_count = n as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 2, true, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(
+        result.result_row_count, 64,
+        "Should have 64 groups, got {}",
+        result.result_row_count
+    );
+
+    // Verify all 64 groups present with correct values
+    for g in 0..64usize {
+        let bucket = g; // abs(g) % 64 = g for g in 0..63
+        assert_eq!(
+            result.agg_results[bucket][0].value_int, expected_count[g],
+            "64-groups group {}: COUNT expected {}, got {}",
+            g, expected_count[g], result.agg_results[bucket][0].value_int
+        );
+        assert_eq!(
+            result.agg_results[bucket][1].value_int, expected_sum[g],
+            "64-groups group {}: SUM expected {}, got {}",
+            g, expected_sum[g], result.agg_results[bucket][1].value_int
+        );
+        assert_eq!(
+            result.group_keys[bucket], g as i64,
+            "64-groups group key at bucket {}: expected {}, got {}",
+            bucket, g, result.group_keys[bucket]
+        );
+    }
+}
+
+// ============================================================================
+// Edge 10: 65 groups — hash collision (key 64 collides with key 0 in bucket 0)
+//   Demonstrates the 64-group limit: the kernel uses abs(key)%64 hashing,
+//   so 65 groups causes collisions and incorrect results. This is why the
+//   system should fall back to the standard path for > 64 groups.
+// ============================================================================
+#[test]
+fn edge_65_groups_collision() {
+    let gpu = GpuDevice::new();
+    let schema = two_col_edge_schema();
+
+    // 650 rows: 10 rows per group, groups 0..64 (65 groups total)
+    let n = 650usize;
+    let vals: Vec<i64> = (0..n).map(|_| 1i64).collect(); // all 1s for easy counting
+    let grps: Vec<i64> = (0..n).map(|i| (i % 65) as i64).collect();
+    let batch = make_two_col_edge_batch(&gpu.device, &schema, &vals, &grps);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_65g", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 309;
+    params.filter_count = 0;
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1; // grp column
+    params.row_count = n as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 1, true, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+
+    // With 65 groups and hash = abs(key) % 64:
+    //   key 0 -> bucket 0
+    //   key 64 -> bucket 0 (collision!)
+    // So result_row_count should be 64 (not 65) due to hash collision.
+    // Bucket 0 merges group 0 and group 64, getting COUNT=20 instead of 10.
+    assert!(
+        result.result_row_count < 65,
+        "65 groups should have hash collision, result_row_count should be < 65 but got {}",
+        result.result_row_count
+    );
+    assert_eq!(
+        result.result_row_count, 64,
+        "65 groups -> 64 buckets due to key 0 and key 64 colliding in bucket 0"
+    );
+
+    // Bucket 0 should have merged count: 10 (from key 0) + 10 (from key 64) = 20
+    assert_eq!(
+        result.agg_results[0][0].value_int, 20,
+        "Bucket 0 should merge groups 0 and 64: COUNT expected 20, got {}",
+        result.agg_results[0][0].value_int
+    );
+
+    // Other buckets should have exactly 10 each
+    for b in 1..64usize {
+        assert_eq!(
+            result.agg_results[b][0].value_int, 10,
+            "Bucket {} COUNT expected 10, got {}",
+            b, result.agg_results[b][0].value_int
+        );
+    }
+}
+
+// ============================================================================
+// Edge 11: Filter that rejects all rows — COUNT=0, no crash
+// ============================================================================
+#[test]
+fn edge_filter_rejects_all() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_filter_all", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    // Filter: amount > 999999 (no row satisfies this)
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 310;
+    params.filter_count = 1;
+    params.filters[0] = FilterSpec {
+        column_idx: 0,
+        compare_op: 4, // GT
+        column_type: 0,
+        _pad0: 0,
+        value_int: 999999,
+        value_float_bits: 0,
+        _pad1: 0,
+        has_null_check: 0,
+        _pad2: [0; 3],
+    };
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = ROW_COUNT as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 1, 1, false, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(
+        result.agg_results[0][0].value_int, 0,
+        "Filter rejecting all rows: COUNT should be 0, got {}",
+        result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// Edge 12: Negative group keys — GROUP BY with negative values
+// ============================================================================
+#[test]
+fn edge_negative_group_keys() {
+    let gpu = GpuDevice::new();
+    let schema = two_col_edge_schema();
+
+    // 20 rows: val=10 for all, grp alternates -1 and -2
+    let n = 20usize;
+    let vals: Vec<i64> = vec![10i64; n];
+    let grps: Vec<i64> = (0..n).map(|i| if i % 2 == 0 { -1 } else { -2 }).collect();
+    let batch = make_two_col_edge_batch(&gpu.device, &schema, &vals, &grps);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "edge_neg_grp", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 311;
+    params.filter_count = 0;
+    params.agg_count = 2;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1; // grp column
+    params.row_count = n as u32;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 2, true, &resident_table);
+
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(
+        result.result_row_count, 2,
+        "Should have 2 groups (grp=-1 and grp=-2), got {}",
+        result.result_row_count
+    );
+
+    // Hash: abs(-1) % 64 = 1, abs(-2) % 64 = 2
+    let bucket_neg1 = 1usize; // abs(-1) % 64
+    let bucket_neg2 = 2usize; // abs(-2) % 64
+
+    assert_eq!(
+        result.agg_results[bucket_neg1][0].value_int, 10,
+        "Group -1 COUNT: expected 10, got {}",
+        result.agg_results[bucket_neg1][0].value_int
+    );
+    assert_eq!(
+        result.agg_results[bucket_neg1][1].value_int, 100,
+        "Group -1 SUM: expected 100, got {}",
+        result.agg_results[bucket_neg1][1].value_int
+    );
+    assert_eq!(
+        result.group_keys[bucket_neg1], -1,
+        "Group key at bucket {}: expected -1, got {}",
+        bucket_neg1, result.group_keys[bucket_neg1]
+    );
+
+    assert_eq!(
+        result.agg_results[bucket_neg2][0].value_int, 10,
+        "Group -2 COUNT: expected 10, got {}",
+        result.agg_results[bucket_neg2][0].value_int
+    );
+    assert_eq!(
+        result.agg_results[bucket_neg2][1].value_int, 100,
+        "Group -2 SUM: expected 100, got {}",
+        result.agg_results[bucket_neg2][1].value_int
+    );
+    assert_eq!(
+        result.group_keys[bucket_neg2], -2,
+        "Group key at bucket {}: expected -2, got {}",
+        bucket_neg2, result.group_keys[bucket_neg2]
+    );
+}
