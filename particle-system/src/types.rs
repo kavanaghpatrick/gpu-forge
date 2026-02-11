@@ -53,8 +53,8 @@ pub struct Uniforms {
     pub frame_number: u32,
     /// Global particle size multiplier
     pub particle_size_scale: f32,
-    /// Number of particles to emit this frame
-    pub emission_count: u32,
+    /// Base emission rate (particles per frame, before GPU clamping)
+    pub base_emission_rate: u32,
     /// Total pool capacity
     pub pool_size: u32,
     /// Pressure gradient interaction strength (default: 0.001)
@@ -92,7 +92,7 @@ impl Default for Uniforms {
             _pad_grid_max: 0.0,
             frame_number: 0,
             particle_size_scale: 1.0,
-            emission_count: 10000,
+            base_emission_rate: 10000,
             pool_size: 1_000_000,
             interaction_strength: 0.001,
             mouse_attraction_radius: 5.0,
@@ -149,6 +149,66 @@ pub struct CounterHeader {
 /// Size of the counter header in bytes (16).
 #[allow(dead_code)]
 pub const COUNTER_HEADER_SIZE: usize = std::mem::size_of::<CounterHeader>();
+
+/// Indirect dispatch arguments for `dispatchThreadgroups(indirectBuffer:)`.
+///
+/// Layout: 3 x u32 = 12 bytes, matching Metal's indirect dispatch buffer format.
+/// Written by `prepare_dispatch` kernel on GPU each frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct DispatchArgs {
+    pub threadgroups_per_grid: [u32; 3],
+}
+
+impl Default for DispatchArgs {
+    fn default() -> Self {
+        Self {
+            threadgroups_per_grid: [0, 1, 1],
+        }
+    }
+}
+
+/// GPU-computed emission parameters written by `prepare_dispatch` kernel.
+///
+/// Layout: 4 x u32 = 16 bytes (16-byte aligned for GPU buffer access).
+/// Consumed by `emission_kernel` to know how many particles to emit.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
+pub struct GpuEmissionParams {
+    pub emission_count: u32,
+    pub actual_burst_count: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
+/// Debug telemetry data written by GPU compute kernels for diagnostics.
+///
+/// Layout: 8 x u32 = 32 bytes. Written by `sync_indirect_args` when DEBUG_TELEMETRY is enabled.
+/// Readable from CPU via SharedStorage for HUD display or logging.
+#[cfg(feature = "debug-telemetry")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
+pub struct DebugTelemetry {
+    /// Number of alive particles this frame
+    pub alive_count: u32,
+    /// Number of dead particles this frame
+    pub dead_count: u32,
+    /// Number of particles emitted this frame
+    pub emit_count: u32,
+    /// Threadgroups dispatched for update kernel
+    pub update_threadgroups: u32,
+    /// Threadgroups dispatched for emission kernel
+    pub emission_threadgroups: u32,
+    /// Frame number (echoed from uniforms)
+    pub frame_number: u32,
+    /// Reserved for future use
+    pub _reserved0: u32,
+    /// Reserved for future use
+    pub _reserved1: u32,
+}
 
 #[cfg(test)]
 mod tests {
@@ -214,6 +274,113 @@ mod tests {
         assert_eq!(args.instance_count, 0);
         assert_eq!(args.vertex_start, 0);
         assert_eq!(args.base_instance, 0);
+    }
+
+    #[test]
+    fn test_dispatch_args_layout() {
+        // DispatchArgs: 3 x u32 = 12 bytes, 4-byte aligned
+        assert_eq!(
+            mem::size_of::<DispatchArgs>(),
+            12,
+            "DispatchArgs must be 12 bytes (3 x u32)"
+        );
+        assert_eq!(
+            mem::align_of::<DispatchArgs>(),
+            4,
+            "DispatchArgs must be 4-byte aligned"
+        );
+
+        // Verify field offsets: threadgroups_per_grid[0] at 0, [1] at 4, [2] at 8
+        let args = DispatchArgs::default();
+        let base = &args as *const DispatchArgs as *const u8;
+        unsafe {
+            let x = base as *const u32;
+            assert_eq!(*x, 0, "threadgroups_per_grid[0] default should be 0");
+
+            let y = base.add(4) as *const u32;
+            assert_eq!(*y, 1, "threadgroups_per_grid[1] default should be 1");
+
+            let z = base.add(8) as *const u32;
+            assert_eq!(*z, 1, "threadgroups_per_grid[2] default should be 1");
+        }
+    }
+
+    #[test]
+    fn test_gpu_emission_params_layout() {
+        // GpuEmissionParams: 4 x u32 = 16 bytes
+        assert_eq!(
+            mem::size_of::<GpuEmissionParams>(),
+            16,
+            "GpuEmissionParams must be 16 bytes (4 x u32)"
+        );
+
+        // Verify field offsets: emission_count at 0, actual_burst_count at 4, _pad0 at 8, _pad1 at 12
+        let params = GpuEmissionParams::default();
+        let base = &params as *const GpuEmissionParams as *const u8;
+        unsafe {
+            let emission_count = base as *const u32;
+            assert_eq!(*emission_count, 0, "emission_count offset 0");
+
+            let actual_burst = base.add(4) as *const u32;
+            assert_eq!(*actual_burst, 0, "actual_burst_count offset 4");
+
+            let pad0 = base.add(8) as *const u32;
+            assert_eq!(*pad0, 0, "_pad0 offset 8");
+
+            let pad1 = base.add(12) as *const u32;
+            assert_eq!(*pad1, 0, "_pad1 offset 12");
+        }
+    }
+
+    #[test]
+    fn test_uniforms_base_emission_rate_offset() {
+        // base_emission_rate should be at byte offset 200 (same position as old emission_count)
+        let uniforms = Uniforms::default();
+        let base = &uniforms as *const Uniforms as *const u8;
+        let field_ptr = &uniforms.base_emission_rate as *const u32 as *const u8;
+        let offset = unsafe { field_ptr.offset_from(base) } as usize;
+        assert_eq!(offset, 200, "base_emission_rate must be at offset 200");
+    }
+
+    #[test]
+    fn test_uniforms_still_256_bytes() {
+        // Verify Uniforms remains exactly 256 bytes after rename and struct changes
+        assert_eq!(
+            mem::size_of::<Uniforms>(),
+            256,
+            "Uniforms must remain 256 bytes"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "debug-telemetry")]
+    fn test_debug_telemetry_layout() {
+        use super::DebugTelemetry;
+        // DebugTelemetry: 8 x u32 = 32 bytes
+        assert_eq!(
+            mem::size_of::<DebugTelemetry>(),
+            32,
+            "DebugTelemetry must be 32 bytes (8 x u32)"
+        );
+        assert_eq!(
+            mem::align_of::<DebugTelemetry>(),
+            4,
+            "DebugTelemetry must be 4-byte aligned"
+        );
+
+        // Verify field offsets
+        let telemetry = DebugTelemetry::default();
+        let base = &telemetry as *const DebugTelemetry as *const u8;
+        unsafe {
+            assert_eq!(*(base as *const u32), 0, "alive_count at offset 0");
+            assert_eq!(*(base.add(4) as *const u32), 0, "dead_count at offset 4");
+            assert_eq!(*(base.add(8) as *const u32), 0, "emit_count at offset 8");
+            assert_eq!(*(base.add(12) as *const u32), 0, "update_threadgroups at offset 12");
+            assert_eq!(*(base.add(16) as *const u32), 0, "emission_threadgroups at offset 16");
+            assert_eq!(*(base.add(20) as *const u32), 0, "frame_number at offset 20");
+            assert_eq!(*(base.add(24) as *const u32), 0, "_reserved0 at offset 24");
+            assert_eq!(*(base.add(28) as *const u32), 0, "_reserved1 at offset 28");
+        }
     }
 }
 

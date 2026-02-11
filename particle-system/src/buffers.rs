@@ -10,7 +10,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
-use crate::types::{BufferSizes, CounterHeader, DrawArgs, Uniforms, COUNTER_HEADER_SIZE};
+use crate::types::{BufferSizes, CounterHeader, DispatchArgs, DrawArgs, GpuEmissionParams, Uniforms, COUNTER_HEADER_SIZE};
 
 /// Particle pool holding all SoA buffers, free lists, and indirect draw args.
 #[allow(dead_code)]
@@ -44,14 +44,30 @@ pub struct ParticlePool {
     // --- Indirect draw / dispatch ---
     /// Indirect draw arguments (MTLDrawPrimitivesIndirectArguments, 32 bytes).
     pub indirect_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Indirect dispatch arguments for emission kernel (12 bytes = 3 x u32).
+    /// Written by `prepare_dispatch` kernel each frame.
+    pub emission_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// GPU-computed emission parameters (16 bytes = 4 x u32).
+    /// Written by `prepare_dispatch`, read by `emission_kernel`.
+    pub gpu_emission_params: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Indirect dispatch arguments for update/grid_populate kernels (12 bytes = 3 x u32).
+    /// Written by `sync_indirect_args` kernel each frame based on alive count.
+    /// Bootstrap value uses pool_size for first frame (design R6).
+    pub update_dispatch_args: Retained<ProtocolObject<dyn MTLBuffer>>,
+
+    // --- Debug telemetry ---
+    /// Debug telemetry buffer (32 bytes = 8 x u32). Only allocated when debug-telemetry feature is enabled.
+    #[cfg(feature = "debug-telemetry")]
+    pub debug_telemetry: Retained<ProtocolObject<dyn MTLBuffer>>,
 
     // --- Grid density ---
     /// Grid density buffer: 64^3 = 262144 uint32 cells (1.05 MB).
     pub grid_density: Retained<ProtocolObject<dyn MTLBuffer>>,
 
     // --- Uniforms ---
-    /// Uniforms buffer (256 bytes padded).
-    pub uniforms: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Uniform ring buffer for triple buffering (768 bytes = 3 x 256).
+    /// Each frame writes to slot [frame_index * 256 .. (frame_index+1) * 256].
+    pub uniform_ring: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 /// Allocate a Metal buffer of `size` bytes with shared storage mode.
@@ -79,7 +95,7 @@ unsafe fn buffer_ptr(buffer: &ProtocolObject<dyn MTLBuffer>) -> *mut c_void {
 impl ParticlePool {
     /// Create a new particle pool with `pool_size` capacity.
     ///
-    /// Allocates all SoA buffers, dead/alive lists, indirect args, and uniforms.
+    /// Allocates all SoA buffers, dead/alive lists, indirect args, and uniform ring.
     /// Initializes dead list with all indices [0..pool_size-1], alive lists empty,
     /// and indirect args to default draw state.
     pub fn new(device: &Retained<ProtocolObject<dyn MTLDevice>>, pool_size: usize) -> Self {
@@ -100,9 +116,33 @@ impl ParticlePool {
         // Allocate grid density buffer: 64^3 cells x 4 bytes per uint32
         let grid_density = alloc_buffer(device, sizes.grid_density, "grid_density");
 
-        // Allocate indirect args and uniforms
+        // Allocate indirect args
         let indirect_args = alloc_buffer(device, sizes.indirect_args, "indirect_args");
-        let uniforms = alloc_buffer(device, sizes.uniforms, "uniforms");
+
+        // Allocate uniform ring buffer for triple buffering (3 x 256 = 768 bytes)
+        let uniform_ring_size = 3 * std::mem::size_of::<Uniforms>();
+        let uniform_ring = alloc_buffer(device, uniform_ring_size, "uniform_ring");
+
+        // Allocate GPU-centric dispatch buffers
+        let emission_dispatch_args = alloc_buffer(
+            device,
+            std::mem::size_of::<DispatchArgs>(),
+            "emission_dispatch_args",
+        );
+        let gpu_emission_params = alloc_buffer(
+            device,
+            std::mem::size_of::<GpuEmissionParams>(),
+            "gpu_emission_params",
+        );
+        let update_dispatch_args = alloc_buffer(
+            device,
+            std::mem::size_of::<DispatchArgs>(),
+            "update_dispatch_args",
+        );
+
+        // Allocate debug telemetry buffer (32 bytes) when feature is enabled
+        #[cfg(feature = "debug-telemetry")]
+        let debug_telemetry_buf = alloc_buffer(device, 32, "debug_telemetry");
 
         let pool = Self {
             pool_size,
@@ -115,9 +155,14 @@ impl ParticlePool {
             dead_list,
             alive_list_a,
             alive_list_b,
+            #[cfg(feature = "debug-telemetry")]
+            debug_telemetry: debug_telemetry_buf,
             grid_density,
             indirect_args,
-            uniforms,
+            emission_dispatch_args,
+            gpu_emission_params,
+            update_dispatch_args,
+            uniform_ring,
         };
 
         // Initialize buffer contents on CPU
@@ -125,13 +170,21 @@ impl ParticlePool {
         pool.init_alive_list(&pool.alive_list_a);
         pool.init_alive_list(&pool.alive_list_b);
         pool.init_indirect_args();
-        pool.init_uniforms();
+        pool.init_emission_dispatch_args();
+        pool.init_gpu_emission_params();
+        pool.init_update_dispatch_args();
+        pool.init_uniform_ring();
+        #[cfg(feature = "debug-telemetry")]
+        pool.init_debug_telemetry();
 
         pool
     }
 
     /// Initialize dead list: counter = pool_size, indices = [0, 1, 2, ..., pool_size-1].
     fn init_dead_list(&self) {
+        // SAFETY: Buffer is allocated with correct size (COUNTER_HEADER_SIZE + pool_size * 4)
+        // and alignment via alloc_buffer. We have exclusive CPU access during init (no GPU
+        // work submitted yet). StorageModeShared guarantees CPU-visible pointer.
         unsafe {
             let ptr = buffer_ptr(&self.dead_list);
 
@@ -158,6 +211,9 @@ impl ParticlePool {
 
     /// Initialize an alive list: counter = 0, indices zeroed.
     fn init_alive_list(&self, buffer: &ProtocolObject<dyn MTLBuffer>) {
+        // SAFETY: Buffer is allocated with correct size (COUNTER_HEADER_SIZE + pool_size * 4)
+        // via alloc_buffer. Exclusive CPU access during init (no GPU work submitted yet).
+        // StorageModeShared guarantees CPU-visible pointer.
         unsafe {
             let ptr = buffer_ptr(buffer);
 
@@ -184,18 +240,78 @@ impl ParticlePool {
 
     /// Initialize indirect args: vertexCount=4, instanceCount=0, vertexStart=0, baseInstance=0.
     fn init_indirect_args(&self) {
+        // SAFETY: Buffer is allocated with size >= size_of::<DrawArgs>() (32 bytes).
+        // Exclusive CPU access during init. Pointer is correctly aligned for DrawArgs (4-byte align).
         unsafe {
             let ptr = buffer_ptr(&self.indirect_args) as *mut DrawArgs;
             std::ptr::write(ptr, DrawArgs::default());
         }
     }
 
-    /// Initialize uniforms buffer with default values.
-    fn init_uniforms(&self) {
+    /// Initialize emission dispatch args to default DispatchArgs (0 threadgroups X, 1 Y, 1 Z).
+    fn init_emission_dispatch_args(&self) {
+        // SAFETY: Buffer is allocated with size == size_of::<DispatchArgs>() (12 bytes).
+        // Exclusive CPU access during init. Pointer aligned for u32 (4-byte align).
         unsafe {
-            let ptr = buffer_ptr(&self.uniforms) as *mut Uniforms;
-            std::ptr::write(ptr, Uniforms::default());
+            let ptr = buffer_ptr(&self.emission_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(ptr, DispatchArgs::default());
         }
+    }
+
+    /// Initialize GPU emission params to default (all zeros).
+    fn init_gpu_emission_params(&self) {
+        // SAFETY: Buffer is allocated with size == size_of::<GpuEmissionParams>() (16 bytes).
+        // Exclusive CPU access during init. Pointer aligned for u32 (4-byte align).
+        unsafe {
+            let ptr = buffer_ptr(&self.gpu_emission_params) as *mut GpuEmissionParams;
+            std::ptr::write(ptr, GpuEmissionParams::default());
+        }
+    }
+
+    /// Initialize update dispatch args with bootstrap value: threadgroups = ceil(pool_size / 256).
+    /// This ensures the first frame dispatches enough threads to cover the full pool (design R6).
+    fn init_update_dispatch_args(&self) {
+        // SAFETY: Buffer is allocated with size == size_of::<DispatchArgs>() (12 bytes).
+        // Exclusive CPU access during init. Pointer aligned for u32 (4-byte align).
+        unsafe {
+            let ptr = buffer_ptr(&self.update_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(
+                ptr,
+                DispatchArgs {
+                    threadgroups_per_grid: [self.pool_size.div_ceil(256) as u32, 1, 1],
+                },
+            );
+        }
+    }
+
+    /// Initialize uniform ring buffer with default Uniforms in all 3 slots.
+    fn init_uniform_ring(&self) {
+        // SAFETY: Buffer is allocated with size == 3 * size_of::<Uniforms>() (768 bytes).
+        // Each slot offset is computed by uniforms_offset() ensuring no overlap.
+        // Exclusive CPU access during init. Uniforms is repr(C) with correct alignment.
+        unsafe {
+            let base = buffer_ptr(&self.uniform_ring) as *mut u8;
+            for i in 0..3 {
+                let slot = base.add(Self::uniforms_offset(i)) as *mut Uniforms;
+                std::ptr::write(slot, Uniforms::default());
+            }
+        }
+    }
+
+    /// Initialize debug telemetry buffer to all zeros (32 bytes).
+    #[cfg(feature = "debug-telemetry")]
+    fn init_debug_telemetry(&self) {
+        // SAFETY: Buffer is allocated with size == 32 bytes.
+        // Exclusive CPU access during init. write_bytes zeroes raw memory safely.
+        unsafe {
+            let ptr = buffer_ptr(&self.debug_telemetry) as *mut u8;
+            std::ptr::write_bytes(ptr, 0, 32);
+        }
+    }
+
+    /// Compute the byte offset into the uniform ring buffer for a given frame index.
+    pub fn uniforms_offset(frame_index: usize) -> usize {
+        frame_index * std::mem::size_of::<Uniforms>()
     }
 
     /// Grow the pool to `new_size` particles, preserving existing data.
@@ -226,6 +342,10 @@ impl ParticlePool {
         let new_alive_list_b = alloc_buffer(&self.device, new_sizes.counter_list, "alive_list_b");
 
         // Copy existing particle data (CPU-side memcpy via SharedStorage pointer access)
+        // SAFETY: All GPU work is drained via semaphore before grow() is called (main.rs
+        // acquires all MAX_FRAMES_IN_FLIGHT slots). Source and destination buffers are
+        // non-overlapping (newly allocated). Copy sizes are bounded by old_sizes which
+        // are <= new buffer sizes. StorageModeShared guarantees CPU-visible pointers.
         unsafe {
             // SoA buffers: copy old_size * bytes_per_particle
             ptr::copy_nonoverlapping(
@@ -291,6 +411,52 @@ impl ParticlePool {
             );
         }
 
+        // Reallocate GPU-centric dispatch buffers (no copy needed, GPU recomputes each frame)
+        let new_emission_dispatch_args = alloc_buffer(
+            &self.device,
+            std::mem::size_of::<DispatchArgs>(),
+            "emission_dispatch_args",
+        );
+        let new_gpu_emission_params = alloc_buffer(
+            &self.device,
+            std::mem::size_of::<GpuEmissionParams>(),
+            "gpu_emission_params",
+        );
+        // Allocate new update dispatch args buffer (GPU recomputes each frame via sync_indirect_args)
+        let new_update_dispatch_args = alloc_buffer(
+            &self.device,
+            std::mem::size_of::<DispatchArgs>(),
+            "update_dispatch_args",
+        );
+
+        // Initialize dispatch buffers: emission to zero, update to bootstrap value for new pool_size
+        // SAFETY: Buffers are freshly allocated with correct sizes for their respective types.
+        // All GPU work drained before grow(). Pointers aligned for u32 (4-byte align).
+        unsafe {
+            let ptr = buffer_ptr(&new_emission_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(ptr, DispatchArgs::default());
+            let ptr = buffer_ptr(&new_gpu_emission_params) as *mut GpuEmissionParams;
+            std::ptr::write(ptr, GpuEmissionParams::default());
+            let ptr = buffer_ptr(&new_update_dispatch_args) as *mut DispatchArgs;
+            std::ptr::write(
+                ptr,
+                DispatchArgs {
+                    threadgroups_per_grid: [new_size.div_ceil(256) as u32, 1, 1],
+                },
+            );
+        }
+
+        // Reallocate debug telemetry buffer when feature is enabled (no copy, GPU rewrites each frame)
+        #[cfg(feature = "debug-telemetry")]
+        {
+            let new_debug_telemetry = alloc_buffer(&self.device, 32, "debug_telemetry");
+            // SAFETY: Freshly allocated 32-byte buffer. GPU work drained. write_bytes zeroes raw memory.
+            unsafe {
+                std::ptr::write_bytes(new_debug_telemetry.contents().as_ptr() as *mut u8, 0, 32);
+            }
+            self.debug_telemetry = new_debug_telemetry;
+        }
+
         // Swap buffer references (old buffers dropped when replaced)
         self.positions = new_positions;
         self.velocities = new_velocities;
@@ -300,18 +466,38 @@ impl ParticlePool {
         self.dead_list = new_dead_list;
         self.alive_list_a = new_alive_list_a;
         self.alive_list_b = new_alive_list_b;
+        self.emission_dispatch_args = new_emission_dispatch_args;
+        self.gpu_emission_params = new_gpu_emission_params;
+        self.update_dispatch_args = new_update_dispatch_args;
         // grid_density stays the same (64^3 fixed)
         // indirect_args stays the same
-        // uniforms stays the same
+        // uniform_ring stays the same (768 bytes, not pool-size-dependent)
 
         self.pool_size = new_size;
     }
 
     /// Read the alive count from the given alive list buffer (CPU readback via SharedStorage).
     pub fn read_alive_count(&self, buffer: &ProtocolObject<dyn MTLBuffer>) -> u32 {
+        // SAFETY: Buffer contains a CounterHeader at offset 0 (written during init or by GPU).
+        // GPU work is synchronized via semaphore before CPU reads (SharedStorage coherency).
+        // Pointer is valid and correctly aligned for CounterHeader (4-byte align).
         unsafe {
             let header = buffer.contents().as_ptr() as *const CounterHeader;
             (*header).count
+        }
+    }
+
+    /// Read the alive count from indirect_args buffer (instance_count field of DrawArgs).
+    ///
+    /// This avoids reading from the alive list counter directly, supporting
+    /// GPU-centric architecture where indirect_args is the source of truth.
+    pub fn read_alive_count_from_indirect(&self) -> u32 {
+        // SAFETY: indirect_args buffer contains DrawArgs at offset 0 (written by sync_indirect_args
+        // kernel). GPU work is synchronized via semaphore before CPU reads. Pointer is valid and
+        // correctly aligned for DrawArgs (4-byte align). StorageModeShared ensures coherency.
+        unsafe {
+            let draw_args = self.indirect_args.contents().as_ptr() as *const DrawArgs;
+            (*draw_args).instance_count
         }
     }
 
@@ -451,6 +637,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_uniform_ring_offset() {
+        // uniforms_offset(0) == 0, (1) == 256, (2) == 512
+        assert_eq!(ParticlePool::uniforms_offset(0), 0);
+        assert_eq!(ParticlePool::uniforms_offset(1), 256);
+        assert_eq!(ParticlePool::uniforms_offset(2), 512);
+    }
+
+    #[test]
+    fn test_pool_new_allocates_dispatch_buffers() {
+        let device = get_device();
+        let pool = ParticlePool::new(&device, 1000);
+
+        // emission_dispatch_args: 12 bytes (DispatchArgs = 3 x u32)
+        assert_eq!(
+            pool.emission_dispatch_args.length(),
+            12,
+            "emission_dispatch_args must be 12 bytes"
+        );
+        // gpu_emission_params: 16 bytes (GpuEmissionParams = 4 x u32)
+        assert_eq!(
+            pool.gpu_emission_params.length(),
+            16,
+            "gpu_emission_params must be 16 bytes"
+        );
+        // update_dispatch_args: 12 bytes (DispatchArgs = 3 x u32)
+        assert_eq!(
+            pool.update_dispatch_args.length(),
+            12,
+            "update_dispatch_args must be 12 bytes"
+        );
     }
 
     #[test]

@@ -1,0 +1,28 @@
+[package]
+name = "gpu-query-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.gpu-query]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_csv_parser"
+path = "fuzz_targets/fuzz_csv_parser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_json_parser"
+path = "fuzz_targets/fuzz_json_parser.rs"
+doc = false

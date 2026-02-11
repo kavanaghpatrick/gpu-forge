@@ -12,11 +12,10 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLCommandBuffer;
 
 /// Maximum number of frames in flight.
-/// Using 1 (single buffering) because particle SoA buffers and alive/dead lists
-/// are shared (not per-frame). Multiple in-flight frames would race on these buffers.
-/// For POC this is fine; triple buffering requires per-frame buffer copies or
-/// partitioned buffer regions.
-const MAX_FRAMES_IN_FLIGHT: usize = 1;
+/// GPU-centric architecture (no CPU readback of particle buffers) makes triple
+/// buffering safe: only the uniform buffer needs per-frame copies, handled via
+/// a 768-byte ring buffer with per-frame offsets.
+pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 /// Triple-buffer semaphore ring for pipelining CPU/GPU work.
 ///
@@ -118,19 +117,63 @@ impl FrameRing {
         // FPS was just recalculated if fps_frame_count was reset
         self.fps_frame_count == 0 && self.fps > 0
     }
+
+    /// Signal the semaphore to release one frame slot.
+    ///
+    /// Used by pool drain logic to restore semaphore slots after draining
+    /// in-flight frames for a safe grow operation.
+    pub fn signal(&self) {
+        self.semaphore.signal();
+    }
+
+    /// Wait on the semaphore to acquire one frame slot (drain-only, no timing update).
+    ///
+    /// Unlike `acquire()`, this does NOT update dt/fps counters. Used by pool drain
+    /// logic to wait for remaining in-flight frames before a safe grow.
+    pub fn wait_one(&self) {
+        self.semaphore.wait(DispatchTime::FOREVER);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_frame_ring_cycles_0_1_2() {
+        let mut ring = FrameRing::new();
+        // Initial frame_index is 0
+        assert_eq!(ring.frame_index(), 0);
+
+        // Advance 6 times and verify cycling: 1, 2, 0, 1, 2, 0
+        let expected = [1, 2, 0, 1, 2, 0];
+        for (i, &exp) in expected.iter().enumerate() {
+            ring.advance();
+            assert_eq!(
+                ring.frame_index(),
+                exp,
+                "After advance #{}, expected frame_index={}, got={}",
+                i + 1,
+                exp,
+                ring.frame_index()
+            );
+        }
+    }
 }
 
 impl Drop for FrameRing {
     fn drop(&mut self) {
+        // With triple buffering, up to MAX_FRAMES_IN_FLIGHT frames may be in-flight.
+        // We must drain ALL pending GPU work before deallocating resources.
         if self.acquired_no_handler {
             // Semaphore was decremented by acquire() but no completion handler was
             // registered (e.g., panic during frame setup before commit). Signal it
-            // back to restore the original value so libdispatch doesn't crash.
+            // back so the drain loop below can complete.
             self.semaphore.signal();
-        } else {
-            // A completion handler was registered on the last command buffer.
-            // Wait for the GPU to finish and signal, then signal back to restore
-            // the semaphore to its original value before deallocation.
+        }
+        // Drain all in-flight frames: wait for each pending completion, then
+        // signal back to restore the semaphore to its original count.
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
             self.semaphore.wait(DispatchTime::FOREVER);
             self.semaphore.signal();
         }
