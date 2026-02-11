@@ -135,7 +135,7 @@ Focus: Remove `scan_cache.clear()` from execute() to enable cross-query scan res
   - _Requirements: FR-7, AC-4.4_
   - _Design: Cache Invalidation Summary_
 
-- [ ] 3.3 Phase 3 Checkpoint -- Full warm-cache verification
+- [x] 3.3 Phase 3 Checkpoint -- Full warm-cache verification
   - **Do**: Run full test suite. Verify warm query path works (scan cache hit on repeat query). Verify file modification triggers re-scan. Verify `.refresh` clears caches.
   - **Files**: None (verification only)
   - **Done when**: All tests pass; warm cache provides expected speedup
