@@ -367,7 +367,7 @@ Focus: Final quality checks, documentation, PR creation.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | grep -E "test result|FAILED"`
   - **Commit**: `fix(autonomous): address any regression issues` (if needed)
 
-- [ ] 7.3 Verify zero `waitUntilCompleted` in autonomous hot path
+- [x] 7.3 Verify zero `waitUntilCompleted` in autonomous hot path
   - **Do**: Code audit: grep for `waitUntilCompleted` in `src/gpu/autonomous/`. Must return 0 matches (the one-shot test helper is in test code only, not hot path). Grep for `commandBuffer()` calls in `submit_query` path -- must be 0.
   - **Done when**: Zero blocking calls in autonomous hot path
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && grep -rn "waitUntilCompleted" src/gpu/autonomous/ && echo "FAIL: found blocking calls" || echo "PASS: no blocking calls"`
