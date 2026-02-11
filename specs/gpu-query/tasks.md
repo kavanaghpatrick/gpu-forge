@@ -344,7 +344,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: NFR-1, NFR-2, NFR-11_
   - _Design: Performance Model_
 
-- [ ] 4.6 Fuzz targets for CSV and JSON parsers
+- [x] 4.6 Fuzz targets for CSV and JSON parsers
   - **Do**: Create `fuzz/` directory with cargo-fuzz targets: `fuzz_csv_parser` (arbitrary bytes -> CPU row detection, compare GPU if <1MB), `fuzz_json_parser` (arbitrary bytes -> structural indexing). Seed corpus with edge-case files.
   - **Files**: `gpu-query/fuzz/fuzz_targets/fuzz_csv_parser.rs`, `gpu-query/fuzz/fuzz_targets/fuzz_json_parser.rs`, `gpu-query/fuzz/Cargo.toml`
   - **Done when**: Fuzz targets build and run for 5 minutes each without crashes
