@@ -290,6 +290,23 @@ impl QueryExecutor {
         self.scan_cache.len()
     }
 
+    /// Scan a table and return references to the cached schema and batch.
+    ///
+    /// Used by the background warm-up thread to get the parsed data
+    /// for loading into the `AutonomousExecutor`.
+    pub fn scan_table<'a>(
+        &'a mut self,
+        table: &str,
+        catalog: &[TableEntry],
+    ) -> Result<(&'a RuntimeSchema, &'a ColumnarBatch), String> {
+        let key = self.ensure_scan_cached(table, catalog)?;
+        let cached = self
+            .scan_cache
+            .get(&key)
+            .ok_or_else(|| format!("Table '{}' not in scan cache after scan", table))?;
+        Ok((&cached.result.schema, &cached.result.batch))
+    }
+
     /// Execute a physical plan against data in the catalog.
     pub fn execute(
         &mut self,

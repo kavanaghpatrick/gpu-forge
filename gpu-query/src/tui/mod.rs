@@ -33,7 +33,18 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::Duration;
+
+/// Messages sent from the background warm-up thread to the main TUI thread.
+enum WarmupMessage {
+    /// A table has been loaded. (table_name, tables_loaded_so_far, total_tables)
+    TableLoaded(String, usize, usize),
+    /// All tables loaded, here is the fully-warmed autonomous executor.
+    Complete(crate::gpu::autonomous::executor::AutonomousExecutor),
+    /// Warm-up encountered an error.
+    Error(String),
+}
 
 /// Run the interactive TUI dashboard.
 /// This takes over the terminal until the user quits (q/Ctrl+C).
@@ -86,6 +97,18 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
         }
     );
 
+    // Spawn background warm-up thread if data directory has tables
+    let warmup_rx = if !app.tables.is_empty() {
+        let table_count = app.tables.len();
+        app.warmup_tables_total = table_count;
+        app.warmup_tables_loaded = 0;
+        app.engine_status = EngineStatus::WarmingUp;
+        app.warmup_status = Some(format!("Warming up (0/{})...", table_count));
+        Some(spawn_warmup_thread(data_dir.clone()))
+    } else {
+        None
+    };
+
     // Main event loop (~60fps)
     let tick_rate = Duration::from_millis(app.tick_rate_ms);
 
@@ -96,6 +119,11 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
 
         // Poll autonomous executor for ready results on every iteration
         poll_autonomous_result(&mut app);
+
+        // Poll background warm-up progress
+        if let Some(ref rx) = warmup_rx {
+            poll_warmup_progress(rx, &mut app);
+        }
 
         // Handle events
         match poll_event(tick_rate)? {
@@ -134,6 +162,139 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+/// Spawn a background thread that creates an `AutonomousExecutor`, scans all tables
+/// in the data directory, loads each into GPU-resident buffers, and sends the warmed
+/// executor back to the main TUI thread.
+///
+/// Progress updates are sent via the returned receiver so the dashboard can show
+/// loading progress without blocking the UI.
+fn spawn_warmup_thread(data_dir: PathBuf) -> mpsc::Receiver<WarmupMessage> {
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::Builder::new()
+        .name("warmup".into())
+        .spawn(move || {
+            // Create a QueryExecutor on this thread for table scanning.
+            // This creates its own Metal device and command queue for GPU CSV/Parquet parsing.
+            let mut query_executor = match crate::gpu::executor::QueryExecutor::new() {
+                Ok(e) => e,
+                Err(e) => {
+                    let _ = tx.send(WarmupMessage::Error(format!("GPU init failed: {}", e)));
+                    return;
+                }
+            };
+
+            // Scan the data directory for table entries
+            let catalog = match crate::io::catalog::scan_directory(&data_dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    let _ = tx.send(WarmupMessage::Error(format!("Catalog scan failed: {}", e)));
+                    return;
+                }
+            };
+
+            if catalog.is_empty() {
+                let _ = tx.send(WarmupMessage::Error("No tables found".into()));
+                return;
+            }
+
+            let total = catalog.len();
+
+            // Create the autonomous executor with a fresh Metal device
+            let device = match objc2_metal::MTLCreateSystemDefaultDevice() {
+                Some(d) => d,
+                None => {
+                    let _ = tx.send(WarmupMessage::Error("No Metal device".into()));
+                    return;
+                }
+            };
+            let mut auto_executor =
+                crate::gpu::autonomous::executor::AutonomousExecutor::new(device);
+
+            // Collect table names before the loop to avoid borrow conflicts
+            let table_names: Vec<String> = catalog.iter().map(|e| e.name.clone()).collect();
+
+            // Load each table: scan via QueryExecutor, then load into AutonomousExecutor
+            for (idx, table_name) in table_names.iter().enumerate() {
+                // Use QueryExecutor::scan_table to parse the file (GPU CSV/Parquet/JSON)
+                // and get the schema + ColumnarBatch with actual data
+                let load_result = {
+                    match query_executor.scan_table(table_name, &catalog) {
+                        Ok((schema, batch)) => {
+                            auto_executor.load_table(table_name, schema, batch)
+                        }
+                        Err(e) => Err(e),
+                    }
+                };
+
+                match load_result {
+                    Ok(()) => {
+                        let _ = tx.send(WarmupMessage::TableLoaded(
+                            table_name.clone(),
+                            idx + 1,
+                            total,
+                        ));
+                    }
+                    Err(e) => {
+                        // Non-fatal: skip this table but continue with others
+                        let _ = tx.send(WarmupMessage::TableLoaded(
+                            format!("{} (skipped: {})", table_name, e),
+                            idx + 1,
+                            total,
+                        ));
+                    }
+                }
+            }
+
+            // Warm-up complete: send the fully-loaded executor to the main thread
+            let _ = tx.send(WarmupMessage::Complete(auto_executor));
+        })
+        .expect("Failed to spawn warm-up thread");
+
+    rx
+}
+
+/// Poll the warm-up channel for progress messages and update app state.
+///
+/// Called on every iteration of the event loop. Non-blocking: uses `try_recv()`
+/// to drain all pending messages without blocking the UI.
+fn poll_warmup_progress(rx: &mpsc::Receiver<WarmupMessage>, app: &mut AppState) {
+    // Drain all pending messages (non-blocking)
+    loop {
+        match rx.try_recv() {
+            Ok(WarmupMessage::TableLoaded(name, loaded, total)) => {
+                app.warmup_tables_loaded = loaded;
+                app.warmup_progress = loaded as f32 / total as f32;
+                app.warmup_status =
+                    Some(format!("Loading {} ({}/{})...", name, loaded, total));
+                app.status_message =
+                    format!("Warming up: {} ({}/{})", name, loaded, total);
+            }
+            Ok(WarmupMessage::Complete(executor)) => {
+                app.autonomous_executor = Some(executor);
+                app.engine_status = EngineStatus::Live;
+                app.live_mode = true;
+                app.warmup_progress = 1.0;
+                app.warmup_tables_loaded = app.warmup_tables_total;
+                app.warmup_status = None;
+                app.status_message = format!(
+                    "Engine LIVE | {} tables loaded | Live mode ON (Ctrl+L to toggle)",
+                    app.warmup_tables_total,
+                );
+                return; // No more messages after Complete
+            }
+            Ok(WarmupMessage::Error(e)) => {
+                app.engine_status = EngineStatus::Error;
+                app.warmup_status = None;
+                app.status_message = format!("Warm-up error: {}", e);
+                return;
+            }
+            Err(mpsc::TryRecvError::Empty) => return,       // No more messages
+            Err(mpsc::TryRecvError::Disconnected) => return, // Thread finished
+        }
+    }
 }
 
 /// Poll the autonomous executor for ready results and update app state.

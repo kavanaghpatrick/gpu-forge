@@ -271,7 +271,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - **Commit**: `feat(autonomous): update results panel for autonomous query display`
   - _Requirements: UX-4, UX-5_
 
-- [ ] 5.7 Implement background warm-up with progress
+- [x] 5.7 Implement background warm-up with progress
   - **Do**: When TUI starts with a data directory, spawn background thread to: (1) scan for tables, (2) load each via `AutonomousExecutor::load_table()`, (3) send progress updates via mpsc channel, (4) on completion, set `engine_status = EngineStatus::Live`, `live_mode = true`. TUI shows progress in dashboard. If user presses F5 before warm-up complete, fall back to standard executor with message.
   - **Files**: `gpu-query/src/tui/mod.rs`, `gpu-query/src/tui/app.rs`
   - **Done when**: TUI launches instantly, background loads data, transitions to LIVE

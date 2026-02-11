@@ -784,6 +784,12 @@ pub struct AutonomousExecutor {
     last_sequence_id: u32,
 }
 
+// SAFETY: All fields are either Arc<Atomic*> (Send+Sync), HashMap (Send), primitive types,
+// or Retained<ProtocolObject<dyn MTL*>> which are reference-counted Objective-C objects that
+// are thread-safe for retain/release. Metal command queues and buffers are explicitly
+// documented as safe to use from any thread. This is needed for background warm-up thread.
+unsafe impl Send for AutonomousExecutor {}
+
 impl AutonomousExecutor {
     /// Create a new autonomous executor with a separate command queue.
     pub fn new(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Self {
@@ -844,6 +850,14 @@ impl AutonomousExecutor {
             BinaryColumnarLoader::load_table(&self.device, name, schema, batch, None)?;
         self.resident_tables.insert(name.to_string(), resident_table);
         Ok(())
+    }
+
+    /// Get a reference to the underlying Metal device.
+    ///
+    /// Used by the warm-up thread to allocate `ColumnarBatch` buffers on the same
+    /// device before loading them into the autonomous executor.
+    pub fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
+        &self.device
     }
 
     /// Submit a query for autonomous execution.

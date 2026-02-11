@@ -213,6 +213,15 @@ pub struct AppState {
 
     /// Fallback reason when the last query used the standard path.
     pub last_fallback_reason: Option<String>,
+
+    /// Total number of tables to warm up.
+    pub warmup_tables_total: usize,
+
+    /// Number of tables loaded so far during warm-up.
+    pub warmup_tables_loaded: usize,
+
+    /// Warm-up status message (e.g., "Loading sales (2/5)...").
+    pub warmup_status: Option<String>,
 }
 
 impl AppState {
@@ -253,6 +262,9 @@ impl AppState {
             cached_plan: None,
             last_result_autonomous: false,
             last_fallback_reason: None,
+            warmup_tables_total: 0,
+            warmup_tables_loaded: 0,
+            warmup_status: None,
         }
     }
 

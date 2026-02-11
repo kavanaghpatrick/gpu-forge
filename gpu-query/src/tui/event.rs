@@ -71,6 +71,11 @@ pub fn handle_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
         if is_dot_command(&text) {
             execute_dot_command(app);
         } else {
+            // If warm-up is in progress, show fallback message
+            if app.engine_status == super::app::EngineStatus::WarmingUp {
+                app.status_message =
+                    "Engine warming up — using standard executor".into();
+            }
             // Record query in persistent history
             append_to_history(&mut app.history, &text);
             let _ = super::ui::execute_editor_query(app);
