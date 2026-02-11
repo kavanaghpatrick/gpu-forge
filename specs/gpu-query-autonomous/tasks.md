@@ -381,7 +381,7 @@ Focus: Final quality checks, documentation, PR creation.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo build --release 2>&1 | tail -5`
   - **Commit**: `build(autonomous): update build.rs for new Metal shaders`
 
-- [ ] 7.5 Create PR and verify CI
+- [x] 7.5 Create PR and verify CI
   - **Do**: Push branch, create PR with gh CLI. Title: "feat: GPU-autonomous query engine (<1ms warm latency)". Body includes summary of architecture, benchmark results, test counts, and link to spec. Run `gh pr checks --watch`.
   - **Verify**: `gh pr checks --watch`
   - **Done when**: PR created, all CI checks green
