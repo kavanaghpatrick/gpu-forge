@@ -308,7 +308,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: NFR-12_
   - _Design: Existing Patterns (particle-system/types.rs)_
 
-- [ ] 4.2 SQL parser unit tests
+- [x] 4.2 SQL parser unit tests
   - **Do**: Write ~50 unit tests for SQL parser integration: valid queries (SELECT, WHERE, GROUP BY, ORDER BY, LIMIT, all aggregates), invalid SQL (parse errors), edge cases (empty WHERE, multiple GROUP BY columns, nested expressions).
   - **Files**: `gpu-query/src/sql/parser.rs` (tests module)
   - **Done when**: ~50 parser tests pass covering the MVP SQL subset

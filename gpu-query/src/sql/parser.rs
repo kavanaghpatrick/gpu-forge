@@ -887,4 +887,614 @@ mod tests {
             _ => panic!("expected Aggregate"),
         }
     }
+
+    // ---- Individual aggregate function tests ----
+
+    #[test]
+    fn test_parse_count_column() {
+        let plan = parse_query("SELECT count(id) FROM users").unwrap();
+        match &plan {
+            LogicalPlan::Aggregate { aggregates, .. } => {
+                assert_eq!(aggregates.len(), 1);
+                assert_eq!(aggregates[0].0, AggFunc::Count);
+                assert_eq!(aggregates[0].1, Expr::Column("id".into()));
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sum_column() {
+        let plan = parse_query("SELECT sum(revenue) FROM orders").unwrap();
+        match &plan {
+            LogicalPlan::Aggregate { aggregates, .. } => {
+                assert_eq!(aggregates.len(), 1);
+                assert_eq!(aggregates[0].0, AggFunc::Sum);
+                assert_eq!(aggregates[0].1, Expr::Column("revenue".into()));
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_five_aggregates() {
+        let plan = parse_query(
+            "SELECT count(*), sum(a), avg(b), min(c), max(d) FROM t",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Aggregate { aggregates, .. } => {
+                assert_eq!(aggregates.len(), 5);
+                assert_eq!(aggregates[0].0, AggFunc::Count);
+                assert_eq!(aggregates[0].1, Expr::Wildcard);
+                assert_eq!(aggregates[1].0, AggFunc::Sum);
+                assert_eq!(aggregates[1].1, Expr::Column("a".into()));
+                assert_eq!(aggregates[2].0, AggFunc::Avg);
+                assert_eq!(aggregates[2].1, Expr::Column("b".into()));
+                assert_eq!(aggregates[3].0, AggFunc::Min);
+                assert_eq!(aggregates[3].1, Expr::Column("c".into()));
+                assert_eq!(aggregates[4].0, AggFunc::Max);
+                assert_eq!(aggregates[4].1, Expr::Column("d".into()));
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    // ---- GROUP BY tests ----
+
+    #[test]
+    fn test_parse_group_by_with_count() {
+        let plan =
+            parse_query("SELECT status, count(*) FROM orders GROUP BY status")
+                .unwrap();
+        match &plan {
+            LogicalPlan::Aggregate {
+                group_by,
+                aggregates,
+                ..
+            } => {
+                assert_eq!(group_by.len(), 1);
+                assert_eq!(group_by[0], Expr::Column("status".into()));
+                assert_eq!(aggregates[0].0, AggFunc::Count);
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_group_by_three_columns() {
+        let plan = parse_query(
+            "SELECT region, category, year, sum(sales) FROM data GROUP BY region, category, year",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Aggregate { group_by, .. } => {
+                assert_eq!(group_by.len(), 3);
+                assert_eq!(group_by[0], Expr::Column("region".into()));
+                assert_eq!(group_by[1], Expr::Column("category".into()));
+                assert_eq!(group_by[2], Expr::Column("year".into()));
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_group_by_with_multiple_aggs() {
+        let plan = parse_query(
+            "SELECT dept, count(*), avg(salary), max(salary) FROM emp GROUP BY dept",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Aggregate {
+                group_by,
+                aggregates,
+                ..
+            } => {
+                assert_eq!(group_by.len(), 1);
+                assert_eq!(aggregates.len(), 3);
+                assert_eq!(aggregates[0].0, AggFunc::Count);
+                assert_eq!(aggregates[1].0, AggFunc::Avg);
+                assert_eq!(aggregates[2].0, AggFunc::Max);
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    // ---- ORDER BY tests ----
+
+    #[test]
+    fn test_parse_order_by_default_asc() {
+        // Without explicit ASC/DESC, should default to ASC
+        let plan =
+            parse_query("SELECT * FROM t ORDER BY name").unwrap();
+        match &plan {
+            LogicalPlan::Sort { order_by, .. } => {
+                assert_eq!(order_by.len(), 1);
+                assert_eq!(order_by[0].0, Expr::Column("name".into()));
+                assert!(order_by[0].1); // default ASC = true
+            }
+            _ => panic!("expected Sort"),
+        }
+    }
+
+    #[test]
+    fn test_parse_order_by_multiple_columns() {
+        let plan = parse_query(
+            "SELECT * FROM t ORDER BY region ASC, amount DESC",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Sort { order_by, .. } => {
+                assert_eq!(order_by.len(), 2);
+                assert_eq!(order_by[0].0, Expr::Column("region".into()));
+                assert!(order_by[0].1); // ASC
+                assert_eq!(order_by[1].0, Expr::Column("amount".into()));
+                assert!(!order_by[1].1); // DESC
+            }
+            _ => panic!("expected Sort"),
+        }
+    }
+
+    #[test]
+    fn test_parse_order_by_three_columns() {
+        let plan = parse_query(
+            "SELECT * FROM t ORDER BY a ASC, b DESC, c ASC",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Sort { order_by, .. } => {
+                assert_eq!(order_by.len(), 3);
+                assert!(order_by[0].1);  // ASC
+                assert!(!order_by[1].1); // DESC
+                assert!(order_by[2].1);  // ASC
+            }
+            _ => panic!("expected Sort"),
+        }
+    }
+
+    // ---- LIMIT tests ----
+
+    #[test]
+    fn test_parse_limit_only() {
+        let plan = parse_query("SELECT * FROM t LIMIT 5").unwrap();
+        match &plan {
+            LogicalPlan::Limit { count, .. } => {
+                assert_eq!(*count, 5);
+            }
+            _ => panic!("expected Limit"),
+        }
+    }
+
+    #[test]
+    fn test_parse_limit_large_value() {
+        let plan = parse_query("SELECT * FROM t LIMIT 1000000").unwrap();
+        match &plan {
+            LogicalPlan::Limit { count, .. } => {
+                assert_eq!(*count, 1_000_000);
+            }
+            _ => panic!("expected Limit"),
+        }
+    }
+
+    #[test]
+    fn test_parse_limit_one() {
+        let plan = parse_query("SELECT * FROM t LIMIT 1").unwrap();
+        match &plan {
+            LogicalPlan::Limit { count, .. } => {
+                assert_eq!(*count, 1);
+            }
+            _ => panic!("expected Limit"),
+        }
+    }
+
+    // ---- Compound predicate tests ----
+
+    #[test]
+    fn test_parse_nested_and_or() {
+        // (a > 1 AND b < 10) OR c = 5 -- parser precedence: AND binds tighter
+        let plan = parse_query(
+            "SELECT * FROM t WHERE a > 1 AND b < 10 OR c = 5",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::Compound { op, left, .. } => {
+                    assert_eq!(*op, LogicalOp::Or);
+                    // Left side should be AND compound
+                    match left.as_ref() {
+                        Expr::Compound { op, .. } => assert_eq!(*op, LogicalOp::And),
+                        _ => panic!("expected inner AND compound"),
+                    }
+                }
+                _ => panic!("expected Compound predicate"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_parenthesized_or_then_and() {
+        // Explicit parens override precedence: (a = 1 OR b = 2) AND c = 3
+        let plan = parse_query(
+            "SELECT * FROM t WHERE (a = 1 OR b = 2) AND c = 3",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::Compound { op, left, .. } => {
+                    assert_eq!(*op, LogicalOp::And);
+                    // Left side should be OR compound (from parens)
+                    match left.as_ref() {
+                        Expr::Compound { op, .. } => assert_eq!(*op, LogicalOp::Or),
+                        _ => panic!("expected inner OR compound"),
+                    }
+                }
+                _ => panic!("expected Compound predicate"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_triple_and() {
+        let plan = parse_query(
+            "SELECT * FROM t WHERE a > 1 AND b > 2 AND c > 3",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => {
+                // Should be nested ANDs
+                match predicate {
+                    Expr::Compound { op, .. } => assert_eq!(*op, LogicalOp::And),
+                    _ => panic!("expected Compound"),
+                }
+            }
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    // ---- WHERE with different comparison ops ----
+
+    #[test]
+    fn test_parse_where_ne_string() {
+        let plan =
+            parse_query("SELECT * FROM t WHERE status != 'closed'").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { op, right, .. } => {
+                    assert_eq!(*op, CompareOp::Ne);
+                    assert_eq!(**right, Expr::Literal(Value::Str("closed".into())));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_where_le_float() {
+        let plan =
+            parse_query("SELECT * FROM t WHERE price <= 9.99").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { op, right, .. } => {
+                    assert_eq!(*op, CompareOp::Le);
+                    assert_eq!(**right, Expr::Literal(Value::Float(9.99)));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_where_ge_int() {
+        let plan =
+            parse_query("SELECT * FROM t WHERE qty >= 100").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { left, op, right } => {
+                    assert_eq!(**left, Expr::Column("qty".into()));
+                    assert_eq!(*op, CompareOp::Ge);
+                    assert_eq!(**right, Expr::Literal(Value::Int(100)));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    // ---- String literal tests ----
+
+    #[test]
+    fn test_parse_string_with_spaces() {
+        let plan =
+            parse_query("SELECT * FROM t WHERE city = 'New York'").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    assert_eq!(**right, Expr::Literal(Value::Str("New York".into())));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_double_quoted_string() {
+        let plan =
+            parse_query("SELECT * FROM t WHERE name = \"Bob\"").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    // sqlparser may treat double-quoted as identifier; check what we get
+                    // GenericDialect treats double-quoted strings as identifiers
+                    match right.as_ref() {
+                        Expr::Column(name) => assert_eq!(name, "Bob"),
+                        Expr::Literal(Value::Str(s)) => assert_eq!(s, "Bob"),
+                        other => panic!("expected Column or Str, got: {:?}", other),
+                    }
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    // ---- Error case tests ----
+
+    #[test]
+    fn test_parse_error_empty_string() {
+        let result = parse_query("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_error_multiple_statements() {
+        let result = parse_query("SELECT * FROM t; SELECT * FROM u");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::Unsupported(msg) => assert!(msg.contains("expected exactly one")),
+            other => panic!("expected Unsupported, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_update_statement() {
+        let result = parse_query("UPDATE t SET x = 1");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::NotASelect => {}
+            other => panic!("expected NotASelect, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_delete_statement() {
+        let result = parse_query("DELETE FROM t WHERE id = 1");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::NotASelect => {}
+            other => panic!("expected NotASelect, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_join_unsupported() {
+        let result = parse_query("SELECT * FROM t JOIN u ON t.id = u.id");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::Unsupported(msg) => assert!(msg.contains("JOIN")),
+            other => panic!("expected Unsupported for JOIN, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_union_unsupported() {
+        let result = parse_query("SELECT * FROM t UNION SELECT * FROM u");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::Unsupported(msg) => assert!(msg.contains("UNION") || msg.contains("simple SELECT")),
+            other => panic!("expected Unsupported for UNION, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_multiple_from_tables() {
+        let result = parse_query("SELECT * FROM t, u");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::Unsupported(msg) => assert!(msg.contains("multiple FROM")),
+            other => panic!("expected Unsupported, got: {:?}", other),
+        }
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    fn test_parse_select_single_column() {
+        let plan = parse_query("SELECT id FROM users").unwrap();
+        match &plan {
+            LogicalPlan::Projection { columns, .. } => {
+                assert_eq!(columns.len(), 1);
+                assert_eq!(columns[0], Expr::Column("id".into()));
+            }
+            _ => panic!("expected Projection"),
+        }
+    }
+
+    #[test]
+    fn test_parse_null_literal() {
+        let plan = parse_query("SELECT * FROM t WHERE x = NULL").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    assert_eq!(**right, Expr::Literal(Value::Null));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_boolean_literal_true() {
+        let plan = parse_query("SELECT * FROM t WHERE active = true").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    // Booleans stored as Int(1) for GPU compat
+                    assert_eq!(**right, Expr::Literal(Value::Int(1)));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_boolean_literal_false() {
+        let plan = parse_query("SELECT * FROM t WHERE active = false").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    assert_eq!(**right, Expr::Literal(Value::Int(0)));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_negative_float() {
+        let plan = parse_query("SELECT * FROM t WHERE x > -3.14").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    assert_eq!(**right, Expr::Literal(Value::Float(-3.14)));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_zero_literal() {
+        let plan = parse_query("SELECT * FROM t WHERE x = 0").unwrap();
+        match &plan {
+            LogicalPlan::Filter { predicate, .. } => match predicate {
+                Expr::BinaryOp { right, .. } => {
+                    assert_eq!(**right, Expr::Literal(Value::Int(0)));
+                }
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_compound_identifier() {
+        // t.col should extract "col" as the column name
+        let plan = parse_query("SELECT t.name FROM t").unwrap();
+        match &plan {
+            LogicalPlan::Projection { columns, .. } => {
+                assert_eq!(columns[0], Expr::Column("name".into()));
+            }
+            _ => panic!("expected Projection"),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_display() {
+        // Verify ParseError Display implementations
+        let e = ParseError::SqlParser("bad syntax".into());
+        assert!(e.to_string().contains("SQL parse error"));
+
+        let e = ParseError::NotASelect;
+        assert!(e.to_string().contains("SELECT"));
+
+        let e = ParseError::Unsupported("feature".into());
+        assert!(e.to_string().contains("unsupported"));
+
+        let e = ParseError::MissingFrom;
+        assert!(e.to_string().contains("FROM"));
+    }
+
+    #[test]
+    fn test_parse_mixed_case_functions() {
+        // Aggregate function names should be case-insensitive
+        let plan = parse_query("SELECT Sum(a), Min(b), MAX(c) FROM t").unwrap();
+        match &plan {
+            LogicalPlan::Aggregate { aggregates, .. } => {
+                assert_eq!(aggregates[0].0, AggFunc::Sum);
+                assert_eq!(aggregates[1].0, AggFunc::Min);
+                assert_eq!(aggregates[2].0, AggFunc::Max);
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_where_with_aggregate() {
+        // WHERE clause combined with aggregate: Filter -> Aggregate
+        let plan = parse_query(
+            "SELECT sum(amount) FROM orders WHERE status = 'shipped'",
+        )
+        .unwrap();
+        match &plan {
+            LogicalPlan::Aggregate { aggregates, input, .. } => {
+                assert_eq!(aggregates[0].0, AggFunc::Sum);
+                match input.as_ref() {
+                    LogicalPlan::Filter { predicate, .. } => match predicate {
+                        Expr::BinaryOp { op, .. } => assert_eq!(*op, CompareOp::Eq),
+                        _ => panic!("expected BinaryOp"),
+                    },
+                    _ => panic!("expected Filter"),
+                }
+            }
+            _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_full_query_pipeline() {
+        // Test a query that exercises all clauses: SELECT + WHERE + GROUP BY + ORDER BY + LIMIT
+        let plan = parse_query(
+            "SELECT region, sum(amount) FROM sales WHERE year >= 2020 GROUP BY region ORDER BY region ASC LIMIT 10",
+        )
+        .unwrap();
+        // Expected tree: Limit -> Sort -> Aggregate -> Filter -> Scan
+        match &plan {
+            LogicalPlan::Limit { count, input } => {
+                assert_eq!(*count, 10);
+                match input.as_ref() {
+                    LogicalPlan::Sort { order_by, input } => {
+                        assert_eq!(order_by[0].0, Expr::Column("region".into()));
+                        assert!(order_by[0].1); // ASC
+                        match input.as_ref() {
+                            LogicalPlan::Aggregate { group_by, aggregates, input } => {
+                                assert_eq!(group_by[0], Expr::Column("region".into()));
+                                assert_eq!(aggregates[0].0, AggFunc::Sum);
+                                match input.as_ref() {
+                                    LogicalPlan::Filter { input, .. } => match input.as_ref() {
+                                        LogicalPlan::Scan { table, .. } => {
+                                            assert_eq!(table, "sales");
+                                        }
+                                        _ => panic!("expected Scan"),
+                                    },
+                                    _ => panic!("expected Filter"),
+                                }
+                            }
+                            _ => panic!("expected Aggregate"),
+                        }
+                    }
+                    _ => panic!("expected Sort"),
+                }
+            }
+            _ => panic!("expected Limit"),
+        }
+    }
 }
