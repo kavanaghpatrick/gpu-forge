@@ -510,45 +510,45 @@ kernel void fused_query(
 
     // ---- Merge simdgroup results into threadgroup accumulators ----
     // Lane 0 of each simdgroup writes to the threadgroup accumulators.
-    // Since multiple simdgroups may target different buckets, we serialize
-    // access using threadgroup_barrier between simdgroup writes.
+    // Serialize access by iterating over simdgroup indices with barriers
+    // between each to prevent read-modify-write races on threadgroup memory.
 
-    if (simd_lane == 0 && simd_count > 0) {
-        // Use the bucket from the first lane (simd_broadcast_first)
-        uint b = simd_bucket;
+    uint num_simdgroups = (THREADGROUP_SIZE + 31) / 32;  // 256/32 = 8
 
-        // Atomic-like threadgroup accumulation (we use barriers to serialize)
-        accum[b].count   += simd_count;
-        accum[b].valid    = 1;
+    for (uint sg = 0; sg < num_simdgroups; sg++) {
+        if (simd_id == sg && simd_lane == 0 && simd_count > 0) {
+            uint b = simd_bucket;
 
-        for (uint a = 0; a < AGG_COUNT; a++) {
-            uint agg_func = params->aggs[a].agg_func;
+            accum[b].count   += simd_count;
+            accum[b].valid    = 1;
 
-            if (agg_func == AGG_FUNC_COUNT) {
-                accum[b].sum_int += simd_sum_int_arr[a];
-            } else if (agg_func == AGG_FUNC_SUM || agg_func == AGG_FUNC_AVG) {
-                accum[b].sum_int   += simd_sum_int_arr[a];
-                accum[b].sum_float += simd_sum_float_arr[a];
-            } else if (agg_func == AGG_FUNC_MIN) {
-                if (simd_min_int_arr[a] < accum[b].min_int) {
-                    accum[b].min_int = simd_min_int_arr[a];
-                }
-                if (simd_min_float_arr[a] < accum[b].min_float) {
-                    accum[b].min_float = simd_min_float_arr[a];
-                }
-            } else if (agg_func == AGG_FUNC_MAX) {
-                if (simd_max_int_arr[a] > accum[b].max_int) {
-                    accum[b].max_int = simd_max_int_arr[a];
-                }
-                if (simd_max_float_arr[a] > accum[b].max_float) {
-                    accum[b].max_float = simd_max_float_arr[a];
+            for (uint a = 0; a < AGG_COUNT; a++) {
+                uint agg_func = params->aggs[a].agg_func;
+
+                if (agg_func == AGG_FUNC_COUNT) {
+                    accum[b].sum_int += simd_sum_int_arr[a];
+                } else if (agg_func == AGG_FUNC_SUM || agg_func == AGG_FUNC_AVG) {
+                    accum[b].sum_int   += simd_sum_int_arr[a];
+                    accum[b].sum_float += simd_sum_float_arr[a];
+                } else if (agg_func == AGG_FUNC_MIN) {
+                    if (simd_min_int_arr[a] < accum[b].min_int) {
+                        accum[b].min_int = simd_min_int_arr[a];
+                    }
+                    if (simd_min_float_arr[a] < accum[b].min_float) {
+                        accum[b].min_float = simd_min_float_arr[a];
+                    }
+                } else if (agg_func == AGG_FUNC_MAX) {
+                    if (simd_max_int_arr[a] > accum[b].max_int) {
+                        accum[b].max_int = simd_max_int_arr[a];
+                    }
+                    if (simd_max_float_arr[a] > accum[b].max_float) {
+                        accum[b].max_float = simd_max_float_arr[a];
+                    }
                 }
             }
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-
-    // Wait for all simdgroups in this threadgroup to finish writing
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // ---- Phase 4: GLOBAL REDUCTION (cross-threadgroup merge via device atomics) ----
     // Only thread 0 of each threadgroup merges its local accumulators into global output.

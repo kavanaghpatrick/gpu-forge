@@ -86,7 +86,7 @@ Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (bef
   - _Requirements: FR-3_
   - _Design: Component 3_
 
-- [ ] 2.3 Implement one-shot fused kernel dispatch
+- [x] 2.3 Implement one-shot fused kernel dispatch
   - **Do**: In `executor.rs`, add `execute_fused_oneshot(device, pso, params_slot, resident_table) -> OutputBuffer`. This is a STANDARD Metal dispatch (not persistent yet): create command buffer, create compute encoder, set buffers (work queue slot, data buffer, column meta, output buffer, ready flag), dispatch threadgroups (row_count / 256), commit, `waitUntilCompleted`. Read output buffer. This proves the fused kernel correctness before adding persistent complexity.
   - **Files**: `gpu-query/src/gpu/autonomous/executor.rs`
   - **Done when**: `SELECT COUNT(*) FROM sales` returns correct count via fused kernel one-shot dispatch

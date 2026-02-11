@@ -12,8 +12,13 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
 use objc2_metal::{
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
     MTLComputePipelineState, MTLDataType, MTLDevice, MTLFunctionConstantValues, MTLLibrary,
+    MTLResourceOptions, MTLSize,
 };
+
+use super::loader::ResidentTable;
+use super::types::{OutputBuffer, QueryParamsSlot};
 
 /// Cache of compiled PSOs for the fused query kernel, keyed by function constant triple.
 ///
@@ -125,10 +130,123 @@ fn compile_fused_pso(
     Ok(pso)
 }
 
+/// Execute a fused query kernel via one-shot Metal dispatch (standard command buffer path).
+///
+/// This is the POC dispatch path: create command buffer, encode, dispatch, waitUntilCompleted.
+/// Proves kernel correctness before adding persistent complexity (Phase 4).
+///
+/// # Arguments
+/// * `command_queue` - Metal command queue to create command buffers from
+/// * `pso` - Compiled fused query pipeline state (from FusedPsoCache)
+/// * `params` - Query parameters (filters, aggregates, group_by, row_count)
+/// * `resident_table` - GPU-resident table data (column data + metadata buffers)
+///
+/// # Returns
+/// The `OutputBuffer` read back from GPU memory after kernel completion.
+pub fn execute_fused_oneshot(
+    device: &ProtocolObject<dyn MTLDevice>,
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    pso: &ProtocolObject<dyn MTLComputePipelineState>,
+    params: &QueryParamsSlot,
+    resident_table: &ResidentTable,
+) -> Result<OutputBuffer, String> {
+    let options = MTLResourceOptions::StorageModeShared;
+
+    // 1. Allocate and populate params Metal buffer (512 bytes)
+    let params_size = std::mem::size_of::<QueryParamsSlot>();
+    let params_buffer = device
+        .newBufferWithLength_options(params_size, options)
+        .ok_or_else(|| "Failed to allocate params Metal buffer".to_string())?;
+
+    unsafe {
+        let dst = params_buffer.contents().as_ptr() as *mut QueryParamsSlot;
+        std::ptr::copy_nonoverlapping(params as *const QueryParamsSlot, dst, 1);
+    }
+
+    // 2. Allocate output Metal buffer (22560 bytes), zero-initialized
+    let output_size = std::mem::size_of::<OutputBuffer>();
+    let output_buffer = device
+        .newBufferWithLength_options(output_size, options)
+        .ok_or_else(|| "Failed to allocate output Metal buffer".to_string())?;
+
+    unsafe {
+        let dst = output_buffer.contents().as_ptr() as *mut u8;
+        std::ptr::write_bytes(dst, 0, output_size);
+    }
+
+    // 3. Create command buffer
+    let cmd_buf = command_queue
+        .commandBuffer()
+        .ok_or_else(|| "Failed to create command buffer".to_string())?;
+
+    // 4. Create compute command encoder and configure dispatch
+    {
+        let encoder = cmd_buf
+            .computeCommandEncoder()
+            .ok_or_else(|| "Failed to create compute command encoder".to_string())?;
+
+        // Set pipeline state
+        encoder.setComputePipelineState(pso);
+
+        // Set buffers matching kernel signature:
+        //   buffer(0) = QueryParamsSlot
+        //   buffer(1) = column data
+        //   buffer(2) = ColumnMeta array
+        //   buffer(3) = OutputBuffer
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&*params_buffer), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&*resident_table.data_buffer), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&*resident_table.column_meta_buffer), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&*output_buffer), 0, 3);
+        }
+
+        // Calculate dispatch dimensions
+        let row_count = params.row_count as usize;
+        let threads_per_threadgroup = 256usize;
+        let threadgroup_count = if row_count == 0 {
+            1 // Must dispatch at least 1 threadgroup for metadata
+        } else {
+            (row_count + threads_per_threadgroup - 1) / threads_per_threadgroup
+        };
+
+        let grid_size = MTLSize {
+            width: threadgroup_count,
+            height: 1,
+            depth: 1,
+        };
+        let tg_size = MTLSize {
+            width: threads_per_threadgroup,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+
+        // End encoding
+        encoder.endEncoding();
+    }
+
+    // 5. Commit and wait (one-shot blocking path)
+    cmd_buf.commit();
+    cmd_buf.waitUntilCompleted();
+
+    // 6. Read back OutputBuffer from GPU memory
+    let result = unsafe {
+        let src = output_buffer.contents().as_ptr() as *const OutputBuffer;
+        std::ptr::read(src)
+    };
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::autonomous::loader::BinaryColumnarLoader;
+    use crate::gpu::autonomous::types::AggSpec;
     use crate::gpu::device::GpuDevice;
+    use crate::storage::columnar::ColumnarBatch;
+    use crate::storage::schema::{ColumnDef, DataType, RuntimeSchema};
 
     #[test]
     fn test_fused_pso_compilation() {
@@ -194,5 +312,144 @@ mod tests {
         // Max configuration: 4 filters, 5 aggs, group_by=true
         let pso = cache.get_or_compile(4, 5, true);
         assert!(pso.is_ok(), "Max config PSO failed: {:?}", pso.err());
+    }
+
+    /// Helper: create a RuntimeSchema with the given column definitions.
+    fn make_schema(cols: &[(&str, DataType)]) -> RuntimeSchema {
+        RuntimeSchema::new(
+            cols.iter()
+                .map(|(name, dt)| ColumnDef {
+                    name: name.to_string(),
+                    data_type: *dt,
+                    nullable: false,
+                })
+                .collect(),
+        )
+    }
+
+    /// Helper: create a ColumnarBatch with deterministic INT64 data.
+    /// INT64 values: (i * 7 + 13) % 1000
+    fn make_test_batch(
+        device: &ProtocolObject<dyn MTLDevice>,
+        schema: &RuntimeSchema,
+        row_count: usize,
+    ) -> ColumnarBatch {
+        let mut batch = ColumnarBatch::allocate(device, schema, row_count);
+        batch.row_count = row_count;
+
+        let mut int_local_idx = 0usize;
+        let mut float_local_idx = 0usize;
+
+        for col in &schema.columns {
+            match col.data_type {
+                DataType::Int64 | DataType::Date => {
+                    unsafe {
+                        let ptr = batch.int_buffer.contents().as_ptr() as *mut i64;
+                        let offset = int_local_idx * batch.max_rows;
+                        for i in 0..row_count {
+                            *ptr.add(offset + i) = ((i * 7 + 13) % 1000) as i64;
+                        }
+                    }
+                    int_local_idx += 1;
+                }
+                DataType::Float64 => {
+                    unsafe {
+                        let ptr = batch.float_buffer.contents().as_ptr() as *mut f32;
+                        let offset = float_local_idx * batch.max_rows;
+                        for i in 0..row_count {
+                            *ptr.add(offset + i) = ((i * 7 + 13) % 1000) as f32;
+                        }
+                    }
+                    float_local_idx += 1;
+                }
+                _ => {}
+            }
+        }
+
+        batch
+    }
+
+    #[test]
+    fn test_fused_oneshot_count() {
+        // Test: SELECT COUNT(*) FROM sales (1000 rows, no filter, no GROUP BY)
+        let gpu = GpuDevice::new();
+
+        // 1. Prepare test data: single INT64 column, 1000 rows
+        let schema = make_schema(&[("amount", DataType::Int64)]);
+        let batch = make_test_batch(&gpu.device, &schema, 1000);
+
+        // 2. Load into GPU-resident table
+        let resident_table =
+            BinaryColumnarLoader::load_table(&gpu.device, "sales", &schema, &batch, None)
+                .expect("Failed to load test table");
+
+        assert_eq!(resident_table.row_count, 1000);
+
+        // 3. Compile PSO for COUNT(*): 0 filters, 1 agg, no group_by
+        let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+        let pso = cache
+            .get_or_compile(0, 1, false)
+            .expect("PSO compilation failed");
+
+        // 4. Build QueryParamsSlot for COUNT(*)
+        let mut params = QueryParamsSlot::default();
+        params.sequence_id = 1;
+        params.filter_count = 0;
+        params.agg_count = 1;
+        params.aggs[0] = AggSpec {
+            agg_func: 0,    // COUNT
+            column_idx: 0,  // column 0 (amount) -- not used for COUNT but must be valid
+            column_type: 0, // INT64
+            _pad0: 0,
+        };
+        params.has_group_by = 0;
+        params.group_by_col = 0;
+        params.row_count = 1000;
+
+        // 5. Execute one-shot dispatch
+        let result = execute_fused_oneshot(
+            &gpu.device,
+            &gpu.command_queue,
+            pso,
+            &params,
+            &resident_table,
+        )
+        .expect("execute_fused_oneshot failed");
+
+        // 6. Verify results
+        // result_row_count should be 1 (scalar result, no GROUP BY)
+        assert_eq!(
+            result.result_row_count, 1,
+            "Expected 1 result row (scalar), got {}",
+            result.result_row_count
+        );
+
+        // COUNT(*) result should be 1000 (all rows)
+        assert_eq!(
+            result.agg_results[0][0].value_int, 1000,
+            "Expected COUNT(*) = 1000, got {}",
+            result.agg_results[0][0].value_int
+        );
+
+        // ready_flag should be set
+        assert_eq!(
+            result.ready_flag, 1,
+            "Expected ready_flag = 1, got {}",
+            result.ready_flag
+        );
+
+        // sequence_id should be echoed back
+        assert_eq!(
+            result.sequence_id, 1,
+            "Expected sequence_id = 1, got {}",
+            result.sequence_id
+        );
+
+        // error_code should be 0 (success)
+        assert_eq!(
+            result.error_code, 0,
+            "Expected error_code = 0, got {}",
+            result.error_code
+        );
     }
 }
