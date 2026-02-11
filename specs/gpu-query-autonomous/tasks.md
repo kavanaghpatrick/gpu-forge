@@ -1,7 +1,7 @@
 ---
 spec: gpu-query-autonomous
 phase: tasks
-total_tasks: 42
+total_tasks: 44
 created: 2026-02-11
 generated: auto
 ---
@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Establish the shared data formats between Rust and MSL. Load data into GPU-resident buffers. No GPU execution yet.
 
-- [ ] 1.1 Create autonomous module structure
+- [x] 1.1 Create autonomous module structure
   - **Do**: Create `src/gpu/autonomous/mod.rs` with `pub mod types; pub mod work_queue; pub mod loader; pub mod executor; pub mod jit;`. Add `pub mod autonomous;` to `src/gpu/mod.rs`. Ensure `cargo build` compiles.
   - **Files**: `gpu-query/src/gpu/autonomous/mod.rs`, `gpu-query/src/gpu/mod.rs`
   - **Done when**: `cargo build` succeeds with empty sub-modules

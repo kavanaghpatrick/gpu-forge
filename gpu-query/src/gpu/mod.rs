@@ -6,3 +6,4 @@ pub mod executor;
 pub mod metrics;
 pub mod pipeline;
 pub mod types;
+pub mod autonomous;
