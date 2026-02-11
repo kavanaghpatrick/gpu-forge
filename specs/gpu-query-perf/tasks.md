@@ -171,7 +171,7 @@ Focus: Add targeted tests for cache correctness, invalidation, and performance b
   - **Commit**: `test(bench): add 1M-row warm compound filter benchmark`
   - _Requirements: NFR-1_
 
-- [ ] 4.4 Regression test for all existing tests
+- [x] 4.4 Regression test for all existing tests
   - **Do**: Run the full test suite including lib tests, GPU integration tests, and E2E golden tests. Verify all pass. Fix any failures introduced by the refactor.
   - **Files**: Various (fix any broken tests)
   - **Done when**: All 494+ lib tests, 155 GPU tests, 93 E2E tests pass
