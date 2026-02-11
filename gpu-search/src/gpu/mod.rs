@@ -3,3 +3,4 @@
 pub mod device;
 pub mod pipeline;
 pub mod types;
+pub mod work_queue;

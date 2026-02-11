@@ -205,7 +205,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-4, NFR-5_
   - _Design: Filesystem Index, gpu_loader.rs_
 
-- [ ] 2.6 Adopt gpu-query work queue pattern
+- [x] 2.6 Adopt gpu-query work queue pattern
   - **Do**: Adapt gpu-query `WorkQueue` for search requests. Triple-buffered (3 x SearchRequestSlot) in StorageModeShared. CPU writes search params with Release ordering, GPU reads with Acquire. Atomic sequence_id for new-request detection.
   - **Files**: `gpu-search/src/gpu/work_queue.rs`, update `gpu-search/src/gpu/mod.rs`
   - **Done when**: Write/read cycle works, atomic ordering correct
