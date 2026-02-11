@@ -196,7 +196,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-22_
   - _Design: Filesystem Index, cache.rs_
 
-- [ ] 2.5 Implement index/gpu_loader.rs -- GPU buffer loading
+- [x] 2.5 Implement index/gpu_loader.rs -- GPU buffer loading
   - **Do**: mmap cached index -> `newBufferWithBytesNoCopy` -> GPU buffer. If no cache: scan -> build -> save -> load. Target <10ms for 100K entries.
   - **Files**: `gpu-search/src/index/gpu_loader.rs`, update `gpu-search/src/index/mod.rs`
   - **Done when**: Index in GPU buffer, path filter kernel queries it successfully
