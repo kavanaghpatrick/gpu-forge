@@ -78,7 +78,7 @@ Focus: Eliminate per-query Metal device + PSO cache recreation by persisting the
   - _Requirements: FR-5_
   - _Design: Component 1 (CatalogCache)_
 
-- [ ] 2.2 Add executor and catalog_cache to AppState
+- [x] 2.2 Add executor and catalog_cache to AppState
   - **Do**: In `gpu-query/src/tui/app.rs`: (1) Add `use crate::gpu::executor::QueryExecutor;` and `use crate::io::catalog_cache::CatalogCache;`. (2) Add fields `pub executor: Option<QueryExecutor>` and `pub catalog_cache: CatalogCache` to `AppState`. (3) Initialize in `AppState::new()`: `executor: None`, `catalog_cache: CatalogCache::new(data_dir.clone())`. (4) Add method `pub fn get_or_init_executor(&mut self) -> Result<&mut QueryExecutor, String>` that lazily creates executor.
   - **Files**: `gpu-query/src/tui/app.rs`
   - **Done when**: AppState has executor + catalog_cache fields; get_or_init_executor works; compiles

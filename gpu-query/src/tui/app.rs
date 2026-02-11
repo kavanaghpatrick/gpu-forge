@@ -6,8 +6,9 @@ use super::catalog::CatalogState;
 use super::editor::EditorState;
 use super::results::ResultsState;
 use super::themes::Theme;
-use crate::gpu::executor::QueryResult;
+use crate::gpu::executor::{QueryExecutor, QueryResult};
 use crate::gpu::metrics::{GpuMetricsCollector, PipelineProfile, QueryMetrics};
+use crate::io::catalog_cache::CatalogCache;
 use std::path::PathBuf;
 
 /// Focus panel in the dashboard layout.
@@ -95,11 +96,18 @@ pub struct AppState {
 
     /// Last pipeline profile (per-kernel timing breakdown).
     pub last_pipeline_profile: Option<PipelineProfile>,
+
+    /// Persistent GPU query executor (lazily initialized on first query).
+    pub executor: Option<QueryExecutor>,
+
+    /// Cached catalog of tables in the data directory.
+    pub catalog_cache: CatalogCache,
 }
 
 impl AppState {
     /// Create a new AppState with the given data directory and theme name.
     pub fn new(data_dir: PathBuf, theme_name: &str) -> Self {
+        let catalog_cache = CatalogCache::new(data_dir.clone());
         Self {
             running: true,
             focus: FocusPanel::Editor,
@@ -121,6 +129,8 @@ impl AppState {
             gpu_metrics: GpuMetricsCollector::new(),
             profile_mode: false,
             last_pipeline_profile: None,
+            executor: None,
+            catalog_cache,
         }
     }
 
@@ -144,6 +154,17 @@ impl AppState {
     pub fn set_error(&mut self, msg: String) {
         self.query_state = QueryState::Error(msg.clone());
         self.status_message = format!("Error: {}", msg);
+    }
+
+    /// Get or lazily initialize the persistent GPU query executor.
+    ///
+    /// The executor is created on first use (not at TUI startup) to avoid
+    /// Metal device initialization overhead when the user hasn't run a query yet.
+    pub fn get_or_init_executor(&mut self) -> Result<&mut QueryExecutor, String> {
+        if self.executor.is_none() {
+            self.executor = Some(QueryExecutor::new()?);
+        }
+        Ok(self.executor.as_mut().unwrap())
     }
 
     /// Increment frame counter.
