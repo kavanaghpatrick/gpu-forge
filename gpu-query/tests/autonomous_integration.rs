@@ -2066,6 +2066,125 @@ fn test_autonomous_headline() {
 }
 
 // ============================================================================
+// Test 1000 sequential queries without restart
+//
+// Submits 1000 COUNT(*) WHERE amount > threshold queries to a SINGLE
+// AutonomousExecutor instance with varying thresholds. No re-initialization
+// between queries. Verifies each returns correct result vs CPU reference.
+// Threshold = i % 900 + 50, giving values 50..949.
+// ============================================================================
+#[test]
+fn test_1000_queries() {
+    let gpu = GpuDevice::new();
+
+    // 1. Create ONE AutonomousExecutor — reused for all 1000 queries
+    let mut executor = AutonomousExecutor::new(gpu.device.clone());
+
+    // 2. Load 100K-row deterministic data ONCE
+    let schema = test_schema();
+    let row_count = 100_000usize;
+    let batch = make_test_batch(&gpu.device, &schema, row_count);
+
+    executor
+        .load_table("sales", &schema, &batch)
+        .expect("load_table failed");
+
+    // 3. Pre-compute CPU amounts once
+    let amounts = cpu_amounts(row_count);
+    let col_schema = jit_schema();
+
+    let total_queries = 1000u32;
+    let mut success_count = 0u32;
+    let start_all = std::time::Instant::now();
+
+    for i in 0..total_queries {
+        let threshold = (i % 900 + 50) as i64;
+
+        // CPU expected: COUNT(*) WHERE amount > threshold
+        let expected_count: i64 = amounts.iter().filter(|&&v| v > threshold).count() as i64;
+
+        // Build plan: SELECT COUNT(*) FROM sales WHERE amount > threshold
+        let plan = plan_aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            plan_filter_gt("amount", threshold, plan_scan("sales")),
+        );
+
+        // Submit query (non-blocking)
+        let seq_id = executor
+            .submit_query(&plan, &col_schema, "sales")
+            .unwrap_or_else(|e| panic!("Query {} (threshold={}) submit failed: {}", i, threshold, e));
+
+        assert!(seq_id > 0, "Query {}: sequence_id should be > 0", i);
+
+        // Poll ready
+        let poll_start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(30);
+        while !executor.poll_ready() {
+            if poll_start.elapsed() > timeout {
+                panic!(
+                    "Query {} (threshold={}): timed out waiting for result (30s)",
+                    i, threshold
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+
+        // Read result
+        let result = executor.read_result();
+
+        // Verify correctness
+        assert_eq!(
+            result.ready_flag, 1,
+            "Query {} (threshold={}): ready_flag should be 1",
+            i, threshold
+        );
+        assert_eq!(
+            result.error_code, 0,
+            "Query {} (threshold={}): error_code should be 0, got {}",
+            i, threshold, result.error_code
+        );
+        assert_eq!(
+            result.result_row_count, 1,
+            "Query {} (threshold={}): should have 1 result row (scalar), got {}",
+            i, threshold, result.result_row_count
+        );
+        assert_eq!(
+            result.agg_results[0][0].value_int, expected_count,
+            "Query {} (threshold={}): COUNT(*) WHERE amount > {} expected {}, got {}",
+            i, threshold, threshold, expected_count, result.agg_results[0][0].value_int
+        );
+
+        success_count += 1;
+    }
+
+    let total_duration = start_all.elapsed();
+
+    // All 1000 queries must succeed
+    assert_eq!(
+        success_count, total_queries,
+        "Expected {} successful queries, got {}",
+        total_queries, success_count
+    );
+
+    // Verify stats
+    let stats = executor.stats();
+    assert_eq!(
+        stats.total_queries, total_queries as u64,
+        "Stats should show {} total queries, got {}",
+        total_queries, stats.total_queries
+    );
+
+    eprintln!(
+        "1000 sequential queries completed in {:?} ({:.2}ms/query avg)",
+        total_duration,
+        total_duration.as_secs_f64() * 1000.0 / total_queries as f64
+    );
+
+    executor.shutdown();
+}
+
+// ============================================================================
 // JIT Parity 7: Headline query — compound filter + GROUP BY + multi-agg
 //   WHERE amount > 200 AND amount < 800 GROUP BY region
 //   SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount)

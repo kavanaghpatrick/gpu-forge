@@ -203,7 +203,7 @@ Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is 
   - **Commit**: `feat(autonomous): verify end-to-end autonomous query execution`
   - _Requirements: FR-1 through FR-6_
 
-- [ ] 4.5 Test 1000 sequential queries without restart
+- [x] 4.5 Test 1000 sequential queries without restart
   - **Do**: Submit 1000 queries with varying parameters (different thresholds) to the same AutonomousExecutor. Verify each returns correct results. No re-initialization between queries.
   - **Files**: `gpu-query/tests/autonomous_integration.rs`
   - **Done when**: 1000 consecutive queries all return correct results
