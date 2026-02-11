@@ -207,6 +207,32 @@ fn execute_dot_command(app: &mut super::app::AppState) {
         DotCommandResult::Error(msg) => {
             app.set_error(msg);
         }
+        DotCommandResult::DescribeTable(table_name) => {
+            // Execute GPU-parallel DESCRIBE: re-scan catalog and invoke executor
+            match crate::io::catalog::scan_directory(&app.data_dir) {
+                Ok(catalog) => match crate::gpu::executor::QueryExecutor::new() {
+                    Ok(mut executor) => {
+                        match executor.execute_describe(&table_name, &catalog) {
+                            Ok(desc) => {
+                                let result = desc.to_query_result();
+                                app.set_result(result);
+                                app.status_message =
+                                    format!("DESCRIBE {} complete.", table_name);
+                            }
+                            Err(e) => {
+                                app.set_error(format!("DESCRIBE failed: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        app.set_error(format!("GPU init error: {}", e));
+                    }
+                },
+                Err(e) => {
+                    app.set_error(format!("Catalog scan error: {}", e));
+                }
+            }
+        }
     }
 }
 

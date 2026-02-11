@@ -68,6 +68,84 @@ pub enum PartialAggregate {
     AvgFloat(f64, u64),
 }
 
+/// Per-column statistics from DESCRIBE.
+#[derive(Debug, Clone)]
+pub struct ColumnStats {
+    /// Column name.
+    pub name: String,
+    /// Column data type as string (INT64, FLOAT64, VARCHAR, etc.).
+    pub data_type: String,
+    /// Total row count.
+    pub count: u64,
+    /// Null count (percentage is computed from count).
+    pub null_count: u64,
+    /// Number of distinct values (for VARCHAR via dictionary; approx for numeric).
+    pub distinct_count: u64,
+    /// Minimum value as formatted string.
+    pub min_value: String,
+    /// Maximum value as formatted string.
+    pub max_value: String,
+    /// Sample value (first non-null value).
+    pub sample_value: String,
+}
+
+/// Result of a DESCRIBE command: per-column statistics.
+#[derive(Debug, Clone)]
+pub struct DescribeResult {
+    /// Table name.
+    pub table_name: String,
+    /// Per-column statistics.
+    pub columns: Vec<ColumnStats>,
+}
+
+impl DescribeResult {
+    /// Format as a QueryResult for display.
+    pub fn to_query_result(&self) -> QueryResult {
+        let columns = vec![
+            "column".to_string(),
+            "type".to_string(),
+            "count".to_string(),
+            "null%".to_string(),
+            "distinct".to_string(),
+            "min".to_string(),
+            "max".to_string(),
+            "sample".to_string(),
+        ];
+
+        let mut rows = Vec::new();
+        for col in &self.columns {
+            let null_pct = if col.count > 0 {
+                (col.null_count as f64 / col.count as f64) * 100.0
+            } else {
+                0.0
+            };
+            let null_pct_str = if null_pct == 0.0 {
+                "0%".to_string()
+            } else {
+                format!("{:.1}%", null_pct)
+            };
+
+            rows.push(vec![
+                col.name.clone(),
+                col.data_type.clone(),
+                col.count.to_string(),
+                null_pct_str,
+                col.distinct_count.to_string(),
+                col.min_value.clone(),
+                col.max_value.clone(),
+                col.sample_value.clone(),
+            ]);
+        }
+
+        let row_count = rows.len();
+        QueryResult {
+            columns,
+            rows,
+            row_count,
+        }
+    }
+}
+
 /// Result of executing a query.
 pub struct QueryResult {
     /// Column names in result.
@@ -2647,6 +2725,212 @@ impl QueryExecutor {
 
         // Fall through to standard execution for non-batched queries
         self.execute(plan, catalog)
+    }
+
+    /// Execute DESCRIBE: compute per-column statistics using GPU kernels.
+    ///
+    /// For each column, computes:
+    /// - count (total rows via GPU aggregate_count)
+    /// - null_count (from schema inference nullable flag + scan)
+    /// - distinct_count (dictionary cardinality for VARCHAR; unique values for numeric via CPU readback)
+    /// - min/max (GPU aggregate kernels for INT64; CPU fallback for FLOAT64/VARCHAR)
+    /// - sample_value (first row value)
+    pub fn execute_describe(
+        &mut self,
+        table_name: &str,
+        catalog: &[TableEntry],
+    ) -> Result<DescribeResult, String> {
+        // Scan the table data (reuse existing scan logic)
+        let scan = self.execute_scan(table_name, catalog)?;
+        let row_count = scan.batch.row_count;
+
+        if row_count == 0 {
+            // Empty table: return column definitions with zero stats
+            let columns = scan
+                .schema
+                .columns
+                .iter()
+                .map(|col| ColumnStats {
+                    name: col.name.clone(),
+                    data_type: format!("{:?}", col.data_type).to_uppercase(),
+                    count: 0,
+                    null_count: 0,
+                    distinct_count: 0,
+                    min_value: "NULL".to_string(),
+                    max_value: "NULL".to_string(),
+                    sample_value: "NULL".to_string(),
+                })
+                .collect();
+            return Ok(DescribeResult {
+                table_name: table_name.to_string(),
+                columns,
+            });
+        }
+
+        // Build all-ones mask for full-table aggregation
+        let all_mask = build_all_ones_mask(&self.device.device, row_count);
+        let total_count = self.run_aggregate_count(&all_mask, row_count as u32)? as u64;
+
+        let mut col_stats = Vec::new();
+
+        for (col_idx, col_def) in scan.schema.columns.iter().enumerate() {
+            let type_name = match col_def.data_type {
+                DataType::Int64 => "INT64",
+                DataType::Float64 => "FLOAT64",
+                DataType::Varchar => "VARCHAR",
+                DataType::Bool => "BOOL",
+                DataType::Date => "DATE",
+            };
+
+            let (null_count, distinct_count, min_val, max_val, sample_val) = match col_def.data_type
+            {
+                DataType::Int64 => {
+                    let local_idx = self.int_local_idx(&scan, col_idx);
+                    let values = unsafe { scan.batch.read_int_column(local_idx) };
+
+                    // null_count: count zeros that might be genuine nulls
+                    // For POC, use nullable flag from schema inference
+                    let null_count = if col_def.nullable {
+                        values.iter().filter(|&&v| v == 0).count() as u64
+                    } else {
+                        0u64
+                    };
+
+                    // Distinct count (CPU readback for exact count)
+                    let mut unique = std::collections::HashSet::new();
+                    for &v in &values {
+                        unique.insert(v);
+                    }
+                    let distinct = unique.len() as u64;
+
+                    // Min/max via GPU kernels
+                    let min = self.run_aggregate_min_int64(
+                        &scan.batch,
+                        &all_mask,
+                        row_count as u32,
+                        local_idx,
+                    )?;
+                    let max = self.run_aggregate_max_int64(
+                        &scan.batch,
+                        &all_mask,
+                        row_count as u32,
+                        local_idx,
+                    )?;
+
+                    let sample = if !values.is_empty() {
+                        values[0].to_string()
+                    } else {
+                        "NULL".to_string()
+                    };
+
+                    (null_count, distinct, min.to_string(), max.to_string(), sample)
+                }
+                DataType::Float64 => {
+                    let local_idx = self.float_local_idx(&scan, col_idx);
+                    let values = unsafe { scan.batch.read_float_column(local_idx) };
+
+                    let null_count = if col_def.nullable {
+                        values.iter().filter(|&&v| v == 0.0).count() as u64
+                    } else {
+                        0u64
+                    };
+
+                    // Distinct count via CPU (HashSet of bits for exact float dedup)
+                    let mut unique = std::collections::HashSet::new();
+                    for &v in &values {
+                        unique.insert(v.to_bits());
+                    }
+                    let distinct = unique.len() as u64;
+
+                    // Min/max via CPU fallback (matching existing pattern for float)
+                    let min = values.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+                    let sample = if !values.is_empty() {
+                        format_float(values[0] as f64)
+                    } else {
+                        "NULL".to_string()
+                    };
+
+                    (
+                        null_count,
+                        distinct,
+                        format_float(min as f64),
+                        format_float(max as f64),
+                        sample,
+                    )
+                }
+                DataType::Varchar => {
+                    // Use dictionary for distinct count
+                    let dict = scan
+                        .batch
+                        .dictionaries
+                        .get(col_idx)
+                        .and_then(|d| d.as_ref());
+
+                    let local_idx = scan.schema.columns[..col_idx]
+                        .iter()
+                        .filter(|c| c.data_type == DataType::Varchar)
+                        .count();
+
+                    let dict_codes = unsafe { scan.batch.read_string_dict_column(local_idx) };
+
+                    let null_count = dict_codes
+                        .iter()
+                        .filter(|&&c| c == u32::MAX)
+                        .count() as u64;
+
+                    let distinct = if let Some(d) = dict {
+                        d.len() as u64
+                    } else {
+                        0u64
+                    };
+
+                    // Min/max/sample from dictionary values (sorted)
+                    let (min_val, max_val, sample_val) = if let Some(d) = dict {
+                        let values = d.values();
+                        if values.is_empty() {
+                            ("NULL".to_string(), "NULL".to_string(), "NULL".to_string())
+                        } else {
+                            let sample = if !dict_codes.is_empty() && dict_codes[0] != u32::MAX {
+                                d.decode(dict_codes[0]).to_string()
+                            } else {
+                                values[0].clone()
+                            };
+                            (
+                                values.first().cloned().unwrap_or_else(|| "NULL".to_string()),
+                                values.last().cloned().unwrap_or_else(|| "NULL".to_string()),
+                                sample,
+                            )
+                        }
+                    } else {
+                        ("NULL".to_string(), "NULL".to_string(), "NULL".to_string())
+                    };
+
+                    (null_count, distinct, min_val, max_val, sample_val)
+                }
+                _ => {
+                    // Unsupported type: return placeholder stats
+                    (0u64, 0u64, "N/A".to_string(), "N/A".to_string(), "N/A".to_string())
+                }
+            };
+
+            col_stats.push(ColumnStats {
+                name: col_def.name.clone(),
+                data_type: type_name.to_string(),
+                count: total_count,
+                null_count,
+                distinct_count,
+                min_value: min_val,
+                max_value: max_val,
+                sample_value: sample_val,
+            });
+        }
+
+        Ok(DescribeResult {
+            table_name: table_name.to_string(),
+            columns: col_stats,
+        })
     }
 }
 

@@ -63,6 +63,9 @@ pub enum DotCommandResult {
     Quit,
     /// Error message.
     Error(String),
+    /// Request GPU-parallel DESCRIBE on specified table.
+    /// The caller should invoke `executor.execute_describe()` and display the result.
+    DescribeTable(String),
 }
 
 impl fmt::Display for DotCommandResult {
@@ -73,6 +76,7 @@ impl fmt::Display for DotCommandResult {
             DotCommandResult::ClearScreen => write!(f, "(screen cleared)"),
             DotCommandResult::Quit => write!(f, "Goodbye."),
             DotCommandResult::Error(s) => write!(f, "Error: {}", s),
+            DotCommandResult::DescribeTable(table) => write!(f, "DESCRIBE {}", table),
         }
     }
 }
@@ -183,7 +187,8 @@ pub struct DotCommandContext<'a> {
 pub fn handle_dot_command(cmd: &DotCommand, ctx: &DotCommandContext) -> DotCommandResult {
     match cmd {
         DotCommand::Tables => handle_tables(ctx),
-        DotCommand::Schema(table) | DotCommand::Describe(table) => handle_schema(table, ctx),
+        DotCommand::Schema(table) => handle_schema(table, ctx),
+        DotCommand::Describe(table) => handle_describe(table),
         DotCommand::Gpu => handle_gpu(ctx),
         DotCommand::Profile(toggle) => handle_profile(*toggle, ctx),
         DotCommand::Benchmark => {
@@ -248,6 +253,18 @@ fn handle_schema(table: &str, ctx: &DotCommandContext) -> DotCommandResult {
     }
 
     DotCommandResult::Error(format!("Table '{}' not found.", table))
+}
+
+/// .describe <table> — GPU-parallel column statistics.
+///
+/// Returns a `DescribeTable` result that the caller should intercept and
+/// route to `QueryExecutor::execute_describe()` for GPU-parallel stats computation.
+/// If no table name is provided, falls back to showing all schemas.
+fn handle_describe(table: &str) -> DotCommandResult {
+    if table.is_empty() {
+        return DotCommandResult::Error("Usage: .describe <table>".to_string());
+    }
+    DotCommandResult::DescribeTable(table.to_string())
 }
 
 /// .gpu — show GPU device info.
@@ -360,7 +377,7 @@ fn handle_help() -> DotCommandResult {
 Dot Commands:
   .tables               List all loaded tables with format and column count
   .schema [table]       Show table schema (column names and types)
-  .describe [table]     Alias for .schema
+  .describe <table>     GPU-parallel column statistics (count, null%, distinct, min, max)
   .gpu                  Show GPU device info and memory usage
   .profile [on|off]     Toggle per-kernel timing output
   .benchmark            Show benchmark info

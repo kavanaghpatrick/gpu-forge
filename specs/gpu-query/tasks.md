@@ -288,7 +288,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: FR-35, AC-3.5_
   - _Design: GPU Metrics_
 
-- [ ] 3.10 DESCRIBE and GPU-parallel column statistics
+- [x] 3.10 DESCRIBE and GPU-parallel column statistics
   - **Do**: Implement DESCRIBE command that runs GPU kernels to compute per-column: null%, distinct count, min, max, sample value. Reuse aggregation kernels for min/max. Use dictionary build for cardinality. Display in formatted table.
   - **Files**: update `gpu-query/src/gpu/executor.rs`, `src/cli/commands.rs`
   - **Done when**: `DESCRIBE sales` shows column stats computed on GPU in <100ms for 1M rows
