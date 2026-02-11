@@ -174,6 +174,31 @@ pub fn execute_fused_oneshot(
         std::ptr::write_bytes(dst, 0, output_size);
     }
 
+    // 2b. Initialize MIN/MAX sentinel values in the output buffer.
+    // The zero-initialized output works for COUNT/SUM (identity = 0), but MIN needs
+    // INT64_MAX (so first real value wins) and MAX needs INT64_MIN.
+    // We iterate over all agg slots and set sentinels for MIN/MAX aggregates.
+    unsafe {
+        let out_ptr = output_buffer.contents().as_ptr() as *mut OutputBuffer;
+        let out = &mut *out_ptr;
+        for a in 0..params.agg_count as usize {
+            let agg_func = params.aggs[a].agg_func;
+            let is_min = agg_func == 3; // AGG_FUNC_MIN
+            let is_max = agg_func == 4; // AGG_FUNC_MAX
+            if is_min || is_max {
+                for g in 0..super::types::MAX_GROUPS {
+                    if is_min {
+                        out.agg_results[g][a].value_int = i64::MAX;
+                        out.agg_results[g][a].value_float = f32::MAX;
+                    } else {
+                        out.agg_results[g][a].value_int = i64::MIN;
+                        out.agg_results[g][a].value_float = f32::MIN;
+                    }
+                }
+            }
+        }
+    }
+
     // 3. Create command buffer
     let cmd_buf = command_queue
         .commandBuffer()

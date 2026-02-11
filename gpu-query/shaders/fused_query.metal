@@ -187,19 +187,18 @@ static inline bool evaluate_filter(
 // ============================================================================
 
 struct GroupAccumulator {
-    long  count;        // row count for this group
-    long  sum_int;      // integer sum accumulator
-    float sum_float;    // float sum accumulator
-    long  min_int;      // integer min
-    long  max_int;      // integer max
-    float min_float;    // float min
-    float max_float;    // float max
-    long  group_key;    // the group key value
-    uint  valid;        // 1 if this bucket has data
-    uint  _pad[3];      // align to 64 bytes
+    long  count;                  // row count for this group (8 bytes)
+    long  sum_int[MAX_AGGS];      // per-agg integer sum (5 * 8 = 40 bytes)
+    float sum_float[MAX_AGGS];    // per-agg float sum (5 * 4 = 20 bytes)
+    long  min_int[MAX_AGGS];      // per-agg integer min (5 * 8 = 40 bytes)
+    long  max_int[MAX_AGGS];      // per-agg integer max (5 * 8 = 40 bytes)
+    float min_float[MAX_AGGS];    // per-agg float min (5 * 4 = 20 bytes)
+    float max_float[MAX_AGGS];    // per-agg float max (5 * 4 = 20 bytes)
+    long  group_key;              // the group key value (8 bytes)
+    uint  valid;                  // 1 if this bucket has data (4 bytes)
 };
-// sizeof(GroupAccumulator) = 64 bytes
-// threadgroup GroupAccumulator[64] = 4096 bytes (well under 32KB limit)
+// sizeof(GroupAccumulator) ~ 200 bytes
+// threadgroup GroupAccumulator[64] ~ 12800 bytes (well under 32KB limit)
 
 // ============================================================================
 // Device atomic helpers for 64-bit values (split lo/hi)
@@ -222,9 +221,8 @@ static inline void atomic_add_int64(
     atomic_fetch_add_explicit(hi_ptr, hi + carry, memory_order_relaxed);
 }
 
-// Atomically update MIN of a 64-bit signed value via CAS loop on lo/hi uint pair.
-// This stores the value as (lo, hi) in two adjacent atomic_uint slots.
-// Uses a combined 64-bit comparison approach.
+// Atomically update MIN of a 64-bit signed value via double-CAS loop on lo/hi uint pair.
+// Both lo and hi are CAS'd with consistency verification to avoid torn-write races.
 static inline void atomic_min_int64(
     device atomic_uint* lo_ptr,
     device atomic_uint* hi_ptr,
@@ -234,32 +232,37 @@ static inline void atomic_min_int64(
     uint new_lo = static_cast<uint>(new_u);
     uint new_hi = static_cast<uint>(new_u >> 32);
 
-    // CAS loop on the hi part first for sign comparison
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < 128; i++) {
         uint cur_hi = atomic_load_explicit(hi_ptr, memory_order_relaxed);
         uint cur_lo = atomic_load_explicit(lo_ptr, memory_order_relaxed);
 
-        // Reconstruct current value as signed long
+        // Re-read hi to check for concurrent modification
+        uint cur_hi2 = atomic_load_explicit(hi_ptr, memory_order_relaxed);
+        if (cur_hi != cur_hi2) continue;  // Torn read, retry
+
         long cur_val = static_cast<long>(
             static_cast<ulong>(cur_lo) | (static_cast<ulong>(cur_hi) << 32)
         );
 
-        if (new_val >= cur_val) return;  // Current is already <= new, nothing to do
+        if (new_val >= cur_val) return;
 
-        // Try to swap hi first
-        if (atomic_compare_exchange_weak_explicit(hi_ptr, &cur_hi, new_hi,
+        // CAS lo first, then hi
+        if (atomic_compare_exchange_weak_explicit(lo_ptr, &cur_lo, new_lo,
                                                    memory_order_relaxed,
                                                    memory_order_relaxed)) {
-            // Hi swapped successfully, now swap lo
-            // (Not perfectly atomic across both words, but sufficient for convergence)
-            atomic_store_explicit(lo_ptr, new_lo, memory_order_relaxed);
-            return;
+            // lo swapped. Now CAS hi.
+            if (atomic_compare_exchange_weak_explicit(hi_ptr, &cur_hi, new_hi,
+                                                       memory_order_relaxed,
+                                                       memory_order_relaxed)) {
+                return;  // Both words updated
+            }
+            // hi CAS failed — another thread changed hi. Restore lo and retry.
+            atomic_store_explicit(lo_ptr, cur_lo, memory_order_relaxed);
         }
-        // CAS failed, retry
     }
 }
 
-// Atomically update MAX of a 64-bit signed value via CAS loop.
+// Atomically update MAX of a 64-bit signed value via double-CAS loop.
 static inline void atomic_max_int64(
     device atomic_uint* lo_ptr,
     device atomic_uint* hi_ptr,
@@ -269,21 +272,28 @@ static inline void atomic_max_int64(
     uint new_lo = static_cast<uint>(new_u);
     uint new_hi = static_cast<uint>(new_u >> 32);
 
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < 128; i++) {
         uint cur_hi = atomic_load_explicit(hi_ptr, memory_order_relaxed);
         uint cur_lo = atomic_load_explicit(lo_ptr, memory_order_relaxed);
+
+        uint cur_hi2 = atomic_load_explicit(hi_ptr, memory_order_relaxed);
+        if (cur_hi != cur_hi2) continue;
 
         long cur_val = static_cast<long>(
             static_cast<ulong>(cur_lo) | (static_cast<ulong>(cur_hi) << 32)
         );
 
-        if (new_val <= cur_val) return;  // Current is already >= new, nothing to do
+        if (new_val <= cur_val) return;
 
-        if (atomic_compare_exchange_weak_explicit(hi_ptr, &cur_hi, new_hi,
+        if (atomic_compare_exchange_weak_explicit(lo_ptr, &cur_lo, new_lo,
                                                    memory_order_relaxed,
                                                    memory_order_relaxed)) {
-            atomic_store_explicit(lo_ptr, new_lo, memory_order_relaxed);
-            return;
+            if (atomic_compare_exchange_weak_explicit(hi_ptr, &cur_hi, new_hi,
+                                                       memory_order_relaxed,
+                                                       memory_order_relaxed)) {
+                return;
+            }
+            atomic_store_explicit(lo_ptr, cur_lo, memory_order_relaxed);
         }
     }
 }
@@ -357,13 +367,15 @@ kernel void fused_query(
     for (uint i = 0; i < groups_per_thread; i++) {
         uint g = lid * groups_per_thread + i;
         if (g < MAX_GROUPS) {
-            accum[g].count     = 0;
-            accum[g].sum_int   = 0;
-            accum[g].sum_float = 0.0f;
-            accum[g].min_int   = static_cast<long>(INT64_MAX_VAL);
-            accum[g].max_int   = static_cast<long>(INT64_MIN_VAL);
-            accum[g].min_float = FLOAT_MAX_VAL;
-            accum[g].max_float = FLOAT_MIN_VAL;
+            accum[g].count = 0;
+            for (uint a = 0; a < MAX_AGGS; a++) {
+                accum[g].sum_int[a]   = 0;
+                accum[g].sum_float[a] = 0.0f;
+                accum[g].min_int[a]   = static_cast<long>(INT64_MAX_VAL);
+                accum[g].max_int[a]   = static_cast<long>(INT64_MIN_VAL);
+                accum[g].min_float[a] = FLOAT_MAX_VAL;
+                accum[g].max_float[a] = FLOAT_MIN_VAL;
+            }
             accum[g].group_key = 0;
             accum[g].valid     = 0;
         }
@@ -488,66 +500,109 @@ kernel void fused_query(
         }
     }
 
-    // ---- SIMD reduction within each simdgroup ----
-    long  simd_count = fused_simd_sum_int64(local_count, simd_lane);
-    uint  simd_bucket = simd_broadcast_first(bucket);
+    // ---- Merge per-thread values into threadgroup accumulators ----
+    //
+    // Two strategies:
+    // (A) No GROUP BY: all threads share bucket 0. Use simd reduction for efficiency,
+    //     then serialize simdgroup merge (8 iterations).
+    // (B) GROUP BY: threads may be in different buckets within the same simdgroup.
+    //     Simd reduction would incorrectly merge across groups. Instead, serialize
+    //     per-thread writes into accum[bucket] (256 iterations with barriers every 32).
 
-    long  simd_sum_int_arr[MAX_AGGS];
-    float simd_sum_float_arr[MAX_AGGS];
-    long  simd_min_int_arr[MAX_AGGS];
-    long  simd_max_int_arr[MAX_AGGS];
-    float simd_min_float_arr[MAX_AGGS];
-    float simd_max_float_arr[MAX_AGGS];
+    if (!HAS_GROUP_BY) {
+        // --- Strategy A: simd reduction for single-bucket case ---
+        long  simd_count = fused_simd_sum_int64(local_count, simd_lane);
 
-    for (uint a = 0; a < MAX_AGGS; a++) {
-        simd_sum_int_arr[a]   = fused_simd_sum_int64(local_sum_int[a], simd_lane);
-        simd_sum_float_arr[a] = simd_sum(local_sum_float[a]);
-        simd_min_int_arr[a]   = fused_simd_min_int64(local_min_int[a], simd_lane);
-        simd_max_int_arr[a]   = fused_simd_max_int64(local_max_int[a], simd_lane);
-        simd_min_float_arr[a] = simd_min(local_min_float[a]);
-        simd_max_float_arr[a] = simd_max(local_max_float[a]);
-    }
+        long  simd_sum_int_arr[MAX_AGGS];
+        float simd_sum_float_arr[MAX_AGGS];
+        long  simd_min_int_arr[MAX_AGGS];
+        long  simd_max_int_arr[MAX_AGGS];
+        float simd_min_float_arr[MAX_AGGS];
+        float simd_max_float_arr[MAX_AGGS];
 
-    // ---- Merge simdgroup results into threadgroup accumulators ----
-    // Lane 0 of each simdgroup writes to the threadgroup accumulators.
-    // Serialize access by iterating over simdgroup indices with barriers
-    // between each to prevent read-modify-write races on threadgroup memory.
+        for (uint a = 0; a < MAX_AGGS; a++) {
+            simd_sum_int_arr[a]   = fused_simd_sum_int64(local_sum_int[a], simd_lane);
+            simd_sum_float_arr[a] = simd_sum(local_sum_float[a]);
+            simd_min_int_arr[a]   = fused_simd_min_int64(local_min_int[a], simd_lane);
+            simd_max_int_arr[a]   = fused_simd_max_int64(local_max_int[a], simd_lane);
+            simd_min_float_arr[a] = simd_min(local_min_float[a]);
+            simd_max_float_arr[a] = simd_max(local_max_float[a]);
+        }
 
-    uint num_simdgroups = (THREADGROUP_SIZE + 31) / 32;  // 256/32 = 8
+        uint num_simdgroups = (THREADGROUP_SIZE + 31) / 32;
 
-    for (uint sg = 0; sg < num_simdgroups; sg++) {
-        if (simd_id == sg && simd_lane == 0 && simd_count > 0) {
-            uint b = simd_bucket;
+        for (uint sg = 0; sg < num_simdgroups; sg++) {
+            if (simd_id == sg && simd_lane == 0 && simd_count > 0) {
+                accum[0].count   += simd_count;
+                accum[0].valid    = 1;
 
-            accum[b].count   += simd_count;
-            accum[b].valid    = 1;
+                for (uint a = 0; a < AGG_COUNT; a++) {
+                    uint agg_func = params->aggs[a].agg_func;
 
-            for (uint a = 0; a < AGG_COUNT; a++) {
-                uint agg_func = params->aggs[a].agg_func;
-
-                if (agg_func == AGG_FUNC_COUNT) {
-                    accum[b].sum_int += simd_sum_int_arr[a];
-                } else if (agg_func == AGG_FUNC_SUM || agg_func == AGG_FUNC_AVG) {
-                    accum[b].sum_int   += simd_sum_int_arr[a];
-                    accum[b].sum_float += simd_sum_float_arr[a];
-                } else if (agg_func == AGG_FUNC_MIN) {
-                    if (simd_min_int_arr[a] < accum[b].min_int) {
-                        accum[b].min_int = simd_min_int_arr[a];
-                    }
-                    if (simd_min_float_arr[a] < accum[b].min_float) {
-                        accum[b].min_float = simd_min_float_arr[a];
-                    }
-                } else if (agg_func == AGG_FUNC_MAX) {
-                    if (simd_max_int_arr[a] > accum[b].max_int) {
-                        accum[b].max_int = simd_max_int_arr[a];
-                    }
-                    if (simd_max_float_arr[a] > accum[b].max_float) {
-                        accum[b].max_float = simd_max_float_arr[a];
+                    if (agg_func == AGG_FUNC_COUNT) {
+                        accum[0].sum_int[a] += simd_sum_int_arr[a];
+                    } else if (agg_func == AGG_FUNC_SUM || agg_func == AGG_FUNC_AVG) {
+                        accum[0].sum_int[a]   += simd_sum_int_arr[a];
+                        accum[0].sum_float[a] += simd_sum_float_arr[a];
+                    } else if (agg_func == AGG_FUNC_MIN) {
+                        if (simd_min_int_arr[a] < accum[0].min_int[a]) {
+                            accum[0].min_int[a] = simd_min_int_arr[a];
+                        }
+                        if (simd_min_float_arr[a] < accum[0].min_float[a]) {
+                            accum[0].min_float[a] = simd_min_float_arr[a];
+                        }
+                    } else if (agg_func == AGG_FUNC_MAX) {
+                        if (simd_max_int_arr[a] > accum[0].max_int[a]) {
+                            accum[0].max_int[a] = simd_max_int_arr[a];
+                        }
+                        if (simd_max_float_arr[a] > accum[0].max_float[a]) {
+                            accum[0].max_float[a] = simd_max_float_arr[a];
+                        }
                     }
                 }
             }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    } else {
+        // --- Strategy B: per-thread serial accumulation for GROUP BY ---
+        // Threads in the same simdgroup execute in lockstep and may have different
+        // buckets. We serialize all 256 threads one at a time using lid index.
+        // Each iteration, exactly one thread writes to its bucket.
+
+        for (uint t = 0; t < THREADGROUP_SIZE; t++) {
+            if (lid == t && local_count > 0) {
+                uint b = bucket;
+
+                accum[b].count   += 1;
+                accum[b].valid    = 1;
+
+                for (uint a = 0; a < AGG_COUNT; a++) {
+                    uint agg_func = params->aggs[a].agg_func;
+
+                    if (agg_func == AGG_FUNC_COUNT) {
+                        accum[b].sum_int[a] += local_sum_int[a];
+                    } else if (agg_func == AGG_FUNC_SUM || agg_func == AGG_FUNC_AVG) {
+                        accum[b].sum_int[a]   += local_sum_int[a];
+                        accum[b].sum_float[a] += local_sum_float[a];
+                    } else if (agg_func == AGG_FUNC_MIN) {
+                        if (local_min_int[a] < accum[b].min_int[a]) {
+                            accum[b].min_int[a] = local_min_int[a];
+                        }
+                        if (local_min_float[a] < accum[b].min_float[a]) {
+                            accum[b].min_float[a] = local_min_float[a];
+                        }
+                    } else if (agg_func == AGG_FUNC_MAX) {
+                        if (local_max_int[a] > accum[b].max_int[a]) {
+                            accum[b].max_int[a] = local_max_int[a];
+                        }
+                        if (local_max_float[a] > accum[b].max_float[a]) {
+                            accum[b].max_float[a] = local_max_float[a];
+                        }
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
     }
 
     // ---- Phase 4: GLOBAL REDUCTION (cross-threadgroup merge via device atomics) ----
@@ -566,53 +621,37 @@ kernel void fused_query(
                 uint agg_func = params->aggs[a].agg_func;
                 uint agg_type = params->aggs[a].column_type;
 
-                // Compute byte offsets into the agg_results array
-                // agg_results is [MAX_GROUP_SLOTS][MAX_AGGS] = [256][5] of AggResult (16 bytes each)
-                // Access: output->agg_results[g][a]
-
-                // Use pointer arithmetic for atomic access to AggResult fields
-                // AggResult = { long value_int(8), float value_float(4), uint count(4) } = 16 bytes
-                // Base offset of agg_results[g][a]:
-                //   output_base + offsetof(OutputBuffer, agg_results) + (g * MAX_AGGS + a) * sizeof(AggResult)
-                // offsetof(OutputBuffer, agg_results) = 2080
-                // sizeof(AggResult) = 16
                 uint agg_result_offset = 2080 + (g * MAX_AGGS + a) * 16;
 
                 device char* out_base = (device char*)output;
 
-                // AggResult.value_int at offset 0 within AggResult (8 bytes = 2 atomic_uint)
                 device atomic_uint* val_int_lo = (device atomic_uint*)(out_base + agg_result_offset);
                 device atomic_uint* val_int_hi = (device atomic_uint*)(out_base + agg_result_offset + 4);
-
-                // AggResult.value_float at offset 8 within AggResult
                 device atomic_uint* val_float = (device atomic_uint*)(out_base + agg_result_offset + 8);
-
-                // AggResult.count at offset 12 within AggResult
                 device atomic_uint* val_count = (device atomic_uint*)(out_base + agg_result_offset + 12);
 
                 // Merge count (every aggregate tracks contributing row count)
                 atomic_fetch_add_explicit(val_count, static_cast<uint>(accum[g].count), memory_order_relaxed);
 
                 if (agg_func == AGG_FUNC_COUNT) {
-                    // COUNT: accumulate count into value_int
-                    atomic_add_int64(val_int_lo, val_int_hi, accum[g].count);
+                    atomic_add_int64(val_int_lo, val_int_hi, accum[g].sum_int[a]);
                 } else if (agg_func == AGG_FUNC_SUM || agg_func == AGG_FUNC_AVG) {
                     if (agg_type == COLUMN_TYPE_INT64) {
-                        atomic_add_int64(val_int_lo, val_int_hi, accum[g].sum_int);
+                        atomic_add_int64(val_int_lo, val_int_hi, accum[g].sum_int[a]);
                     } else {
-                        atomic_add_float(val_float, accum[g].sum_float);
+                        atomic_add_float(val_float, accum[g].sum_float[a]);
                     }
                 } else if (agg_func == AGG_FUNC_MIN) {
                     if (agg_type == COLUMN_TYPE_INT64) {
-                        atomic_min_int64(val_int_lo, val_int_hi, accum[g].min_int);
+                        atomic_min_int64(val_int_lo, val_int_hi, accum[g].min_int[a]);
                     } else {
-                        atomic_min_float(val_float, accum[g].min_float);
+                        atomic_min_float(val_float, accum[g].min_float[a]);
                     }
                 } else if (agg_func == AGG_FUNC_MAX) {
                     if (agg_type == COLUMN_TYPE_INT64) {
-                        atomic_max_int64(val_int_lo, val_int_hi, accum[g].max_int);
+                        atomic_max_int64(val_int_lo, val_int_hi, accum[g].max_int[a]);
                     } else {
-                        atomic_max_float(val_float, accum[g].max_float);
+                        atomic_max_float(val_float, accum[g].max_float[a]);
                     }
                 }
             }

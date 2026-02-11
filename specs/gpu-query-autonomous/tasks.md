@@ -95,7 +95,7 @@ Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (bef
   - _Requirements: FR-3_
   - _Design: Component 3_
 
-- [ ] 2.4 Test fused kernel with compound filters
+- [x] 2.4 Test fused kernel with compound filters
   - **Do**: Add integration tests for fused kernel with various query patterns: (1) COUNT(*) no filter, (2) SUM(amount), (3) MIN/MAX, (4) AVG, (5) single filter GT, (6) compound AND filter (2 predicates), (7) GROUP BY without filter, (8) compound filter + GROUP BY + multi-agg (headline query). For each test, compare fused kernel result against known-correct values computed on CPU. Use deterministic test data (amount = (i*7+13)%1000, region = i%5).
   - **Files**: `gpu-query/tests/autonomous_integration.rs` (new file)
   - **Done when**: All 8 query patterns return correct results via one-shot fused dispatch
