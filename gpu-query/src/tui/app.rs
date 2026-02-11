@@ -207,6 +207,12 @@ pub struct AppState {
 
     /// Cached physical plan for current SQL (avoids re-planning on each tick).
     pub cached_plan: Option<PhysicalPlan>,
+
+    /// Whether the last completed result came from the autonomous engine.
+    pub last_result_autonomous: bool,
+
+    /// Fallback reason when the last query used the standard path.
+    pub last_fallback_reason: Option<String>,
 }
 
 impl AppState {
@@ -245,6 +251,8 @@ impl AppState {
             sql_validity: SqlValidity::Empty,
             query_compatibility: QueryCompatibility::Unknown,
             cached_plan: None,
+            last_result_autonomous: false,
+            last_fallback_reason: None,
         }
     }
 
@@ -343,8 +351,14 @@ pub fn update_query_compatibility(app: &mut AppState) {
             let result =
                 crate::gpu::autonomous::executor::check_autonomous_compatibility(plan);
             app.query_compatibility = match result {
-                CompatibilityResult::Autonomous => QueryCompatibility::Autonomous,
-                CompatibilityResult::Fallback(_) => QueryCompatibility::Fallback,
+                CompatibilityResult::Autonomous => {
+                    app.last_fallback_reason = None;
+                    QueryCompatibility::Autonomous
+                }
+                CompatibilityResult::Fallback(reason) => {
+                    app.last_fallback_reason = Some(reason);
+                    QueryCompatibility::Fallback
+                }
             };
         }
         None => {

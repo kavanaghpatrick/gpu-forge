@@ -263,7 +263,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - **Commit**: `feat(autonomous): add engine status badge to GPU dashboard`
   - _Requirements: UX-3, UX-10_
 
-- [ ] 5.6 Update results panel for autonomous queries
+- [x] 5.6 Update results panel for autonomous queries
   - **Do**: In `src/tui/results.rs`, modify `build_performance_line()`: (1) Add `[auto]` tag to results title when result came from autonomous path. (2) Show microsecond precision for sub-1ms queries ("0.42ms (420us)"). (3) When falling back, show reason: "36.2ms (ORDER BY requires standard path)". (4) Add `| autonomous` or `| standard path` suffix. Follow existing performance line pattern.
   - **Files**: `gpu-query/src/tui/results.rs`
   - **Done when**: Results panel correctly labels autonomous vs standard results

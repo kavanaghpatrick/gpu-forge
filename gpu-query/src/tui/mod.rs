@@ -167,6 +167,7 @@ fn poll_autonomous_result(app: &mut AppState) {
     let latency_us = output.latency_ns / 1000; // ns -> us
     app.last_autonomous_us = Some(latency_us);
     app.last_exec_us = Some(latency_us);
+    app.last_result_autonomous = true;
 
     // Update autonomous stats
     app.autonomous_stats.total_queries += 1;

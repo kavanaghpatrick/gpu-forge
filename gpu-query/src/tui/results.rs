@@ -340,6 +340,8 @@ pub fn render_results_table(f: &mut Frame, area: Rect, app: &AppState) {
                     theme,
                     border_style,
                     is_focused,
+                    app.last_result_autonomous,
+                    app.last_fallback_reason.as_deref(),
                 );
             } else {
                 render_placeholder(f, area, theme, border_style, "(no results)");
@@ -409,9 +411,18 @@ fn render_data_table(
     theme: &Theme,
     border_style: Style,
     is_focused: bool,
+    is_autonomous: bool,
+    fallback_reason: Option<&str>,
 ) {
-    // Block with title
-    let title = format!(" Results ({} rows) ", format_i64(result.row_count as i64));
+    // Block with title -- add [auto] tag for autonomous results
+    let title = if is_autonomous {
+        format!(
+            " Results ({} rows) [auto] ",
+            format_i64(result.row_count as i64)
+        )
+    } else {
+        format!(" Results ({} rows) ", format_i64(result.row_count as i64))
+    };
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -524,7 +535,7 @@ fn render_data_table(
             let utilization = m.scan_throughput_gbps as f32 / 100.0; // rough M4 estimate
             metrics::build_metrics_performance_line(m, utilization.clamp(0.0, 1.0))
         } else {
-            build_performance_line(result, exec_time_us)
+            build_performance_line(result, exec_time_us, is_autonomous, fallback_reason)
         };
         let perf_line = Line::from(Span::styled(perf_text, Style::default().fg(theme.muted)));
         let perf_area = Rect {
@@ -618,20 +629,73 @@ fn detect_numeric_columns(result: &QueryResult) -> Vec<bool> {
 }
 
 /// Build the performance summary line.
-fn build_performance_line(result: &QueryResult, exec_time_us: Option<u64>) -> String {
+///
+/// When `is_autonomous` is true, adds microsecond precision for sub-1ms queries
+/// and appends `| autonomous` suffix. When false, appends `| standard path`
+/// and optionally shows the fallback reason.
+fn build_performance_line(
+    result: &QueryResult,
+    exec_time_us: Option<u64>,
+    is_autonomous: bool,
+    fallback_reason: Option<&str>,
+) -> String {
     let row_count = format_i64(result.row_count as i64);
+    let path_suffix = if is_autonomous {
+        " | autonomous".to_string()
+    } else if let Some(reason) = fallback_reason {
+        format!(" | standard path ({})", reason)
+    } else {
+        " | standard path".to_string()
+    };
+
     match exec_time_us {
         Some(us) if us >= 1_000_000 => {
-            format!(" {} rows | {:.2}s", row_count, us as f64 / 1_000_000.0,)
+            format!(
+                " {} rows | {:.2}s{}",
+                row_count,
+                us as f64 / 1_000_000.0,
+                path_suffix,
+            )
         }
         Some(us) if us >= 1_000 => {
-            format!(" {} rows | {:.1}ms", row_count, us as f64 / 1_000.0,)
+            if !is_autonomous {
+                format!(
+                    " {} rows | {:.1}ms{}",
+                    row_count,
+                    us as f64 / 1_000.0,
+                    path_suffix,
+                )
+            } else {
+                // Autonomous but >=1ms: show ms with fallback note
+                format!(
+                    " {} rows | {:.1}ms{}",
+                    row_count,
+                    us as f64 / 1_000.0,
+                    path_suffix,
+                )
+            }
+        }
+        Some(us) if is_autonomous => {
+            // Sub-1ms autonomous: show both ms and us precision
+            let ms = us as f64 / 1_000.0;
+            format!(
+                " {} rows | {:.2}ms ({}us){}",
+                row_count,
+                ms,
+                format_i64(us as i64),
+                path_suffix,
+            )
         }
         Some(us) => {
-            format!(" {} rows | {}us", row_count, format_i64(us as i64))
+            format!(
+                " {} rows | {}us{}",
+                row_count,
+                format_i64(us as i64),
+                path_suffix,
+            )
         }
         None => {
-            format!(" {} rows", row_count)
+            format!(" {} rows{}", row_count, path_suffix)
         }
     }
 }
@@ -884,8 +948,9 @@ mod tests {
             rows: vec![vec!["42".into()]],
             row_count: 42,
         };
-        let line = build_performance_line(&result, None);
+        let line = build_performance_line(&result, None, false, None);
         assert!(line.contains("42 rows"));
+        assert!(line.contains("standard path"));
     }
 
     #[test]
@@ -895,9 +960,10 @@ mod tests {
             rows: vec![vec!["1000".into()]],
             row_count: 1000,
         };
-        let line = build_performance_line(&result, Some(500));
+        let line = build_performance_line(&result, Some(500), false, None);
         assert!(line.contains("1,000 rows"));
         assert!(line.contains("500us"));
+        assert!(line.contains("standard path"));
     }
 
     #[test]
@@ -907,9 +973,10 @@ mod tests {
             rows: vec![vec!["1000".into()]],
             row_count: 1000,
         };
-        let line = build_performance_line(&result, Some(5_500));
+        let line = build_performance_line(&result, Some(5_500), false, None);
         assert!(line.contains("1,000 rows"));
         assert!(line.contains("5.5ms"));
+        assert!(line.contains("standard path"));
     }
 
     #[test]
@@ -919,9 +986,58 @@ mod tests {
             rows: vec![vec!["1000000".into()]],
             row_count: 1_000_000,
         };
-        let line = build_performance_line(&result, Some(2_500_000));
+        let line = build_performance_line(&result, Some(2_500_000), false, None);
         assert!(line.contains("1,000,000 rows"));
         assert!(line.contains("2.50s"));
+        assert!(line.contains("standard path"));
+    }
+
+    #[test]
+    fn test_build_performance_line_autonomous_sub_1ms() {
+        let result = QueryResult {
+            columns: vec!["count".into()],
+            rows: vec![vec!["1000".into()]],
+            row_count: 1000,
+        };
+        let line = build_performance_line(&result, Some(420), true, None);
+        assert!(line.contains("0.42ms"), "line was: {}", line);
+        assert!(line.contains("(420us)"), "line was: {}", line);
+        assert!(line.contains("autonomous"), "line was: {}", line);
+        assert!(!line.contains("standard"), "line was: {}", line);
+    }
+
+    #[test]
+    fn test_build_performance_line_autonomous_above_1ms() {
+        let result = QueryResult {
+            columns: vec!["count".into()],
+            rows: vec![vec!["1000".into()]],
+            row_count: 1000,
+        };
+        let line = build_performance_line(&result, Some(3_200), true, None);
+        assert!(line.contains("3.2ms"), "line was: {}", line);
+        assert!(line.contains("autonomous"), "line was: {}", line);
+    }
+
+    #[test]
+    fn test_build_performance_line_fallback_with_reason() {
+        let result = QueryResult {
+            columns: vec!["count".into()],
+            rows: vec![vec!["1000".into()]],
+            row_count: 1000,
+        };
+        let line = build_performance_line(
+            &result,
+            Some(36_200),
+            false,
+            Some("ORDER BY requires standard path"),
+        );
+        assert!(line.contains("36.2ms"), "line was: {}", line);
+        assert!(
+            line.contains("ORDER BY requires standard path"),
+            "line was: {}",
+            line
+        );
+        assert!(line.contains("standard path"), "line was: {}", line);
     }
 
     #[test]
@@ -1000,7 +1116,7 @@ mod tests {
             rows: vec![vec!["500000".into()]],
             row_count: 500_000,
         };
-        let line = build_performance_line(&result, Some(3_500));
+        let line = build_performance_line(&result, Some(3_500), false, None);
         assert!(line.contains("500,000 rows"), "line was: {}", line);
         assert!(line.contains("3.5ms"), "line was: {}", line);
     }

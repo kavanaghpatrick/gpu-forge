@@ -401,6 +401,7 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     // Update timing
     let exec_us = elapsed.as_micros() as u64;
     app.last_exec_us = Some(exec_us);
+    app.last_result_autonomous = false;
 
     // Store query in history
     if !sql.trim().is_empty() {
