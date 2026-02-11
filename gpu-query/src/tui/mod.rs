@@ -23,8 +23,14 @@ use app::AppState;
 use event::{handle_key, poll_event, AppEvent};
 
 use crossterm::{
+    event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
@@ -38,6 +44,17 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+
+    // Enable Kitty keyboard protocol for terminals that support it.
+    // This makes Ctrl+Enter work properly in kitty, WezTerm, ghostty, foot.
+    let has_keyboard_enhancement = supports_keyboard_enhancement().unwrap_or(false);
+    if has_keyboard_enhancement {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -62,8 +79,13 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
         app.catalog_state.load(tree_entries, dir_name);
     }
     app.status_message = format!(
-        "gpu-query dashboard | {} tables loaded | Type SQL + Ctrl+Enter to execute",
-        app.tables.len()
+        "gpu-query dashboard | {} tables loaded | Type SQL + F5 to execute{}",
+        app.tables.len(),
+        if has_keyboard_enhancement {
+            " (Ctrl+Enter also works)"
+        } else {
+            ""
+        }
     );
 
     // Main event loop (~60fps)
@@ -94,6 +116,9 @@ pub fn run_dashboard(data_dir: PathBuf, theme_name: &str) -> io::Result<()> {
     }
 
     // Restore terminal
+    if has_keyboard_enhancement {
+        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)?;
+    }
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

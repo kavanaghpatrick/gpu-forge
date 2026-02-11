@@ -6,7 +6,7 @@
 //! Key bindings:
 //! - Tab: cycle focus panel
 //! - Ctrl+1/2/3: direct panel focus (catalog/editor/results)
-//! - Ctrl+Enter: execute query from editor
+//! - F5 / Ctrl+Enter: execute query from editor
 //! - Esc: return to editor
 //! - q/Ctrl+C/Ctrl+Q: quit
 //! - Editor panel: full text editing (arrows, insert, backspace, etc.)
@@ -63,8 +63,10 @@ pub fn handle_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
 
     // Global bindings (work regardless of focused panel)
 
-    // Ctrl+Enter: execute query or dot command
-    if has_ctrl && key.code == KeyCode::Enter {
+    // Ctrl+Enter or F5: execute query or dot command
+    // NOTE: Ctrl+Enter only works in terminals with Kitty keyboard protocol support
+    // (kitty, WezTerm, ghostty, foot). F5 works universally as a fallback.
+    if (has_ctrl && key.code == KeyCode::Enter) || key.code == KeyCode::F(5) {
         let text = app.editor_state.text();
         if is_dot_command(&text) {
             execute_dot_command(app);
@@ -503,6 +505,22 @@ mod tests {
         let enter = make_key(KeyCode::Enter, KeyModifiers::empty());
         assert!(handle_key(&enter, &mut app));
         assert!(app.catalog_state.is_expanded(0));
+    }
+
+    #[test]
+    fn test_f5_executes_query() {
+        // F5 is a universal fallback for execute (Ctrl+Enter doesn't work in most terminals)
+        let mut app = super::super::app::AppState::new(PathBuf::from("/tmp"), "thermal");
+        app.editor_state.insert_char('.');
+        app.editor_state.insert_char('q');
+        app.editor_state.insert_char('u');
+        app.editor_state.insert_char('i');
+        app.editor_state.insert_char('t');
+
+        let f5 = make_key(KeyCode::F(5), KeyModifiers::empty());
+        assert!(handle_key(&f5, &mut app));
+        // .quit is a dot command that sets running = false
+        assert!(!app.running);
     }
 
     #[test]
