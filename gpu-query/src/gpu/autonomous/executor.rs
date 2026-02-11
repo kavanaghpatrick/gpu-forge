@@ -7,6 +7,7 @@
 //!   Creates a continuous chain of 16ms time-slice command buffers where each completion
 //!   handler immediately dispatches the next. Idle detection stops the chain after 500ms
 //!   of no queries.
+//! - `AutonomousExecutor`: unified executor combining all autonomous components.
 
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -24,9 +25,13 @@ use objc2_metal::{
 };
 
 use super::jit::JitCompiler;
-use super::loader::{ColumnInfo, ResidentTable};
-use super::types::{OutputBuffer, QueryParamsSlot};
+use super::loader::{BinaryColumnarLoader, ColumnInfo, ResidentTable};
+use super::types::{AggSpec, FilterSpec, OutputBuffer, QueryParamsSlot};
+use super::work_queue::WorkQueue;
 use crate::sql::physical_plan::PhysicalPlan;
+use crate::sql::types::{AggFunc, CompareOp, Value};
+use crate::storage::columnar::ColumnarBatch;
+use crate::storage::schema::RuntimeSchema;
 
 /// Cache of compiled PSOs for the fused query kernel, keyed by function constant triple.
 ///
@@ -744,6 +749,429 @@ impl Drop for RedispatchChain {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AutonomousExecutor: unified struct combining all autonomous components
+// ---------------------------------------------------------------------------
+
+/// Statistics for the autonomous executor.
+#[derive(Debug, Clone, Default)]
+pub struct AutonomousStats {
+    pub total_queries: u64,
+    pub jit_cache_hits: u64,
+    pub jit_cache_misses: u64,
+    pub avg_latency_us: f64,
+}
+
+/// Unified autonomous query executor combining all components:
+/// JIT compiler, work queue, re-dispatch chain, resident tables.
+///
+/// Lifecycle: `new()` -> `load_table()` -> `submit_query()` -> `poll_ready()`
+/// -> `read_result()` -> `shutdown()`.
+pub struct AutonomousExecutor {
+    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    work_queue: WorkQueue,
+    /// Output buffer (22560B, StorageModeShared) for unified-memory readback.
+    output_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Params buffer (512B, StorageModeShared) used by the re-dispatch chain.
+    params_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    jit_compiler: JitCompiler,
+    resident_tables: HashMap<String, ResidentTable>,
+    redispatch_chain: Option<RedispatchChain>,
+    state: Arc<AtomicU8>,
+    stats: AutonomousStats,
+    /// Last query sequence_id for tracking which result we're waiting for.
+    last_sequence_id: u32,
+}
+
+impl AutonomousExecutor {
+    /// Create a new autonomous executor with a separate command queue.
+    pub fn new(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Self {
+        let command_queue = device
+            .newCommandQueue()
+            .expect("Failed to create autonomous command queue");
+
+        let work_queue = WorkQueue::new(&device);
+
+        let options = MTLResourceOptions::StorageModeShared;
+
+        // Allocate output buffer (22560 bytes)
+        let output_size = std::mem::size_of::<OutputBuffer>();
+        let output_buffer = device
+            .newBufferWithLength_options(output_size, options)
+            .expect("Failed to allocate output Metal buffer");
+        // Zero-init
+        unsafe {
+            let dst = output_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(dst, 0, output_size);
+        }
+
+        // Allocate params buffer (512 bytes)
+        let params_size = std::mem::size_of::<QueryParamsSlot>();
+        let params_buffer = device
+            .newBufferWithLength_options(params_size, options)
+            .expect("Failed to allocate params Metal buffer");
+        unsafe {
+            let dst = params_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(dst, 0, params_size);
+        }
+
+        let jit_compiler = JitCompiler::new(device.clone());
+
+        Self {
+            device,
+            command_queue,
+            work_queue,
+            output_buffer,
+            params_buffer,
+            jit_compiler,
+            resident_tables: HashMap::new(),
+            redispatch_chain: None,
+            state: Arc::new(AtomicU8::new(EngineState::Idle as u8)),
+            stats: AutonomousStats::default(),
+            last_sequence_id: 0,
+        }
+    }
+
+    /// Load a table into GPU-resident memory.
+    pub fn load_table(
+        &mut self,
+        name: &str,
+        schema: &RuntimeSchema,
+        batch: &ColumnarBatch,
+    ) -> Result<(), String> {
+        let resident_table =
+            BinaryColumnarLoader::load_table(&self.device, name, schema, batch, None)?;
+        self.resident_tables.insert(name.to_string(), resident_table);
+        Ok(())
+    }
+
+    /// Submit a query for autonomous execution.
+    ///
+    /// 1. JIT compile (cache lookup or compile)
+    /// 2. Build QueryParamsSlot from PhysicalPlan
+    /// 3. Write params to the shared params buffer
+    /// 4. Zero-init output buffer for fresh results
+    /// 5. Initialize MIN/MAX sentinels
+    /// 6. Dispatch a single command buffer (non-blocking, no waitUntilCompleted)
+    /// 7. Return query sequence_id
+    ///
+    /// The dispatch is a single command buffer committed without waitUntilCompleted.
+    /// The GPU kernel sets output_buffer.ready_flag = 1 when done. The caller polls
+    /// via `poll_ready()` and reads via `read_result()`.
+    pub fn submit_query(
+        &mut self,
+        plan: &PhysicalPlan,
+        schema: &[ColumnInfo],
+        table_name: &str,
+    ) -> Result<u32, String> {
+        let table = self
+            .resident_tables
+            .get(table_name)
+            .ok_or_else(|| format!("Table '{}' not loaded", table_name))?;
+
+        // 1. JIT compile
+        let jit_cache_len_before = self.jit_compiler.cache_len();
+        let compiled = self.jit_compiler.compile(plan, schema)?;
+        let pso = compiled.pso.clone();
+        let jit_cache_len_after = self.jit_compiler.cache_len();
+
+        if jit_cache_len_after > jit_cache_len_before {
+            self.stats.jit_cache_misses += 1;
+        } else {
+            self.stats.jit_cache_hits += 1;
+        }
+
+        // 2. Build QueryParamsSlot from PhysicalPlan
+        let params = build_query_params(plan, schema, table.row_count)?;
+
+        // 3. Write params to the work queue (for tracking) and to the shared params buffer
+        self.work_queue.write_params(&params);
+        let sequence_id = self.work_queue.read_latest_sequence_id();
+        self.last_sequence_id = sequence_id;
+
+        // Write params with correct sequence_id to the params buffer for GPU
+        unsafe {
+            let dst = self.params_buffer.contents().as_ptr() as *mut QueryParamsSlot;
+            let mut params_with_seq = params;
+            params_with_seq.sequence_id = sequence_id;
+            std::ptr::copy_nonoverlapping(&params_with_seq as *const QueryParamsSlot, dst, 1);
+        }
+
+        // 4. Zero-init output buffer
+        let output_size = std::mem::size_of::<OutputBuffer>();
+        unsafe {
+            let dst = self.output_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(dst, 0, output_size);
+        }
+
+        // 5. Initialize MIN/MAX sentinel values
+        unsafe {
+            let out_ptr = self.output_buffer.contents().as_ptr() as *mut OutputBuffer;
+            let out = &mut *out_ptr;
+            for a in 0..params.agg_count as usize {
+                let agg_func = params.aggs[a].agg_func;
+                let is_min = agg_func == 3; // AGG_FUNC_MIN
+                let is_max = agg_func == 4; // AGG_FUNC_MAX
+                if is_min || is_max {
+                    for g in 0..super::types::MAX_GROUPS {
+                        if is_min {
+                            out.agg_results[g][a].value_int = i64::MAX;
+                            out.agg_results[g][a].value_float = f32::MAX;
+                        } else {
+                            out.agg_results[g][a].value_int = i64::MIN;
+                            out.agg_results[g][a].value_float = f32::MIN;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Dispatch single command buffer (non-blocking)
+        // This is the autonomous path: no waitUntilCompleted, no per-query command buffer
+        // creation from the CPU hot path. The GPU kernel sets ready_flag when done.
+        let cmd_buf = self
+            .command_queue
+            .commandBuffer()
+            .ok_or_else(|| "Failed to create command buffer".to_string())?;
+
+        {
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .ok_or_else(|| "Failed to create compute command encoder".to_string())?;
+
+            encoder.setComputePipelineState(&pso);
+
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&*table.data_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&*table.column_meta_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&*self.output_buffer), 0, 3);
+            }
+
+            let row_count = table.row_count as usize;
+            let threads_per_tg = 256usize;
+            let tg_count = if row_count == 0 {
+                1
+            } else {
+                (row_count + threads_per_tg - 1) / threads_per_tg
+            };
+
+            let grid = MTLSize {
+                width: tg_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg = MTLSize {
+                width: threads_per_tg,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+            encoder.endEncoding();
+        }
+
+        // Non-blocking commit: GPU executes asynchronously, sets ready_flag when done
+        cmd_buf.commit();
+
+        self.state
+            .store(EngineState::Active as u8, Ordering::Release);
+        self.stats.total_queries += 1;
+
+        Ok(sequence_id)
+    }
+
+    /// Non-blocking poll: check if the output buffer has a result ready.
+    ///
+    /// Reads the ready_flag from unified memory via pointer (no GPU readback needed).
+    pub fn poll_ready(&self) -> bool {
+        unsafe {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let out_ptr = self.output_buffer.contents().as_ptr() as *const OutputBuffer;
+            let ready = std::ptr::read_volatile(&(*out_ptr).ready_flag);
+            ready == 1
+        }
+    }
+
+    /// Read the result from the output buffer (unified memory, no readback).
+    ///
+    /// Resets the ready_flag to 0 after reading.
+    pub fn read_result(&self) -> OutputBuffer {
+        let result = unsafe {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let src = self.output_buffer.contents().as_ptr() as *const OutputBuffer;
+            let r = std::ptr::read(src);
+            // Reset ready_flag
+            let flag_ptr = self.output_buffer.contents().as_ptr() as *mut u32;
+            std::ptr::write_volatile(flag_ptr, 0);
+            r
+        };
+        result
+    }
+
+    /// Shutdown the autonomous executor: stops re-dispatch chain, sets state to Shutdown.
+    pub fn shutdown(&mut self) {
+        self.state
+            .store(EngineState::Shutdown as u8, Ordering::Release);
+        if let Some(chain) = self.redispatch_chain.take() {
+            chain.shutdown();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Get the current engine state.
+    pub fn engine_state(&self) -> EngineState {
+        EngineState::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    /// Get a clone of the current stats.
+    pub fn stats(&self) -> AutonomousStats {
+        self.stats.clone()
+    }
+
+    /// Get the last submitted query sequence_id.
+    pub fn last_sequence_id(&self) -> u32 {
+        self.last_sequence_id
+    }
+}
+
+/// Extract filter predicates, aggregates, and group_by from a PhysicalPlan tree
+/// and build a QueryParamsSlot.
+fn build_query_params(
+    plan: &PhysicalPlan,
+    schema: &[ColumnInfo],
+    row_count: u32,
+) -> Result<QueryParamsSlot, String> {
+    let mut params = QueryParamsSlot::default();
+    params.row_count = row_count;
+
+    // Collect filters, aggs, group_by from plan
+    let mut filters: Vec<(String, CompareOp, Value)> = Vec::new();
+    let mut aggregates: Vec<(AggFunc, String)> = Vec::new();
+    let mut group_by: Vec<String> = Vec::new();
+
+    fn collect_filters(node: &PhysicalPlan, out: &mut Vec<(String, CompareOp, Value)>) {
+        match node {
+            PhysicalPlan::GpuFilter {
+                compare_op,
+                column,
+                value,
+                input,
+            } => {
+                out.push((column.clone(), *compare_op, value.clone()));
+                collect_filters(input, out);
+            }
+            PhysicalPlan::GpuCompoundFilter { left, right, .. } => {
+                collect_filters(left, out);
+                collect_filters(right, out);
+            }
+            _ => {}
+        }
+    }
+
+    match plan {
+        PhysicalPlan::GpuAggregate {
+            functions,
+            group_by: gb,
+            input,
+        } => {
+            aggregates = functions.clone();
+            group_by = gb.clone();
+            collect_filters(input, &mut filters);
+        }
+        _ => {
+            collect_filters(plan, &mut filters);
+        }
+    }
+
+    // Populate filters
+    params.filter_count = filters.len().min(super::types::MAX_FILTERS) as u32;
+    for (i, (col_name, op, value)) in filters.iter().enumerate() {
+        if i >= super::types::MAX_FILTERS {
+            break;
+        }
+        let col_idx = schema
+            .iter()
+            .position(|c| c.name == *col_name)
+            .unwrap_or(0);
+        let col_type = match schema.get(col_idx) {
+            Some(ci) => match ci.data_type {
+                crate::storage::schema::DataType::Int64
+                | crate::storage::schema::DataType::Date => 0, // COLUMN_TYPE_INT64
+                crate::storage::schema::DataType::Float64 => 1, // COLUMN_TYPE_FLOAT32
+                crate::storage::schema::DataType::Varchar => 2, // COLUMN_TYPE_DICT_U32
+                crate::storage::schema::DataType::Bool => 0,
+            },
+            None => 0,
+        };
+
+        params.filters[i] = FilterSpec {
+            column_idx: col_idx as u32,
+            compare_op: *op as u32,
+            column_type: col_type,
+            _pad0: 0,
+            value_int: match value {
+                Value::Int(v) => *v,
+                Value::Float(v) => *v as i64,
+                _ => 0,
+            },
+            value_float_bits: match value {
+                Value::Float(v) => (*v as f32).to_bits(),
+                Value::Int(v) => (*v as f32).to_bits(),
+                _ => 0,
+            },
+            _pad1: 0,
+            has_null_check: 0,
+            _pad2: [0; 3],
+        };
+    }
+
+    // Populate aggregates
+    params.agg_count = aggregates.len().min(super::types::MAX_AGGS) as u32;
+    for (i, (func, col_name)) in aggregates.iter().enumerate() {
+        if i >= super::types::MAX_AGGS {
+            break;
+        }
+        let col_idx = schema
+            .iter()
+            .position(|c| c.name == *col_name)
+            .unwrap_or(0);
+        let col_type = match schema.get(col_idx) {
+            Some(ci) => match ci.data_type {
+                crate::storage::schema::DataType::Int64
+                | crate::storage::schema::DataType::Date => 0,
+                crate::storage::schema::DataType::Float64 => 1,
+                crate::storage::schema::DataType::Varchar => 2,
+                crate::storage::schema::DataType::Bool => 0,
+            },
+            None => 0,
+        };
+
+        params.aggs[i] = AggSpec {
+            agg_func: func.to_gpu_code(),
+            column_idx: col_idx as u32,
+            column_type: col_type,
+            _pad0: 0,
+        };
+    }
+
+    // Populate group_by
+    if !group_by.is_empty() {
+        params.has_group_by = 1;
+        let gb_idx = schema
+            .iter()
+            .position(|c| c.name == group_by[0])
+            .unwrap_or(0);
+        params.group_by_col = gb_idx as u32;
+    }
+
+    // Set query_hash from JIT plan structure hash
+    params.query_hash = super::jit::plan_structure_hash(plan);
+
+    Ok(params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1308,6 +1736,103 @@ mod tests {
             result_after.agg_results[0][0].value_int, 1000,
             "COUNT(*) after idle/wake cycle should be 1000, got {}",
             result_after.agg_results[0][0].value_int
+        );
+    }
+
+    #[test]
+    fn test_full_lifecycle() {
+        // Full lifecycle: new -> load_table -> submit_query -> poll_ready -> read_result -> shutdown
+        //
+        // This is the first test that uses the unified AutonomousExecutor struct,
+        // combining JIT compiler, work queue, re-dispatch chain, and unified memory output.
+
+        let gpu = GpuDevice::new();
+
+        // 1. Create executor
+        let mut executor = AutonomousExecutor::new(gpu.device.clone());
+        assert_eq!(
+            executor.engine_state(),
+            EngineState::Idle,
+            "New executor should start Idle"
+        );
+
+        // 2. Load table: single INT64 column, 1000 rows
+        let schema = make_schema(&[("amount", DataType::Int64)]);
+        let batch = make_test_batch(&gpu.device, &schema, 1000);
+
+        executor
+            .load_table("sales", &schema, &batch)
+            .expect("load_table failed");
+
+        // 3. Build a COUNT(*) query plan
+        let plan = PhysicalPlan::GpuAggregate {
+            functions: vec![(crate::sql::types::AggFunc::Count, "*".to_string())],
+            group_by: vec![],
+            input: Box::new(PhysicalPlan::GpuScan {
+                table: "sales".to_string(),
+                columns: vec!["amount".to_string()],
+            }),
+        };
+
+        let col_schema = vec![ColumnInfo {
+            name: "amount".to_string(),
+            data_type: DataType::Int64,
+        }];
+
+        // 4. Submit query
+        let seq_id = executor
+            .submit_query(&plan, &col_schema, "sales")
+            .expect("submit_query failed");
+
+        assert!(seq_id > 0, "sequence_id should be > 0, got {}", seq_id);
+        assert_eq!(
+            executor.engine_state(),
+            EngineState::Active,
+            "After submit, executor should be Active"
+        );
+        assert_eq!(executor.stats().total_queries, 1);
+
+        // 5. Poll until ready (with timeout)
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(10);
+        while !executor.poll_ready() {
+            if start.elapsed() > timeout {
+                panic!("Timed out waiting for query result (10s)");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // 6. Read result
+        let result = executor.read_result();
+
+        // Verify COUNT(*) == 1000
+        assert_eq!(
+            result.agg_results[0][0].value_int, 1000,
+            "COUNT(*) should be 1000, got {}",
+            result.agg_results[0][0].value_int
+        );
+        assert_eq!(
+            result.result_row_count, 1,
+            "Scalar result should have 1 row, got {}",
+            result.result_row_count
+        );
+        assert_eq!(
+            result.ready_flag, 1,
+            "ready_flag should be 1, got {}",
+            result.ready_flag
+        );
+        assert_eq!(
+            result.error_code, 0,
+            "error_code should be 0, got {}",
+            result.error_code
+        );
+
+        // 7. Shutdown
+        executor.shutdown();
+        assert_eq!(
+            executor.engine_state(),
+            EngineState::Shutdown,
+            "After shutdown, state should be Shutdown"
         );
     }
 }

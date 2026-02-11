@@ -186,7 +186,7 @@ Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is 
   - _Requirements: FR-1_
   - _Design: Component 1_
 
-- [ ] 4.3 Build AutonomousExecutor struct
+- [x] 4.3 Build AutonomousExecutor struct
   - **Do**: Implement full `AutonomousExecutor` struct combining all components: `device`, `command_queue` (separate), `work_queue` (WorkQueue), `output_buffer`, `control_buffer`, `jit_compiler` (JitCompiler), `resident_tables` (HashMap), `state` (AtomicU8 for EngineState), `shared_event`, `stats`. Lifecycle methods: `new()`, `load_table()`, `submit_query()` (JIT lookup + write work queue + wake if idle), `poll_ready()` (atomic load on output_buffer.ready_flag), `read_result()` (read unified memory + reset flag), `shutdown()`.
   - **Files**: `gpu-query/src/gpu/autonomous/executor.rs`
   - **Done when**: Full lifecycle works: new -> load_table -> submit_query -> poll_ready -> read_result -> shutdown
