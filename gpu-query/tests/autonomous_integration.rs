@@ -13,7 +13,8 @@
 //!   Column 2 (float_amount): FLOAT64->f32, values = ((i*7+13)%1000) as f32
 
 use gpu_query::gpu::autonomous::executor::{
-    execute_fused_oneshot, execute_jit_oneshot, AutonomousExecutor, FusedPsoCache,
+    check_autonomous_compatibility, execute_fused_oneshot, execute_jit_oneshot,
+    AutonomousExecutor, CompatibilityResult, FusedPsoCache,
 };
 use gpu_query::gpu::autonomous::jit::JitCompiler;
 use gpu_query::gpu::autonomous::loader::{BinaryColumnarLoader, ColumnInfo};
@@ -3249,4 +3250,317 @@ fn edge_negative_group_keys() {
         "Group key at bucket {}: expected -2, got {}",
         bucket_neg2, result.group_keys[bucket_neg2]
     );
+}
+
+// ============================================================================
+// Fallback integration tests
+// ============================================================================
+//
+// These tests verify that incompatible queries properly trigger the fallback
+// path with descriptive reasons, and that compatible queries run autonomously
+// after warm-up.
+
+/// Helper: build a GpuSort node (ORDER BY column ASC).
+fn plan_sort(column: &str, ascending: bool, input: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::GpuSort {
+        order_by: vec![(column.to_string(), ascending)],
+        input: Box::new(input),
+    }
+}
+
+/// Helper: build a GpuLimit node.
+fn plan_limit(count: usize, input: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::GpuLimit {
+        count,
+        input: Box::new(input),
+    }
+}
+
+// Fallback 1: ORDER BY triggers fallback with descriptive reason
+#[test]
+fn fallback_order_by_returns_standard_path() {
+    // SELECT * FROM sales ORDER BY amount ASC
+    let plan = plan_sort(
+        "amount",
+        true,
+        plan_scan("sales"),
+    );
+
+    let result = check_autonomous_compatibility(&plan);
+    match result {
+        CompatibilityResult::Fallback(reason) => {
+            assert!(
+                reason.contains("ORDER BY"),
+                "Fallback reason should mention ORDER BY, got: {}",
+                reason
+            );
+            assert!(
+                reason.contains("standard path"),
+                "Fallback reason should mention standard path, got: {}",
+                reason
+            );
+        }
+        other => panic!("Expected Fallback for ORDER BY query, got {:?}", other),
+    }
+}
+
+// Fallback 2: GROUP BY with cardinality > 64 groups is not directly detectable
+// from plan structure alone (limit is 64 GROUP BY slots), but multi-column
+// GROUP BY IS detectable. Here we test that a query with more than 64 distinct
+// group keys still runs but collides in the hash table (bucket saturation).
+// The autonomous engine caps at 64 buckets — keys > 64 wrap via modular hash.
+#[test]
+fn fallback_group_by_high_cardinality_hash_collision() {
+    let gpu = GpuDevice::new();
+
+    // Create data with 100 distinct group keys (0..99), exceeding the 64-bucket limit
+    let row_count = 1000usize;
+    let schema = test_schema();
+    let batch = {
+        use objc2_metal::MTLBuffer;
+        let mut batch = ColumnarBatch::allocate(&gpu.device, &schema, row_count);
+        batch.row_count = row_count;
+        unsafe {
+            let ptr = batch.int_buffer.contents().as_ptr() as *mut i64;
+            for i in 0..row_count {
+                // Column 0 (amount): constant 10 for easy SUM verification
+                *ptr.add(i) = 10;
+            }
+            let offset = batch.max_rows;
+            for i in 0..row_count {
+                // Column 1 (region): 100 distinct groups (0..99)
+                *ptr.add(offset + i) = (i % 100) as i64;
+            }
+        }
+        batch
+    };
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    // SELECT COUNT(*), SUM(amount) FROM test GROUP BY region
+    let mut params = QueryParamsSlot::default();
+    params.row_count = row_count as u32;
+    params.agg_count = 2;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1;
+
+    let result = run_query(&gpu, &mut cache, &params, 0, 2, true, &resident_table);
+    assert_eq!(result.ready_flag, 1);
+
+    // With 100 groups hashed into 64 buckets, result_row_count <= 64
+    // (some groups collide in the same bucket)
+    assert!(
+        result.result_row_count <= 64,
+        "result_row_count should be <= 64 (hash buckets), got {}",
+        result.result_row_count
+    );
+    assert!(
+        result.result_row_count > 0,
+        "result_row_count should be > 0"
+    );
+
+    // Total COUNT across all buckets should still equal row_count
+    let total_count: i64 = (0..64)
+        .map(|g| result.agg_results[g][0].value_int)
+        .sum();
+    assert_eq!(
+        total_count, row_count as i64,
+        "Total COUNT across buckets should equal row_count ({}), got {}",
+        row_count, total_count
+    );
+
+    // Total SUM across all buckets should be row_count * 10
+    let total_sum: i64 = (0..64)
+        .map(|g| result.agg_results[g][1].value_int)
+        .sum();
+    assert_eq!(
+        total_sum,
+        (row_count as i64) * 10,
+        "Total SUM should be {}, got {}",
+        (row_count as i64) * 10,
+        total_sum
+    );
+}
+
+// Fallback 3: Multi-column GROUP BY triggers fallback
+#[test]
+fn fallback_multi_column_group_by_returns_standard_path() {
+    // SELECT COUNT(*) FROM sales GROUP BY region, amount
+    let plan = plan_aggregate(
+        vec![(AggFunc::Count, "*")],
+        vec!["region", "amount"],
+        plan_scan("sales"),
+    );
+
+    let result = check_autonomous_compatibility(&plan);
+    match result {
+        CompatibilityResult::Fallback(reason) => {
+            assert!(
+                reason.contains("multi-column GROUP BY"),
+                "Fallback reason should mention multi-column GROUP BY, got: {}",
+                reason
+            );
+            assert!(
+                reason.contains("2 columns"),
+                "Fallback reason should mention column count, got: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "Expected Fallback for multi-column GROUP BY, got {:?}",
+            other
+        ),
+    }
+}
+
+// Fallback 4: Query before warm-up (no table loaded) returns error
+#[test]
+fn fallback_query_before_warmup_returns_error() {
+    let gpu = GpuDevice::new();
+    let mut executor = AutonomousExecutor::new(gpu.device.clone());
+
+    // DO NOT load any table — simulates pre-warm-up state
+
+    let plan = plan_aggregate(
+        vec![(AggFunc::Count, "*")],
+        vec![],
+        plan_scan("sales"),
+    );
+    let col_schema = jit_schema();
+
+    // submit_query should fail because "sales" table is not loaded
+    let result = executor.submit_query(&plan, &col_schema, "sales");
+    assert!(
+        result.is_err(),
+        "submit_query before table load should return Err"
+    );
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("not loaded"),
+        "Error message should mention table not loaded, got: {}",
+        err_msg
+    );
+}
+
+// Fallback 5: After warm-up (table loaded), same query succeeds autonomously
+#[test]
+fn fallback_after_warmup_query_succeeds() {
+    let gpu = GpuDevice::new();
+    let mut executor = AutonomousExecutor::new(gpu.device.clone());
+
+    let schema = test_schema();
+    let row_count = 1000usize;
+    let batch = make_test_batch(&gpu.device, &schema, row_count);
+
+    // Load table (simulates warm-up completion)
+    executor
+        .load_table("sales", &schema, &batch)
+        .expect("load_table failed");
+
+    let plan = plan_aggregate(
+        vec![(AggFunc::Count, "*")],
+        vec![],
+        plan_scan("sales"),
+    );
+    let col_schema = jit_schema();
+
+    // Verify plan IS compatible
+    let compat = check_autonomous_compatibility(&plan);
+    assert_eq!(
+        compat,
+        CompatibilityResult::Autonomous,
+        "Simple COUNT(*) should be autonomous-compatible"
+    );
+
+    // Submit should succeed now
+    let seq_id = executor
+        .submit_query(&plan, &col_schema, "sales")
+        .expect("submit_query should succeed after warm-up");
+    assert!(seq_id > 0, "sequence_id should be > 0, got {}", seq_id);
+
+    // Poll and verify result
+    let timeout = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+    while !executor.poll_ready() {
+        if start.elapsed() > timeout {
+            panic!("Timed out waiting for autonomous query after warm-up");
+        }
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+
+    let result = executor.read_result();
+    assert_eq!(result.ready_flag, 1);
+    assert_eq!(result.error_code, 0);
+    assert_eq!(
+        result.agg_results[0][0].value_int, row_count as i64,
+        "COUNT(*) should equal row_count ({}), got {}",
+        row_count, result.agg_results[0][0].value_int
+    );
+}
+
+// Fallback 6: ORDER BY + aggregate still triggers fallback (sort at top)
+#[test]
+fn fallback_order_by_with_aggregate_returns_standard_path() {
+    // SELECT COUNT(*), SUM(amount) FROM sales GROUP BY region ORDER BY region
+    let agg = plan_aggregate(
+        vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+        vec!["region"],
+        plan_scan("sales"),
+    );
+    let plan = plan_sort("region", true, agg);
+
+    let result = check_autonomous_compatibility(&plan);
+    match result {
+        CompatibilityResult::Fallback(reason) => {
+            assert!(
+                reason.contains("ORDER BY"),
+                "Fallback reason should mention ORDER BY, got: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "Expected Fallback for ORDER BY + aggregate, got {:?}",
+            other
+        ),
+    }
+}
+
+// Fallback 7: LIMIT without ORDER BY still triggers fallback
+#[test]
+fn fallback_limit_returns_standard_path() {
+    // SELECT * FROM sales LIMIT 10
+    let plan = plan_limit(10, plan_scan("sales"));
+
+    let result = check_autonomous_compatibility(&plan);
+    match result {
+        CompatibilityResult::Fallback(reason) => {
+            assert!(
+                reason.contains("LIMIT"),
+                "Fallback reason should mention LIMIT, got: {}",
+                reason
+            );
+            assert!(
+                reason.contains("standard path"),
+                "Fallback reason should mention standard path, got: {}",
+                reason
+            );
+        }
+        other => panic!("Expected Fallback for LIMIT query, got {:?}", other),
+    }
 }

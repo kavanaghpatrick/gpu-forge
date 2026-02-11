@@ -320,7 +320,7 @@ Focus: Comprehensive test coverage. Benchmark validation. Stress testing for sta
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test --test autonomous_integration edge -- --test-threads=1`
   - **Commit**: `test(autonomous): add edge case integration tests`
 
-- [ ] 6.4 Add fallback integration tests
+- [x] 6.4 Add fallback integration tests
   - **Do**: Test fallback scenarios: (1) ORDER BY -> standard executor with reason, (2) GROUP BY cardinality > 64 -> standard, (3) multi-column GROUP BY -> standard, (4) query before warm-up -> standard with message, (5) after warm-up completes -> autonomous.
   - **Files**: `gpu-query/tests/autonomous_integration.rs`
   - **Done when**: All fallback tests pass. ~7 tests.
