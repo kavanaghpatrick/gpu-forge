@@ -247,7 +247,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - _Requirements: UX-1, UX-2_
   - _Design: Event Loop Integration_
 
-- [ ] 5.4 Add Ctrl+L live mode toggle
+- [x] 5.4 Add Ctrl+L live mode toggle
   - **Do**: In `src/tui/event.rs`, add handler for Ctrl+L: toggle `app.live_mode`. When toggling ON, show status "Live mode ON". When toggling OFF, show "Live mode OFF. Press F5 to execute." Also add keystroke handling: in live mode, after each editor keystroke, call `update_sql_validity()` and `update_query_compatibility()`.
   - **Files**: `gpu-query/src/tui/event.rs`
   - **Done when**: Ctrl+L toggles live mode. Keystrokes trigger validity checking.

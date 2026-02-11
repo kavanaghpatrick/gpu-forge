@@ -78,6 +78,20 @@ pub fn handle_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
         return true;
     }
 
+    // Ctrl+L: toggle live mode
+    if has_ctrl && key.code == KeyCode::Char('l') {
+        app.live_mode = !app.live_mode;
+        if app.live_mode {
+            app.status_message = "Live mode ON".into();
+            // Immediately check validity for current editor content
+            super::app::update_sql_validity(app);
+            super::app::update_query_compatibility(app);
+        } else {
+            app.status_message = "Live mode OFF. Press F5 to execute.".into();
+        }
+        return true;
+    }
+
     // Ctrl+1/2/3: direct panel focus
     if has_ctrl {
         match key.code {
@@ -258,7 +272,7 @@ fn execute_dot_command(app: &mut super::app::AppState) {
 
 /// Handle key events when the editor panel is focused.
 fn handle_editor_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
-    match key.code {
+    let text_changed = match key.code {
         // Character input
         KeyCode::Char(ch) => {
             app.editor_state.insert_char(ch);
@@ -284,33 +298,41 @@ fn handle_editor_key(key: &KeyEvent, app: &mut super::app::AppState) -> bool {
             app.query_text = app.editor_state.text();
             true
         }
-        // Cursor movement
+        // Cursor movement (no text change)
         KeyCode::Left => {
             app.editor_state.move_left();
-            true
+            return true;
         }
         KeyCode::Right => {
             app.editor_state.move_right();
-            true
+            return true;
         }
         KeyCode::Up => {
             app.editor_state.move_up();
-            true
+            return true;
         }
         KeyCode::Down => {
             app.editor_state.move_down();
-            true
+            return true;
         }
         KeyCode::Home => {
             app.editor_state.move_home();
-            true
+            return true;
         }
         KeyCode::End => {
             app.editor_state.move_end();
-            true
+            return true;
         }
-        _ => false,
+        _ => return false,
+    };
+
+    // In live mode, check SQL validity and query compatibility after each text change
+    if text_changed && app.live_mode {
+        super::app::update_sql_validity(app);
+        super::app::update_query_compatibility(app);
     }
+
+    text_changed
 }
 
 /// Handle key events when the results panel is focused.
