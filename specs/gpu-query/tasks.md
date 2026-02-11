@@ -335,7 +335,7 @@ After POC validated, build the full query engine with all formats and operators.
   - _Requirements: NFR-13_
   - _Design: Data Flow_
 
-- [ ] 4.5 Performance benchmarks (criterion.rs)
+- [x] 4.5 Performance benchmarks (criterion.rs)
   - **Do**: Create benchmark suite with criterion.rs: scan throughput (per format at 1MB/100MB/1GB), filter throughput (various selectivities), aggregation throughput (various group counts), sort throughput (various sizes), end-to-end query latency (representative SQL). Add TPC-H Q1 adapted for gpu-query.
   - **Files**: `gpu-query/benches/scan_throughput.rs`, `gpu-query/benches/filter_throughput.rs`, `gpu-query/benches/aggregate_throughput.rs`, `gpu-query/benches/sort_throughput.rs`, `gpu-query/benches/query_latency.rs`
   - **Done when**: ~30 benchmarks run with statistical rigor; baseline established
