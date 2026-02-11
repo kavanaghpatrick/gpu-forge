@@ -120,7 +120,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-2_
   - _Design: File I/O, batch.rs_
 
-- [ ] 1.13 Port search/content.rs -- content search orchestration
+- [x] 1.13 Port search/content.rs -- content search orchestration
   - **Do**: Port `rust-experiment/src/gpu_os/content_search.rs` (1660 lines). Content search dispatch logic: buffer allocation for input/output/match positions, kernel dispatch with threadgroup sizing (256 threads, 64 bytes/thread), result collection. Both standard and turbo modes. Test with known pattern in known content, verify match count and positions against CPU reference.
   - **Files**: `gpu-search/src/search/content.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: GPU search for known pattern returns correct match count matching CPU reference
