@@ -361,7 +361,7 @@ Focus: Final quality checks, documentation, PR creation.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo clippy -- -D warnings 2>&1 | tail -5`
   - **Commit**: `fix(autonomous): address clippy warnings`
 
-- [ ] 7.2 Run full regression suite
+- [x] 7.2 Run full regression suite
   - **Do**: Run all existing tests plus all new tests. Verify zero failures. Run benchmarks to confirm no regression in existing query paths.
   - **Done when**: All tests pass (existing 807 + new ~200)
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | grep -E "test result|FAILED"`
