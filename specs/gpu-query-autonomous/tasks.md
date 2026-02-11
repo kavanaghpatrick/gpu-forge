@@ -77,7 +77,7 @@ Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (bef
   - _Requirements: FR-3, FR-7, FR-8, FR-9_
   - _Design: Component 3_
 
-- [ ] 2.2 Add fused kernel PSO compilation to pipeline
+- [x] 2.2 Add fused kernel PSO compilation to pipeline
   - **Do**: Add `compile_fused_pso(device, filter_count, agg_count, has_group_by) -> PSO` function in a new section of `src/gpu/autonomous/executor.rs` (or a helper module). Use `MTLFunctionConstantValues` for `FILTER_COUNT`, `AGG_COUNT`, `HAS_GROUP_BY`. Cache compiled PSOs in `HashMap<(u32,u32,bool), PSO>`. Follow existing pattern in `src/gpu/pipeline.rs::compile_pso()`.
   - **Files**: `gpu-query/src/gpu/autonomous/executor.rs`
   - **Done when**: PSO compiles for headline query pattern (2 filters, 2 aggs, group_by=true)
