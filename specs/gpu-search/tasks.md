@@ -138,7 +138,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-3, NFR-2_
   - _Design: Search Engine, streaming.rs_
 
-- [ ] 1.15 Define search API types
+- [x] 1.15 Define search API types
   - **Do**: Create SearchRequest (pattern, root, file_types, case_sensitive, respect_gitignore, include_binary, max_results), FileMatch (path, score), ContentMatch (path, line_number, line_content, context_before, context_after, match_range), SearchResponse (file_matches, content_matches, total_files_searched, total_matches, elapsed).
   - **Files**: `gpu-search/src/search/types.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: Types compile and are usable from other modules
