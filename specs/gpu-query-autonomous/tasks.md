@@ -112,7 +112,7 @@ Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (bef
   - **Commit**: `test(autonomous): add fused vs standard executor parity tests`
   - _Requirements: FR-3_
 
-- [ ] 2.6 Fused kernel checkpoint
+- [x] 2.6 Fused kernel checkpoint
   - **Do**: Verify fused kernel produces correct results for all supported patterns. Run full regression.
   - **Done when**: All tests pass (existing + new). Fused kernel correctness proven.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | tail -10`
