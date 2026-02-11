@@ -102,7 +102,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-4_
   - _Design: File I/O, mmap.rs_
 
-- [ ] 1.11 Port io/gpu_io.rs -- MTLIOCommandQueue
+- [x] 1.11 Port io/gpu_io.rs -- MTLIOCommandQueue
   - **Do**: Port `rust-experiment/src/gpu_os/gpu_io.rs` (524 lines). **Major**: Replace ALL raw `msg_send!` with native objc2-metal `MTLIOCommandQueue` bindings. Enable `MTLIOCommandQueue` feature flag. Create IO command queue, load files to GPU buffers. If specific methods missing from bindings, use `msg_send!` for those only and document.
   - **Files**: `gpu-search/src/io/gpu_io.rs`, update `gpu-search/src/io/mod.rs`
   - **Done when**: IO queue created, file loaded to GPU buffer without raw msg_send! (except documented gaps)
