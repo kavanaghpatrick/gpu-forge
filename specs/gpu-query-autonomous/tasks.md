@@ -140,7 +140,7 @@ Focus: Generate specialized Metal shader source from query plan, compile at runt
   - _Requirements: FR-6_
   - _Design: Component 4_
 
-- [ ] 3.3 Implement runtime compilation and PSO cache
+- [x] 3.3 Implement runtime compilation and PSO cache
   - **Do**: In `jit.rs`, implement `JitCompiler` struct with `device`, `cache: HashMap<u64, CompiledPlan>`. Method `compile(plan, schema) -> Result<&CompiledPlan, String>`: check cache, on miss generate source, call `device.newLibraryWithSource_options_error()`, create PSO via `device.newComputePipelineStateWithFunction_error()`, insert into cache. `CompiledPlan { pso, plan_hash, source_len }`. Add tests: compiles valid MSL, creates PSO, cache hit returns same PSO, cache miss compiles new, invalid source returns Err.
   - **Files**: `gpu-query/src/gpu/autonomous/jit.rs`
   - **Done when**: JIT compiles and caches PSO for headline query pattern. ~6 tests pass.
