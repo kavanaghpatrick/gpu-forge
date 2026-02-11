@@ -1036,6 +1036,86 @@ impl AutonomousExecutor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Autonomous compatibility check
+// ---------------------------------------------------------------------------
+
+/// Maximum number of GROUP BY distinct values supported by the autonomous engine.
+/// The fused kernel uses a 64-slot hash table in threadgroup memory.
+pub const AUTONOMOUS_MAX_GROUP_CARDINALITY: usize = 64;
+
+/// Result of checking whether a physical plan can run on the autonomous engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompatibilityResult {
+    /// Plan is fully supported by the autonomous engine.
+    Autonomous,
+    /// Plan requires fallback to the standard executor, with a reason string.
+    Fallback(String),
+}
+
+/// Check whether a `PhysicalPlan` can be executed by the autonomous fused kernel.
+///
+/// Supported patterns:
+/// - `GpuScan` (simple table scan)
+/// - `GpuFilter` / `GpuCompoundFilter` (single or compound filters)
+/// - `GpuAggregate` with <= 1 GROUP BY column (cardinality <= 64)
+///
+/// Unsupported (returns `Fallback` with reason):
+/// - `GpuSort` (ORDER BY)
+/// - `GpuLimit` (LIMIT -- requires sort first)
+/// - `GpuAggregate` with > 1 GROUP BY column
+///
+/// This function inspects the plan tree recursively.
+pub fn check_autonomous_compatibility(plan: &PhysicalPlan) -> CompatibilityResult {
+    match plan {
+        PhysicalPlan::GpuScan { .. } => CompatibilityResult::Autonomous,
+
+        PhysicalPlan::GpuFilter { input, .. } => {
+            check_autonomous_compatibility(input)
+        }
+
+        PhysicalPlan::GpuCompoundFilter { left, right, .. } => {
+            // Both sides must be compatible (they should be filters over the same scan)
+            let left_compat = check_autonomous_compatibility(left);
+            if let CompatibilityResult::Fallback(reason) = left_compat {
+                return CompatibilityResult::Fallback(reason);
+            }
+            check_autonomous_compatibility(right)
+        }
+
+        PhysicalPlan::GpuAggregate {
+            group_by, input, ..
+        } => {
+            // Check GROUP BY column count: autonomous supports 0 or 1
+            if group_by.len() > 1 {
+                return CompatibilityResult::Fallback(format!(
+                    "multi-column GROUP BY ({} columns) requires standard path",
+                    group_by.len()
+                ));
+            }
+            // Check input subtree compatibility
+            check_autonomous_compatibility(input)
+        }
+
+        PhysicalPlan::GpuSort { .. } => {
+            CompatibilityResult::Fallback("ORDER BY requires standard path".to_string())
+        }
+
+        PhysicalPlan::GpuLimit { input, .. } => {
+            // If the input contains a sort, that's the blocker.
+            // Otherwise LIMIT alone could theoretically work, but the autonomous
+            // engine doesn't implement row-level truncation, so fall back.
+            let inner = check_autonomous_compatibility(input);
+            match inner {
+                CompatibilityResult::Fallback(reason) => CompatibilityResult::Fallback(reason),
+                CompatibilityResult::Autonomous => {
+                    CompatibilityResult::Fallback("LIMIT requires standard path".to_string())
+                }
+            }
+        }
+    }
+}
+
 /// Extract filter predicates, aggregates, and group_by from a PhysicalPlan tree
 /// and build a QueryParamsSlot.
 fn build_query_params(
@@ -1834,5 +1914,232 @@ mod tests {
             EngineState::Shutdown,
             "After shutdown, state should be Shutdown"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Autonomous compatibility check tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a simple scan plan.
+    fn scan(table: &str) -> PhysicalPlan {
+        PhysicalPlan::GpuScan {
+            table: table.to_string(),
+            columns: vec!["col".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_compatibility_simple_scan() {
+        let plan = scan("sales");
+        assert_eq!(
+            check_autonomous_compatibility(&plan),
+            CompatibilityResult::Autonomous,
+        );
+    }
+
+    #[test]
+    fn test_compatibility_single_filter() {
+        let plan = PhysicalPlan::GpuFilter {
+            compare_op: CompareOp::Gt,
+            column: "amount".to_string(),
+            value: Value::Int(100),
+            input: Box::new(scan("sales")),
+        };
+        assert_eq!(
+            check_autonomous_compatibility(&plan),
+            CompatibilityResult::Autonomous,
+        );
+    }
+
+    #[test]
+    fn test_compatibility_compound_filter() {
+        use crate::sql::types::LogicalOp;
+        let plan = PhysicalPlan::GpuCompoundFilter {
+            op: LogicalOp::And,
+            left: Box::new(PhysicalPlan::GpuFilter {
+                compare_op: CompareOp::Gt,
+                column: "amount".to_string(),
+                value: Value::Int(200),
+                input: Box::new(scan("sales")),
+            }),
+            right: Box::new(PhysicalPlan::GpuFilter {
+                compare_op: CompareOp::Lt,
+                column: "amount".to_string(),
+                value: Value::Int(800),
+                input: Box::new(scan("sales")),
+            }),
+        };
+        assert_eq!(
+            check_autonomous_compatibility(&plan),
+            CompatibilityResult::Autonomous,
+        );
+    }
+
+    #[test]
+    fn test_compatibility_aggregate_no_groupby() {
+        let plan = PhysicalPlan::GpuAggregate {
+            functions: vec![(AggFunc::Count, "*".to_string())],
+            group_by: vec![],
+            input: Box::new(scan("sales")),
+        };
+        assert_eq!(
+            check_autonomous_compatibility(&plan),
+            CompatibilityResult::Autonomous,
+        );
+    }
+
+    #[test]
+    fn test_compatibility_aggregate_single_groupby() {
+        let plan = PhysicalPlan::GpuAggregate {
+            functions: vec![
+                (AggFunc::Count, "*".to_string()),
+                (AggFunc::Sum, "amount".to_string()),
+            ],
+            group_by: vec!["region".to_string()],
+            input: Box::new(scan("sales")),
+        };
+        assert_eq!(
+            check_autonomous_compatibility(&plan),
+            CompatibilityResult::Autonomous,
+        );
+    }
+
+    #[test]
+    fn test_compatibility_aggregate_compound_filter_groupby() {
+        // Headline query: compound filter + GROUP BY + multi-agg
+        use crate::sql::types::LogicalOp;
+        let plan = PhysicalPlan::GpuAggregate {
+            functions: vec![
+                (AggFunc::Count, "*".to_string()),
+                (AggFunc::Sum, "amount".to_string()),
+                (AggFunc::Min, "amount".to_string()),
+                (AggFunc::Max, "amount".to_string()),
+            ],
+            group_by: vec!["region".to_string()],
+            input: Box::new(PhysicalPlan::GpuCompoundFilter {
+                op: LogicalOp::And,
+                left: Box::new(PhysicalPlan::GpuFilter {
+                    compare_op: CompareOp::Gt,
+                    column: "amount".to_string(),
+                    value: Value::Int(200),
+                    input: Box::new(scan("sales")),
+                }),
+                right: Box::new(PhysicalPlan::GpuFilter {
+                    compare_op: CompareOp::Lt,
+                    column: "amount".to_string(),
+                    value: Value::Int(800),
+                    input: Box::new(scan("sales")),
+                }),
+            }),
+        };
+        assert_eq!(
+            check_autonomous_compatibility(&plan),
+            CompatibilityResult::Autonomous,
+        );
+    }
+
+    #[test]
+    fn test_compatibility_order_by_fallback() {
+        let plan = PhysicalPlan::GpuSort {
+            order_by: vec![("amount".to_string(), true)],
+            input: Box::new(scan("sales")),
+        };
+        let result = check_autonomous_compatibility(&plan);
+        match result {
+            CompatibilityResult::Fallback(reason) => {
+                assert!(
+                    reason.contains("ORDER BY"),
+                    "Reason should mention ORDER BY, got: {}",
+                    reason
+                );
+            }
+            other => panic!("Expected Fallback for ORDER BY, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compatibility_multi_column_groupby_fallback() {
+        let plan = PhysicalPlan::GpuAggregate {
+            functions: vec![(AggFunc::Count, "*".to_string())],
+            group_by: vec!["region".to_string(), "category".to_string()],
+            input: Box::new(scan("sales")),
+        };
+        let result = check_autonomous_compatibility(&plan);
+        match result {
+            CompatibilityResult::Fallback(reason) => {
+                assert!(
+                    reason.contains("multi-column GROUP BY"),
+                    "Reason should mention multi-column GROUP BY, got: {}",
+                    reason
+                );
+            }
+            other => panic!("Expected Fallback for multi-column GROUP BY, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compatibility_limit_fallback() {
+        let plan = PhysicalPlan::GpuLimit {
+            count: 10,
+            input: Box::new(scan("sales")),
+        };
+        let result = check_autonomous_compatibility(&plan);
+        match result {
+            CompatibilityResult::Fallback(reason) => {
+                assert!(
+                    reason.contains("LIMIT"),
+                    "Reason should mention LIMIT, got: {}",
+                    reason
+                );
+            }
+            other => panic!("Expected Fallback for LIMIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compatibility_sort_with_limit_fallback() {
+        // ORDER BY ... LIMIT N -> fallback due to ORDER BY
+        let plan = PhysicalPlan::GpuLimit {
+            count: 10,
+            input: Box::new(PhysicalPlan::GpuSort {
+                order_by: vec![("amount".to_string(), true)],
+                input: Box::new(scan("sales")),
+            }),
+        };
+        let result = check_autonomous_compatibility(&plan);
+        match result {
+            CompatibilityResult::Fallback(reason) => {
+                assert!(
+                    reason.contains("ORDER BY"),
+                    "Should detect ORDER BY inside LIMIT, got: {}",
+                    reason
+                );
+            }
+            other => panic!("Expected Fallback for ORDER BY+LIMIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compatibility_aggregate_with_sort_input_fallback() {
+        // Aggregate over a sort (unusual but possible): fallback due to sort
+        let plan = PhysicalPlan::GpuAggregate {
+            functions: vec![(AggFunc::Count, "*".to_string())],
+            group_by: vec![],
+            input: Box::new(PhysicalPlan::GpuSort {
+                order_by: vec![("amount".to_string(), false)],
+                input: Box::new(scan("sales")),
+            }),
+        };
+        let result = check_autonomous_compatibility(&plan);
+        match result {
+            CompatibilityResult::Fallback(reason) => {
+                assert!(
+                    reason.contains("ORDER BY"),
+                    "Should detect ORDER BY in aggregate input, got: {}",
+                    reason
+                );
+            }
+            other => panic!("Expected Fallback, got {:?}", other),
+        }
     }
 }

@@ -230,7 +230,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - _Requirements: UX-1 through UX-10_
   - _Design: File Structure (Existing Files to Modify)_
 
-- [ ] 5.2 Implement autonomous compatibility check
+- [x] 5.2 Implement autonomous compatibility check
   - **Do**: Add `check_autonomous_compatibility(plan: &PhysicalPlan) -> QueryCompatibility` function. Returns Autonomous for supported patterns (scan, filter, compound filter, aggregate with <=1 GROUP BY column, cardinality <=64). Returns Fallback with reason string for ORDER BY, multi-column GROUP BY, etc. Add `update_sql_validity(app)` and `update_query_compatibility(app)` functions.
   - **Files**: `gpu-query/src/tui/app.rs` or `gpu-query/src/gpu/autonomous/executor.rs`
   - **Done when**: Correctly classifies various query patterns. ~10 unit tests.

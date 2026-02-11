@@ -6,7 +6,7 @@ use super::catalog::CatalogState;
 use super::editor::EditorState;
 use super::results::ResultsState;
 use super::themes::Theme;
-use crate::gpu::autonomous::executor::AutonomousExecutor;
+use crate::gpu::autonomous::executor::{AutonomousExecutor, CompatibilityResult};
 use crate::gpu::executor::{QueryExecutor, QueryResult};
 use crate::gpu::metrics::{GpuMetricsCollector, PipelineProfile, QueryMetrics};
 use crate::io::catalog_cache::CatalogCache;
@@ -284,6 +284,76 @@ impl AppState {
     /// Increment frame counter.
     pub fn tick(&mut self) {
         self.frame_count = self.frame_count.wrapping_add(1);
+    }
+}
+
+/// Update the SQL validity state based on the current editor text.
+///
+/// Attempts to parse the SQL text and sets `app.sql_validity` to:
+/// - `Empty` if the text is blank
+/// - `Valid` if it parses successfully (also caches the physical plan)
+/// - `Incomplete` if it looks like a partial statement (common typing patterns)
+/// - `ParseError` otherwise
+pub fn update_sql_validity(app: &mut AppState) {
+    let text = app.editor_state.text();
+    let trimmed = text.trim();
+
+    if trimmed.is_empty() {
+        app.sql_validity = SqlValidity::Empty;
+        app.cached_plan = None;
+        return;
+    }
+
+    // Try to parse
+    match crate::sql::parser::parse_query(trimmed) {
+        Ok(logical_plan) => {
+            // Parse succeeded -- try to plan
+            match crate::sql::physical_plan::plan(&logical_plan) {
+                Ok(physical) => {
+                    app.sql_validity = SqlValidity::Valid;
+                    app.cached_plan = Some(physical);
+                }
+                Err(_) => {
+                    // Parses but cannot be planned (e.g., unsupported expression)
+                    app.sql_validity = SqlValidity::ParseError;
+                    app.cached_plan = None;
+                }
+            }
+        }
+        Err(_) => {
+            // Heuristic: if it starts with SELECT but doesn't parse, it's likely incomplete
+            let upper = trimmed.to_uppercase();
+            if upper.starts_with("SELECT") && !trimmed.ends_with(';') {
+                app.sql_validity = SqlValidity::Incomplete;
+            } else {
+                app.sql_validity = SqlValidity::ParseError;
+            }
+            app.cached_plan = None;
+        }
+    }
+}
+
+/// Update the query compatibility state based on the cached physical plan.
+///
+/// If `app.cached_plan` is `Some`, runs the autonomous compatibility check.
+/// Otherwise sets `Unknown`.
+pub fn update_query_compatibility(app: &mut AppState) {
+    match &app.cached_plan {
+        Some(plan) => {
+            let result =
+                crate::gpu::autonomous::executor::check_autonomous_compatibility(plan);
+            app.query_compatibility = match result {
+                CompatibilityResult::Autonomous => QueryCompatibility::Autonomous,
+                CompatibilityResult::Fallback(_) => QueryCompatibility::Fallback,
+            };
+        }
+        None => {
+            app.query_compatibility = match app.sql_validity {
+                SqlValidity::Empty | SqlValidity::Incomplete => QueryCompatibility::Unknown,
+                SqlValidity::ParseError => QueryCompatibility::Invalid,
+                SqlValidity::Valid => QueryCompatibility::Unknown,
+            };
+        }
     }
 }
 
