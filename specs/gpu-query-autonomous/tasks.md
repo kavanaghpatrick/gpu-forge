@@ -211,7 +211,7 @@ Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is 
   - **Commit**: `test(autonomous): verify 1000 consecutive autonomous queries`
   - _Requirements: AC-2.5_
 
-- [ ] 4.6 Autonomous kernel checkpoint
+- [x] 4.6 Autonomous kernel checkpoint
   - **Do**: GPU autonomy proven. Verify all tests pass (existing + new). Full regression.
   - **Done when**: Autonomous executor processes queries via persistent kernel. No `waitUntilCompleted` in hot path.
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | tail -10`

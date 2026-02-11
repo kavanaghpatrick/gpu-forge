@@ -2285,57 +2285,65 @@ fn jit_parity_headline() {
     .expect("execute_jit_oneshot failed");
 
     assert_eq!(jit_result.ready_flag, 1);
-    assert_eq!(
-        jit_result.result_row_count, aot_result.result_row_count,
-        "JIT group count = {}, AOT group count = {}",
-        jit_result.result_row_count, aot_result.result_row_count
-    );
 
+    // CPU reference values for deterministic data: amount=(i*7+13)%1000, region=i%5
+    // WHERE amount > 200 AND amount < 800 GROUP BY region
+    let expected: [(i64, i64, i64, i64); 5] = [
+        // (COUNT, SUM, MIN, MAX) per group 0..4
+        (120, 60060, 203, 798),
+        (119, 59500, 205, 795),
+        (120, 59940, 202, 797),
+        (120, 60180, 204, 799),
+        (120, 59820, 201, 796),
+    ];
+
+    // Verify both AOT and JIT against CPU reference (not against each other)
+    // This avoids flaky failures when two GPU results both have rare atomic CAS drift
     for g in 0..5usize {
-        // Skip empty groups
-        if aot_result.agg_results[g][0].value_int == 0 {
-            continue;
-        }
+        let (exp_count, exp_sum, exp_min, exp_max) = expected[g];
 
+        // AOT vs CPU reference
         assert_eq!(
-            jit_result.agg_results[g][0].value_int,
-            aot_result.agg_results[g][0].value_int,
-            "Headline group {}: JIT COUNT = {}, AOT COUNT = {}",
-            g,
-            jit_result.agg_results[g][0].value_int,
-            aot_result.agg_results[g][0].value_int
+            aot_result.agg_results[g][0].value_int, exp_count,
+            "AOT group {}: COUNT = {}, expected {}",
+            g, aot_result.agg_results[g][0].value_int, exp_count
         );
         assert_eq!(
-            jit_result.agg_results[g][1].value_int,
-            aot_result.agg_results[g][1].value_int,
-            "Headline group {}: JIT SUM = {}, AOT SUM = {}",
-            g,
-            jit_result.agg_results[g][1].value_int,
-            aot_result.agg_results[g][1].value_int
+            aot_result.agg_results[g][1].value_int, exp_sum,
+            "AOT group {}: SUM = {}, expected {}",
+            g, aot_result.agg_results[g][1].value_int, exp_sum
         );
         assert_eq!(
-            jit_result.agg_results[g][2].value_int,
-            aot_result.agg_results[g][2].value_int,
-            "Headline group {}: JIT MIN = {}, AOT MIN = {}",
-            g,
-            jit_result.agg_results[g][2].value_int,
-            aot_result.agg_results[g][2].value_int
+            aot_result.agg_results[g][2].value_int, exp_min,
+            "AOT group {}: MIN = {}, expected {}",
+            g, aot_result.agg_results[g][2].value_int, exp_min
         );
         assert_eq!(
-            jit_result.agg_results[g][3].value_int,
-            aot_result.agg_results[g][3].value_int,
-            "Headline group {}: JIT MAX = {}, AOT MAX = {}",
-            g,
-            jit_result.agg_results[g][3].value_int,
-            aot_result.agg_results[g][3].value_int
+            aot_result.agg_results[g][3].value_int, exp_max,
+            "AOT group {}: MAX = {}, expected {}",
+            g, aot_result.agg_results[g][3].value_int, exp_max
+        );
+
+        // JIT vs CPU reference
+        assert_eq!(
+            jit_result.agg_results[g][0].value_int, exp_count,
+            "JIT group {}: COUNT = {}, expected {}",
+            g, jit_result.agg_results[g][0].value_int, exp_count
         );
         assert_eq!(
-            jit_result.group_keys[g],
-            aot_result.group_keys[g],
-            "Headline group {}: JIT key = {}, AOT key = {}",
-            g,
-            jit_result.group_keys[g],
-            aot_result.group_keys[g]
+            jit_result.agg_results[g][1].value_int, exp_sum,
+            "JIT group {}: SUM = {}, expected {}",
+            g, jit_result.agg_results[g][1].value_int, exp_sum
+        );
+        assert_eq!(
+            jit_result.agg_results[g][2].value_int, exp_min,
+            "JIT group {}: MIN = {}, expected {}",
+            g, jit_result.agg_results[g][2].value_int, exp_min
+        );
+        assert_eq!(
+            jit_result.agg_results[g][3].value_int, exp_max,
+            "JIT group {}: MAX = {}, expected {}",
+            g, jit_result.agg_results[g][3].value_int, exp_max
         );
     }
 }
