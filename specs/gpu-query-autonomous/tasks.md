@@ -297,7 +297,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
 
 Focus: Comprehensive test coverage. Benchmark validation. Stress testing for stability.
 
-- [ ] 6.1 Add comprehensive unit tests for work queue concurrency
+- [x] 6.1 Add comprehensive unit tests for work queue concurrency
   - **Do**: Expand `work_queue.rs` tests: (1) wrap-around after 100+ writes, (2) concurrent write/read simulation (different slots), (3) sequence_id written last (verify Release ordering), (4) stale sequence detection. Optionally add loom tests behind `#[cfg(feature = "loom")]` feature flag for exhaustive interleaving checks.
   - **Files**: `gpu-query/src/gpu/autonomous/work_queue.rs`
   - **Done when**: ~15 work queue tests pass. No torn read scenarios.
