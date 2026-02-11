@@ -472,7 +472,12 @@ fn handle_live_mode_keystroke(app: &mut AppState) {
         QueryCompatibility::Fallback => {
             // Use standard executor for unsupported patterns
             app.engine_status = EngineStatus::Fallback;
+            app.autonomous_stats.fallback_queries += 1;
             let _ = ui::execute_editor_query(app);
+            // Restore engine status to Live if autonomous executor is still warm
+            if app.autonomous_executor.is_some() {
+                app.engine_status = EngineStatus::Live;
+            }
         }
         QueryCompatibility::Unknown | QueryCompatibility::Invalid => {
             // Not ready to execute

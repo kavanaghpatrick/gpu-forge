@@ -330,6 +330,8 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
 /// Execute the SQL query currently in the editor.
 ///
 /// Parses, optimizes, plans, and executes via GPU. Updates app state with results.
+/// When the autonomous engine is live but the query requires fallback (e.g. ORDER BY),
+/// sets engine_status to Fallback during execution and restores to Live afterward.
 /// Returns Ok(()) on success, Err(msg) on failure (already sets app error).
 pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     let sql = app.editor_state.text();
@@ -375,6 +377,24 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
         msg
     })?;
 
+    // Check autonomous compatibility and set fallback status if needed
+    let has_autonomous = app.autonomous_executor.is_some();
+    if has_autonomous {
+        let compat =
+            crate::gpu::autonomous::executor::check_autonomous_compatibility(&physical_plan);
+        match compat {
+            crate::gpu::autonomous::executor::CompatibilityResult::Fallback(reason) => {
+                app.engine_status = super::app::EngineStatus::Fallback;
+                app.last_fallback_reason = Some(reason);
+                app.autonomous_stats.fallback_queries += 1;
+            }
+            crate::gpu::autonomous::executor::CompatibilityResult::Autonomous => {
+                // Query is autonomous-compatible but being executed via standard path
+                // (e.g., F5 during warm-up). No special handling needed.
+            }
+        }
+    }
+
     // Execute on GPU -- use persistent executor from AppState (take/put-back for borrow safety)
     let mut executor =
         app.executor
@@ -408,14 +428,28 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
         app.history.push(sql.clone());
     }
 
-    // Update status
+    // Build status message with fallback reason if applicable
+    let fallback_suffix = match &app.last_fallback_reason {
+        Some(reason) if app.engine_status == super::app::EngineStatus::Fallback => {
+            format!(" | standard path ({})", reason)
+        }
+        _ => String::new(),
+    };
+
     app.status_message = format!(
-        "Query completed: {} rows in {:.1}ms",
+        "Query completed: {} rows in {:.1}ms{}",
         result.row_count,
         exec_us as f64 / 1000.0,
+        fallback_suffix,
     );
 
     app.set_result(result);
+
+    // Restore engine status to Live if autonomous executor is still warm
+    if has_autonomous && app.engine_status == super::app::EngineStatus::Fallback {
+        app.engine_status = super::app::EngineStatus::Live;
+    }
+
     Ok(())
 }
 

@@ -279,7 +279,7 @@ Focus: Wire autonomous executor into the TUI. Enable live mode. Add engine statu
   - **Commit**: `feat(autonomous): implement background warm-up with progress display`
   - _Requirements: UX-6_
 
-- [ ] 5.8 Wire fallback path
+- [x] 5.8 Wire fallback path
   - **Do**: When `check_autonomous_compatibility()` returns Fallback, route query to existing `QueryExecutor`. Set `engine_status = EngineStatus::Fallback`. Display fallback reason in performance line. After query completes, restore engine_status to Live if autonomous executor is still warm.
   - **Files**: `gpu-query/src/tui/ui.rs`, `gpu-query/src/tui/mod.rs`
   - **Done when**: ORDER BY queries seamlessly fall back to standard path with clear status
