@@ -51,7 +51,7 @@ fn bench_filter_selectivity(c: &mut Criterion) {
 
     let n_rows = 100_000;
     let csv = generate_csv(n_rows);
-    let csv_size = csv.len() as u64;
+    let _csv_size = csv.len() as u64;
 
     let dir = TempDir::new().expect("tempdir");
     write_csv(dir.path(), "data.csv", &csv);
@@ -64,10 +64,7 @@ fn bench_filter_selectivity(c: &mut Criterion) {
         &dir,
         |b, dir| {
             b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT count(*) FROM data WHERE amount > 899",
-                );
+                run_query(dir.path(), "SELECT count(*) FROM data WHERE amount > 899");
             });
         },
     );
@@ -78,10 +75,7 @@ fn bench_filter_selectivity(c: &mut Criterion) {
         &dir,
         |b, dir| {
             b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT count(*) FROM data WHERE amount > 499",
-                );
+                run_query(dir.path(), "SELECT count(*) FROM data WHERE amount > 499");
             });
         },
     );
@@ -92,10 +86,7 @@ fn bench_filter_selectivity(c: &mut Criterion) {
         &dir,
         |b, dir| {
             b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT count(*) FROM data WHERE amount > 99",
-                );
+                run_query(dir.path(), "SELECT count(*) FROM data WHERE amount > 99");
             });
         },
     );
@@ -117,32 +108,24 @@ fn bench_filter_compound(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n_rows as u64));
 
     // AND predicate
-    group.bench_with_input(
-        BenchmarkId::new("and_predicate", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT count(*) FROM data WHERE amount > 200 AND amount < 800",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("and_predicate", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(
+                dir.path(),
+                "SELECT count(*) FROM data WHERE amount > 200 AND amount < 800",
+            );
+        });
+    });
 
     // OR predicate
-    group.bench_with_input(
-        BenchmarkId::new("or_predicate", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT count(*) FROM data WHERE amount < 100 OR amount > 900",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("or_predicate", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(
+                dir.path(),
+                "SELECT count(*) FROM data WHERE amount < 100 OR amount > 900",
+            );
+        });
+    });
 
     group.finish();
 }

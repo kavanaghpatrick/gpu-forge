@@ -19,7 +19,7 @@ pub struct NullBitmap {
 impl NullBitmap {
     /// Create a new null bitmap for `row_count` rows, all initially non-null.
     pub fn new(row_count: usize) -> Self {
-        let word_count = (row_count + 31) / 32;
+        let word_count = row_count.div_ceil(32);
         Self {
             words: vec![0u32; word_count],
             row_count,
@@ -31,7 +31,12 @@ impl NullBitmap {
     /// # Panics
     /// Panics if `row >= row_count`.
     pub fn set_null(&mut self, row: usize) {
-        assert!(row < self.row_count, "row {} out of bounds ({})", row, self.row_count);
+        assert!(
+            row < self.row_count,
+            "row {} out of bounds ({})",
+            row,
+            self.row_count
+        );
         let word_idx = row / 32;
         let bit_idx = row % 32;
         self.words[word_idx] |= 1u32 << bit_idx;
@@ -42,7 +47,12 @@ impl NullBitmap {
     /// # Panics
     /// Panics if `row >= row_count`.
     pub fn clear_null(&mut self, row: usize) {
-        assert!(row < self.row_count, "row {} out of bounds ({})", row, self.row_count);
+        assert!(
+            row < self.row_count,
+            "row {} out of bounds ({})",
+            row,
+            self.row_count
+        );
         let word_idx = row / 32;
         let bit_idx = row % 32;
         self.words[word_idx] &= !(1u32 << bit_idx);
@@ -53,7 +63,12 @@ impl NullBitmap {
     /// # Panics
     /// Panics if `row >= row_count`.
     pub fn is_null(&self, row: usize) -> bool {
-        assert!(row < self.row_count, "row {} out of bounds ({})", row, self.row_count);
+        assert!(
+            row < self.row_count,
+            "row {} out of bounds ({})",
+            row,
+            self.row_count
+        );
         let word_idx = row / 32;
         let bit_idx = row % 32;
         (self.words[word_idx] >> bit_idx) & 1 == 1

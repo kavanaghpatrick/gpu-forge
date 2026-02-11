@@ -96,31 +96,20 @@ fn bench_filtered_aggregate(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(n_rows as u64));
 
-    group.bench_with_input(
-        BenchmarkId::new("count_where", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT count(*) FROM data WHERE amount > 5000",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("count_where", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(dir.path(), "SELECT count(*) FROM data WHERE amount > 5000");
+        });
+    });
 
-    group.bench_with_input(
-        BenchmarkId::new("sum_where", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT sum(amount) FROM data WHERE amount > 5000",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("sum_where", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(
+                dir.path(),
+                "SELECT sum(amount) FROM data WHERE amount > 5000",
+            );
+        });
+    });
 
     group.finish();
 }
@@ -150,18 +139,11 @@ fn bench_group_by(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("sum_groups", n_groups),
-            &dir,
-            |b, dir| {
-                b.iter(|| {
-                    run_query(
-                        dir.path(),
-                        "SELECT grp, sum(amount) FROM data GROUP BY grp",
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("sum_groups", n_groups), &dir, |b, dir| {
+            b.iter(|| {
+                run_query(dir.path(), "SELECT grp, sum(amount) FROM data GROUP BY grp");
+            });
+        });
     }
 
     group.finish();

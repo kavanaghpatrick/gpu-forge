@@ -364,7 +364,7 @@ After POC validated, build the full query engine with all formats and operators.
 
 ## Phase 5: PR Lifecycle
 
-- [ ] 5.1 Local quality check
+- [x] 5.1 Local quality check
   - **Do**: Run all quality checks locally: `cargo test --all-targets`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `MTL_SHADER_VALIDATION=1 cargo test --test gpu_filter --test gpu_aggregate`. Fix any issues. Run benchmarks and verify no regressions > 15%.
   - **Files**: None (verification only)
   - **Done when**: All checks pass locally; no clippy warnings; no perf regressions

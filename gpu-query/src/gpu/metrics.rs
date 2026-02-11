@@ -126,7 +126,11 @@ impl GpuMetricsCollector {
             metrics.scan_throughput_gbps,
             MAX_HISTORY,
         );
-        push_bounded_u64(&mut self.memory_history, metrics.memory_used_bytes, MAX_HISTORY);
+        push_bounded_u64(
+            &mut self.memory_history,
+            metrics.memory_used_bytes,
+            MAX_HISTORY,
+        );
 
         self.latest = metrics;
     }
@@ -209,7 +213,12 @@ impl GpuTimer {
     }
 
     /// Build a QueryMetrics from the timer result and additional info.
-    pub fn into_metrics(self, bytes_scanned: u64, rows_processed: u64, memory_used_bytes: u64) -> QueryMetrics {
+    pub fn into_metrics(
+        self,
+        bytes_scanned: u64,
+        rows_processed: u64,
+        memory_used_bytes: u64,
+    ) -> QueryMetrics {
         let gpu_time_ms = self.elapsed_ms();
         let scan_throughput_gbps = if gpu_time_ms > 0.0 {
             (bytes_scanned as f64 / 1_000_000_000.0) / (gpu_time_ms / 1000.0)
@@ -227,7 +236,13 @@ impl GpuTimer {
     }
 
     /// Build a QueryMetrics with warm/cold indicator.
-    pub fn into_metrics_with_warmth(self, bytes_scanned: u64, rows_processed: u64, memory_used_bytes: u64, is_warm: bool) -> QueryMetrics {
+    pub fn into_metrics_with_warmth(
+        self,
+        bytes_scanned: u64,
+        rows_processed: u64,
+        memory_used_bytes: u64,
+        is_warm: bool,
+    ) -> QueryMetrics {
         let mut m = self.into_metrics(bytes_scanned, rows_processed, memory_used_bytes);
         m.is_warm = is_warm;
         m
@@ -340,9 +355,7 @@ pub fn format_data_bytes(bytes: u64) -> String {
 
 /// Format a CPU comparison speedup (e.g., 312.5 -> "~312x vs CPU").
 pub fn format_speedup(speedup: f64) -> String {
-    if speedup < 1.0 {
-        format!("~{:.1}x vs CPU", speedup)
-    } else if speedup < 10.0 {
+    if speedup < 10.0 {
         format!("~{:.1}x vs CPU", speedup)
     } else {
         format!("~{:.0}x vs CPU", speedup)
@@ -360,7 +373,11 @@ pub fn build_metrics_performance_line(metrics: &QueryMetrics, utilization: f32) 
     let estimate = metrics.cpu_estimate();
     let speedup = format_speedup(estimate.speedup_vs_cpu);
 
-    let warm_cold = if metrics.is_warm { " (warm)" } else { " (cold)" };
+    let warm_cold = if metrics.is_warm {
+        " (warm)"
+    } else {
+        " (cold)"
+    };
 
     format!(
         " {} rows | {} | {}{} | {} | {}",
@@ -469,10 +486,7 @@ pub fn render_profile_timeline(profile: &PipelineProfile) -> String {
     let stages = profile.stages();
 
     // Find maximum stage time for proportional bar calculation
-    let max_time = stages
-        .iter()
-        .map(|(_, t)| *t)
-        .fold(0.0_f64, f64::max);
+    let max_time = stages.iter().map(|(_, t)| *t).fold(0.0_f64, f64::max);
 
     let mut lines = Vec::with_capacity(stages.len() + 1);
 
@@ -494,10 +508,7 @@ pub fn render_profile_timeline(profile: &PipelineProfile) -> String {
     }
 
     // Total line (no bar)
-    lines.push(format!(
-        "{:<10} {:>6.1}ms",
-        "Total:", profile.total_ms,
-    ));
+    lines.push(format!("{:<10} {:>6.1}ms", "Total:", profile.total_ms,));
 
     lines.join("\n")
 }
@@ -533,7 +544,13 @@ mod tests {
     use super::*;
 
     /// Helper to build a test QueryMetrics quickly.
-    fn test_metrics(gpu_time_ms: f64, memory_used_bytes: u64, scan_throughput_gbps: f64, rows_processed: u64, bytes_scanned: u64) -> QueryMetrics {
+    fn test_metrics(
+        gpu_time_ms: f64,
+        memory_used_bytes: u64,
+        scan_throughput_gbps: f64,
+        rows_processed: u64,
+        bytes_scanned: u64,
+    ) -> QueryMetrics {
         QueryMetrics {
             gpu_time_ms,
             memory_used_bytes,
@@ -1007,7 +1024,12 @@ mod tests {
         assert_eq!(lines.len(), 10);
         // No bars should appear
         for line in &lines {
-            assert_eq!(line.matches('\u{2588}').count(), 0, "no bars expected in: {}", line);
+            assert_eq!(
+                line.matches('\u{2588}').count(),
+                0,
+                "no bars expected in: {}",
+                line
+            );
         }
     }
 

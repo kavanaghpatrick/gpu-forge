@@ -15,6 +15,12 @@ pub struct GpuDevice {
     pub library: Retained<ProtocolObject<dyn MTLLibrary>>,
 }
 
+impl Default for GpuDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GpuDevice {
     /// Initialize Metal device, command queue, and load the compiled metallib.
     pub fn new() -> Self {
@@ -49,7 +55,10 @@ impl GpuDevice {
         // Candidate directories to search for build/<hash>/out/shaders.metallib
         let search_dirs = [
             target_dir.to_path_buf(),
-            target_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+            target_dir
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
         ];
 
         for dir in &search_dirs {

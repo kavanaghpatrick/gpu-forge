@@ -128,9 +128,7 @@ impl LogicalPlan {
             LogicalPlan::Sort { order_by, input } => {
                 let cols: Vec<String> = order_by
                     .iter()
-                    .map(|(e, asc)| {
-                        format!("{} {}", e, if *asc { "ASC" } else { "DESC" })
-                    })
+                    .map(|(e, asc)| format!("{} {}", e, if *asc { "ASC" } else { "DESC" }))
                     .collect();
                 writeln!(f, "{}Sort: [{}]", pad, cols.join(", "))?;
                 input.fmt_indent(f, indent + 1)

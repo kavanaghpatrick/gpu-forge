@@ -162,9 +162,12 @@ fn parse_on_off(s: &str) -> Option<bool> {
 
 /// Context provided to dot command execution.
 /// Contains references to relevant application state needed by commands.
+/// Type alias for table metadata: (name, format, [(col_name, col_type)]).
+pub type TableMetadata = (String, String, Vec<(String, String)>);
+
 pub struct DotCommandContext<'a> {
     /// Table names and their metadata for .tables / .schema / .describe.
-    pub tables: &'a [(String, String, Vec<(String, String)>)], // (name, format, [(col_name, col_type)])
+    pub tables: &'a [TableMetadata],
     /// Query history for .history.
     pub history: &'a [String],
     /// Last query result as formatted text for .save.
@@ -191,9 +194,9 @@ pub fn handle_dot_command(cmd: &DotCommand, ctx: &DotCommandContext) -> DotComma
         DotCommand::Describe(table) => handle_describe(table),
         DotCommand::Gpu => handle_gpu(ctx),
         DotCommand::Profile(toggle) => handle_profile(*toggle, ctx),
-        DotCommand::Benchmark => {
-            DotCommandResult::Output("Benchmark mode: run a query with .profile on to see per-kernel timing.".into())
-        }
+        DotCommand::Benchmark => DotCommandResult::Output(
+            "Benchmark mode: run a query with .profile on to see per-kernel timing.".into(),
+        ),
         DotCommand::Timer(toggle) => handle_timer(*toggle, ctx),
         DotCommand::Comparison => handle_comparison(ctx),
         DotCommand::Format(fmt) => handle_format(fmt, ctx),
@@ -213,7 +216,12 @@ fn handle_tables(ctx: &DotCommandContext) -> DotCommandResult {
 
     let mut out = String::from("Tables:\n");
     for (name, format, columns) in ctx.tables {
-        out.push_str(&format!("  {} [{}] ({} columns)\n", name, format, columns.len()));
+        out.push_str(&format!(
+            "  {} [{}] ({} columns)\n",
+            name,
+            format,
+            columns.len()
+        ));
     }
     DotCommandResult::Output(out.trim_end().to_string())
 }
@@ -294,10 +302,9 @@ fn handle_profile(toggle: Option<bool>, ctx: &DotCommandContext) -> DotCommandRe
 /// .timer on|off — toggle query timing display.
 fn handle_timer(toggle: Option<bool>, ctx: &DotCommandContext) -> DotCommandResult {
     match toggle {
-        Some(on) => DotCommandResult::StateChange(format!(
-            "Timer: {}",
-            if on { "ON" } else { "OFF" }
-        )),
+        Some(on) => {
+            DotCommandResult::StateChange(format!("Timer: {}", if on { "ON" } else { "OFF" }))
+        }
         None => DotCommandResult::Output(format!(
             "Timer: {}. Use .timer on/off to toggle.",
             if ctx.timer_on { "ON" } else { "OFF" }
@@ -402,9 +409,7 @@ fn config_dir() -> Option<PathBuf> {
 
 /// Get the home directory path.
 fn dirs_path() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
+    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 /// Get the history file path: ~/.config/gpu-query/history
@@ -472,7 +477,7 @@ pub fn append_to_history(history: &mut Vec<String>, query: &str) {
     }
 
     // Don't add if same as last entry
-    if history.last().map_or(false, |last| *last == trimmed) {
+    if history.last().is_some_and(|last| *last == trimmed) {
         return;
     }
 
@@ -572,10 +577,7 @@ mod tests {
             parse_dot_command(".timer off"),
             Some(DotCommand::Timer(Some(false)))
         );
-        assert_eq!(
-            parse_dot_command(".timer"),
-            Some(DotCommand::Timer(None))
-        );
+        assert_eq!(parse_dot_command(".timer"), Some(DotCommand::Timer(None)));
     }
 
     #[test]
@@ -604,10 +606,7 @@ mod tests {
 
     #[test]
     fn test_parse_format_no_arg() {
-        assert_eq!(
-            parse_dot_command(".format"),
-            Some(DotCommand::Format(None))
-        );
+        assert_eq!(parse_dot_command(".format"), Some(DotCommand::Format(None)));
     }
 
     #[test]
@@ -709,13 +708,19 @@ mod tests {
     #[test]
     fn test_handle_tables_with_entries() {
         let tables = vec![
-            ("sales".into(), "CSV".into(), vec![
-                ("id".into(), "INT64".into()),
-                ("amount".into(), "FLOAT64".into()),
-            ]),
-            ("users".into(), "JSON".into(), vec![
-                ("uid".into(), "INT64".into()),
-            ]),
+            (
+                "sales".into(),
+                "CSV".into(),
+                vec![
+                    ("id".into(), "INT64".into()),
+                    ("amount".into(), "FLOAT64".into()),
+                ],
+            ),
+            (
+                "users".into(),
+                "JSON".into(),
+                vec![("uid".into(), "INT64".into())],
+            ),
         ];
         let ctx = make_ctx(&tables, &[]);
         let result = handle_dot_command(&DotCommand::Tables, &ctx);
@@ -733,12 +738,14 @@ mod tests {
 
     #[test]
     fn test_handle_schema_specific_table() {
-        let tables = vec![
-            ("sales".into(), "CSV".into(), vec![
+        let tables = vec![(
+            "sales".into(),
+            "CSV".into(),
+            vec![
                 ("id".into(), "INT64".into()),
                 ("amount".into(), "FLOAT64".into()),
-            ]),
-        ];
+            ],
+        )];
         let ctx = make_ctx(&tables, &[]);
         let result = handle_dot_command(&DotCommand::Schema("sales".into()), &ctx);
         match result {
@@ -755,9 +762,7 @@ mod tests {
 
     #[test]
     fn test_handle_schema_not_found() {
-        let tables = vec![
-            ("sales".into(), "CSV".into(), vec![]),
-        ];
+        let tables = vec![("sales".into(), "CSV".into(), vec![])];
         let ctx = make_ctx(&tables, &[]);
         let result = handle_dot_command(&DotCommand::Schema("nonexistent".into()), &ctx);
         match result {
@@ -998,11 +1003,23 @@ mod tests {
 
     #[test]
     fn test_dot_command_result_display() {
-        assert_eq!(DotCommandResult::Output("hello".into()).to_string(), "hello");
-        assert_eq!(DotCommandResult::StateChange("changed".into()).to_string(), "changed");
-        assert_eq!(DotCommandResult::ClearScreen.to_string(), "(screen cleared)");
+        assert_eq!(
+            DotCommandResult::Output("hello".into()).to_string(),
+            "hello"
+        );
+        assert_eq!(
+            DotCommandResult::StateChange("changed".into()).to_string(),
+            "changed"
+        );
+        assert_eq!(
+            DotCommandResult::ClearScreen.to_string(),
+            "(screen cleared)"
+        );
         assert_eq!(DotCommandResult::Quit.to_string(), "Goodbye.");
-        assert_eq!(DotCommandResult::Error("bad".into()).to_string(), "Error: bad");
+        assert_eq!(
+            DotCommandResult::Error("bad".into()).to_string(),
+            "Error: bad"
+        );
     }
 
     #[test]

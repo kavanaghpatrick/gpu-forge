@@ -11,9 +11,7 @@
 
 use gpu_query::gpu::device::GpuDevice;
 use gpu_query::gpu::encode;
-use gpu_query::gpu::pipeline::{
-    filter_pso_key, ColumnTypeCode, CompareOp, PsoCache,
-};
+use gpu_query::gpu::pipeline::{filter_pso_key, ColumnTypeCode, CompareOp, PsoCache};
 use gpu_query::gpu::types::{AggParams, FilterParams};
 
 use objc2_metal::{
@@ -23,7 +21,10 @@ use objc2_metal::{
 
 // ---- Helper: build an all-ones bitmask (no filter) ----
 
-fn build_all_ones_mask(device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>, row_count: usize) -> objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTLBuffer>> {
+fn build_all_ones_mask(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+    row_count: usize,
+) -> objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTLBuffer>> {
     let num_words = (row_count + 31) / 32;
     let buf = encode::alloc_buffer(device, num_words * 4);
     unsafe {
@@ -52,7 +53,10 @@ fn run_filter_to_bitmask(
     data: &[i64],
     compare_op: CompareOp,
     compare_value: i64,
-) -> (objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTLBuffer>>, u32) {
+) -> (
+    objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTLBuffer>>,
+    u32,
+) {
     let row_count = data.len() as u32;
     let bitmask_words = ((row_count + 31) / 32) as usize;
 
@@ -156,11 +160,7 @@ fn run_aggregate_count(
         encode::dispatch_1d(
             &encoder,
             &pipeline,
-            &[
-                (mask_buffer, 0),
-                (&result_buffer, 1),
-                (&params_buffer, 2),
-            ],
+            &[(mask_buffer, 0), (&result_buffer, 1), (&params_buffer, 2)],
             num_words,
         );
 
@@ -189,7 +189,7 @@ fn run_aggregate_sum_int64(
     let result_buffer = encode::alloc_buffer(&gpu.device, 8);
     unsafe {
         let ptr = result_buffer.contents().as_ptr() as *mut u32;
-        *ptr = 0;       // lo
+        *ptr = 0; // lo
         *ptr.add(1) = 0; // hi
     }
 
@@ -219,8 +219,8 @@ fn run_aggregate_sum_int64(
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(&data_buffer), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(&result_buffer), 0, 2);   // result_lo
-            encoder.setBuffer_offset_atIndex(Some(&result_buffer), 4, 3);   // result_hi (offset 4 bytes)
+            encoder.setBuffer_offset_atIndex(Some(&result_buffer), 0, 2); // result_lo
+            encoder.setBuffer_offset_atIndex(Some(&result_buffer), 4, 3); // result_hi (offset 4 bytes)
             encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 4);
         }
 
@@ -297,7 +297,11 @@ fn test_count_filtered_gt_25() {
     let gpu_count = run_aggregate_count(&gpu, &mask, data.len() as u32);
     let cpu_count = cpu_count_filtered(&data, CompareOp::Gt, 25);
 
-    assert_eq!(gpu_count, cpu_count, "COUNT filtered GT 25: expected {}, got {}", cpu_count, gpu_count);
+    assert_eq!(
+        gpu_count, cpu_count,
+        "COUNT filtered GT 25: expected {}, got {}",
+        cpu_count, gpu_count
+    );
     assert_eq!(gpu_count, 3);
 }
 
@@ -380,7 +384,11 @@ fn test_sum_filtered_gt_25() {
     let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
     let cpu_sum = cpu_sum_filtered(&data, CompareOp::Gt, 25);
 
-    assert_eq!(gpu_sum, cpu_sum, "SUM filtered GT 25: expected {}, got {}", cpu_sum, gpu_sum);
+    assert_eq!(
+        gpu_sum, cpu_sum,
+        "SUM filtered GT 25: expected {}, got {}",
+        cpu_sum, gpu_sum
+    );
     assert_eq!(gpu_sum, 120); // 30 + 40 + 50
 }
 
@@ -427,7 +435,11 @@ fn test_sum_negative_values() {
 
     let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
     let cpu_sum: i64 = data.iter().sum();
-    assert_eq!(gpu_sum, cpu_sum, "SUM with negative values: expected {}, got {}", cpu_sum, gpu_sum);
+    assert_eq!(
+        gpu_sum, cpu_sum,
+        "SUM with negative values: expected {}, got {}",
+        cpu_sum, gpu_sum
+    );
     assert_eq!(gpu_sum, -10); // -10 + -20 + 30 + 40 + -50 = -10
 }
 
@@ -462,7 +474,11 @@ fn test_sum_1000_elements() {
     let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
     let cpu_sum = cpu_sum_filtered(&data, CompareOp::Gt, 499);
 
-    assert_eq!(gpu_sum, cpu_sum, "SUM 1000 elements GT 499: expected {}, got {}", cpu_sum, gpu_sum);
+    assert_eq!(
+        gpu_sum, cpu_sum,
+        "SUM 1000 elements GT 499: expected {}, got {}",
+        cpu_sum, gpu_sum
+    );
     // sum of 500..999 = (500+999)*500/2 = 374750
     assert_eq!(gpu_sum, 374750);
 }
@@ -485,7 +501,11 @@ fn test_sum_1000_unfiltered() {
 
     let gpu_sum = run_aggregate_sum_int64(&gpu, &data, &mask, data.len() as u32);
     let cpu_sum: i64 = data.iter().sum();
-    assert_eq!(gpu_sum, cpu_sum, "SUM 0..999 unfiltered: expected {}, got {}", cpu_sum, gpu_sum);
+    assert_eq!(
+        gpu_sum, cpu_sum,
+        "SUM 0..999 unfiltered: expected {}, got {}",
+        cpu_sum, gpu_sum
+    );
     assert_eq!(gpu_sum, 499500); // sum of 0..999
 }
 
@@ -559,10 +579,8 @@ fn run_aggregate_min_int64(
     let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
 
     // Partials buffer: one i64 per threadgroup, initialized to INT64_MAX
-    let partials_buffer = encode::alloc_buffer(
-        &gpu.device,
-        threadgroup_count * std::mem::size_of::<i64>(),
-    );
+    let partials_buffer =
+        encode::alloc_buffer(&gpu.device, threadgroup_count * std::mem::size_of::<i64>());
     unsafe {
         let ptr = partials_buffer.contents().as_ptr() as *mut i64;
         for i in 0..threadgroup_count {
@@ -640,10 +658,8 @@ fn run_aggregate_max_int64(
     let threadgroup_count = (row_count as usize + threads_per_tg - 1) / threads_per_tg;
 
     // Partials buffer: one i64 per threadgroup, initialized to INT64_MIN
-    let partials_buffer = encode::alloc_buffer(
-        &gpu.device,
-        threadgroup_count * std::mem::size_of::<i64>(),
-    );
+    let partials_buffer =
+        encode::alloc_buffer(&gpu.device, threadgroup_count * std::mem::size_of::<i64>());
     unsafe {
         let ptr = partials_buffer.contents().as_ptr() as *mut i64;
         for i in 0..threadgroup_count {
@@ -1061,11 +1077,11 @@ fn test_executor_multiple_aggregates() {
         "SELECT count(*), sum(amount), min(amount), max(amount), avg(amount) FROM test",
     );
     assert_eq!(result.columns.len(), 5);
-    assert_eq!(result.rows[0][0], "5");     // count
-    assert_eq!(result.rows[0][1], "1500");  // sum
-    assert_eq!(result.rows[0][2], "100");   // min
-    assert_eq!(result.rows[0][3], "500");   // max
-    assert_eq!(result.rows[0][4], "300");   // avg
+    assert_eq!(result.rows[0][0], "5"); // count
+    assert_eq!(result.rows[0][1], "1500"); // sum
+    assert_eq!(result.rows[0][2], "100"); // min
+    assert_eq!(result.rows[0][3], "500"); // max
+    assert_eq!(result.rows[0][4], "300"); // avg
 }
 
 #[test]
@@ -1075,10 +1091,10 @@ fn test_executor_filtered_aggregates() {
         csv,
         "SELECT count(*), sum(amount), min(amount), max(amount) FROM test WHERE amount > 200",
     );
-    assert_eq!(result.rows[0][0], "3");     // count: 300,400,500
-    assert_eq!(result.rows[0][1], "1200");  // sum: 300+400+500
-    assert_eq!(result.rows[0][2], "300");   // min
-    assert_eq!(result.rows[0][3], "500");   // max
+    assert_eq!(result.rows[0][0], "3"); // count: 300,400,500
+    assert_eq!(result.rows[0][1], "1200"); // sum: 300+400+500
+    assert_eq!(result.rows[0][2], "300"); // min
+    assert_eq!(result.rows[0][3], "500"); // max
 }
 
 #[test]
@@ -1273,7 +1289,11 @@ fn test_sum_float_single_value() {
     let mask = build_all_ones_mask(&gpu.device, data.len());
 
     let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
-    assert!((gpu_sum - 42.5).abs() < 0.01, "SUM float single value: expected 42.5, got {}", gpu_sum);
+    assert!(
+        (gpu_sum - 42.5).abs() < 0.01,
+        "SUM float single value: expected 42.5, got {}",
+        gpu_sum
+    );
 }
 
 #[test]
@@ -1284,7 +1304,11 @@ fn test_sum_float_large_values() {
     let mask = build_all_ones_mask(&gpu.device, data.len());
 
     let gpu_sum = run_aggregate_sum_float(&gpu, &data, &mask, data.len() as u32);
-    assert!((gpu_sum - 15000.0).abs() < 1.0, "SUM float large: expected 15000, got {}", gpu_sum);
+    assert!(
+        (gpu_sum - 15000.0).abs() < 1.0,
+        "SUM float large: expected 15000, got {}",
+        gpu_sum
+    );
 }
 
 #[test]
@@ -1380,10 +1404,7 @@ fn test_executor_avg_filtered() {
 #[test]
 fn test_executor_group_by_many_groups() {
     let csv = "region,amount\n1,100\n2,200\n3,300\n4,400\n5,500\n";
-    let result = run_query(
-        csv,
-        "SELECT region, sum(amount) FROM test GROUP BY region",
-    );
+    let result = run_query(csv, "SELECT region, sum(amount) FROM test GROUP BY region");
     assert_eq!(result.row_count, 5, "Each region is unique -> 5 groups");
     // Verify each group has its own value
     for i in 0..5 {

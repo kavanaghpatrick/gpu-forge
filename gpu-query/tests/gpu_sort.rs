@@ -26,8 +26,7 @@ fn make_csv(dir: &Path, name: &str, content: &str) {
 fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let catalog = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
-    let physical_plan =
-        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
     executor
         .execute(&physical_plan, &catalog)
@@ -392,7 +391,9 @@ fn test_order_by_20_rows() {
     let tmp = TempDir::new().unwrap();
     // Insert rows in random-ish order
     let mut csv = String::from("id,amount\n");
-    let order = [15, 3, 18, 7, 12, 1, 9, 20, 5, 14, 2, 16, 8, 11, 19, 4, 13, 6, 17, 10];
+    let order = [
+        15, 3, 18, 7, 12, 1, 9, 20, 5, 14, 2, 16, 8, 11, 19, 4, 13, 6, 17, 10,
+    ];
     for &v in &order {
         csv.push_str(&format!("{},{}\n", v, v * 100));
     }
@@ -400,7 +401,11 @@ fn test_order_by_20_rows() {
 
     let result = run_query(tmp.path(), "SELECT * FROM sales ORDER BY amount ASC");
     assert_eq!(result.row_count, 20);
-    let amounts: Vec<i64> = result.rows.iter().map(|r| r[1].parse::<i64>().unwrap()).collect();
+    let amounts: Vec<i64> = result
+        .rows
+        .iter()
+        .map(|r| r[1].parse::<i64>().unwrap())
+        .collect();
     let expected: Vec<i64> = (1..=20).map(|v| v * 100).collect();
     assert_eq!(amounts, expected);
 }
@@ -441,7 +446,10 @@ fn test_order_by_desc_limit_1() {
                5,400\n";
     make_csv(tmp.path(), "sales.csv", csv);
 
-    let result = run_query(tmp.path(), "SELECT * FROM sales ORDER BY amount DESC LIMIT 1");
+    let result = run_query(
+        tmp.path(),
+        "SELECT * FROM sales ORDER BY amount DESC LIMIT 1",
+    );
     assert_eq!(result.row_count, 1);
     assert_eq!(result.rows[0][1], "500");
 }
@@ -461,7 +469,10 @@ fn test_order_by_asc_limit_1() {
                5,400\n";
     make_csv(tmp.path(), "sales.csv", csv);
 
-    let result = run_query(tmp.path(), "SELECT * FROM sales ORDER BY amount ASC LIMIT 1");
+    let result = run_query(
+        tmp.path(),
+        "SELECT * FROM sales ORDER BY amount ASC LIMIT 1",
+    );
     assert_eq!(result.row_count, 1);
     assert_eq!(result.rows[0][1], "100");
 }

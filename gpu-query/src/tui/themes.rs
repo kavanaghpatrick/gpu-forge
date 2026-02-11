@@ -54,22 +54,22 @@ impl Theme {
             title_gradient: Gradient::new(vec![
                 GradientStop::new(0.0, 255, 100, 0),   // deep orange
                 GradientStop::new(0.3, 255, 200, 0),   // golden
-                GradientStop::new(0.5, 255, 255, 100),  // hot yellow
+                GradientStop::new(0.5, 255, 255, 100), // hot yellow
                 GradientStop::new(0.7, 255, 200, 0),   // golden
                 GradientStop::new(1.0, 255, 100, 0),   // deep orange
             ]),
             thermal: Gradient::new(vec![
-                GradientStop::new(0.0, 0, 200, 80),     // green
-                GradientStop::new(0.4, 100, 220, 0),    // lime
-                GradientStop::new(0.6, 255, 220, 0),    // yellow
-                GradientStop::new(0.8, 255, 140, 0),    // orange
-                GradientStop::new(1.0, 255, 40, 40),    // red
+                GradientStop::new(0.0, 0, 200, 80),  // green
+                GradientStop::new(0.4, 100, 220, 0), // lime
+                GradientStop::new(0.6, 255, 220, 0), // yellow
+                GradientStop::new(0.8, 255, 140, 0), // orange
+                GradientStop::new(1.0, 255, 40, 40), // red
             ]),
             glow: Gradient::new(vec![
-                GradientStop::new(0.0, 80, 80, 200),    // cool blue
-                GradientStop::new(0.3, 100, 180, 255),  // light blue
-                GradientStop::new(0.6, 180, 100, 255),  // purple
-                GradientStop::new(1.0, 255, 80, 180),   // hot pink
+                GradientStop::new(0.0, 80, 80, 200),   // cool blue
+                GradientStop::new(0.3, 100, 180, 255), // light blue
+                GradientStop::new(0.6, 180, 100, 255), // purple
+                GradientStop::new(1.0, 255, 80, 180),  // hot pink
             ]),
             border: Color::Rgb(100, 100, 120),
             accent: Color::Rgb(255, 180, 0),
@@ -91,11 +91,11 @@ impl Theme {
         Self {
             name: "glow".into(),
             title_gradient: Gradient::new(vec![
-                GradientStop::new(0.0, 0, 150, 255),   // electric blue
-                GradientStop::new(0.3, 100, 80, 255),   // blue-purple
-                GradientStop::new(0.5, 200, 0, 255),    // purple
-                GradientStop::new(0.7, 100, 80, 255),   // blue-purple
-                GradientStop::new(1.0, 0, 150, 255),   // electric blue
+                GradientStop::new(0.0, 0, 150, 255),  // electric blue
+                GradientStop::new(0.3, 100, 80, 255), // blue-purple
+                GradientStop::new(0.5, 200, 0, 255),  // purple
+                GradientStop::new(0.7, 100, 80, 255), // blue-purple
+                GradientStop::new(1.0, 0, 150, 255),  // electric blue
             ]),
             thermal: Gradient::new(vec![
                 GradientStop::new(0.0, 0, 100, 200),
@@ -127,9 +127,9 @@ impl Theme {
         Self {
             name: "ice".into(),
             title_gradient: Gradient::new(vec![
-                GradientStop::new(0.0, 100, 200, 255),  // sky blue
-                GradientStop::new(0.5, 200, 240, 255),  // ice white
-                GradientStop::new(1.0, 100, 200, 255),  // sky blue
+                GradientStop::new(0.0, 100, 200, 255), // sky blue
+                GradientStop::new(0.5, 200, 240, 255), // ice white
+                GradientStop::new(1.0, 100, 200, 255), // sky blue
             ]),
             thermal: Gradient::new(vec![
                 GradientStop::new(0.0, 0, 150, 200),

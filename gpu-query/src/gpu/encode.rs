@@ -26,12 +26,7 @@ pub fn make_pipeline(
     let device = library.device();
     device
         .newComputePipelineStateWithFunction_error(&function)
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to create compute pipeline for '{}': {:?}",
-                name, e
-            )
-        })
+        .unwrap_or_else(|e| panic!("Failed to create compute pipeline for '{}': {:?}", name, e))
 }
 
 /// Create a new command buffer from the queue.
@@ -64,7 +59,7 @@ pub fn dispatch_1d(
     }
 
     let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-    let threadgroup_count = (total_threads + threads_per_tg - 1) / threads_per_tg;
+    let threadgroup_count = total_threads.div_ceil(threads_per_tg);
 
     let grid_size = MTLSize {
         width: threadgroup_count,
@@ -134,8 +129,8 @@ pub fn alloc_buffer_with_data<T: Copy>(
     let options = objc2_metal::MTLResourceOptions::StorageModeShared;
 
     unsafe {
-        let ptr = NonNull::new(data.as_ptr() as *mut std::ffi::c_void)
-            .expect("data pointer is null");
+        let ptr =
+            NonNull::new(data.as_ptr() as *mut std::ffi::c_void).expect("data pointer is null");
         device
             .newBufferWithBytes_length_options(ptr, size, options)
             .expect("Failed to allocate Metal buffer with data")

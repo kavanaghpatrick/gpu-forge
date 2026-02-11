@@ -105,7 +105,11 @@ mod tests {
     #[test]
     fn test_scan_csv_files() {
         let tmp = TempDir::new().unwrap();
-        write_file(tmp.path(), "sales.csv", b"id,amount,region\n1,100,US\n2,200,EU\n");
+        write_file(
+            tmp.path(),
+            "sales.csv",
+            b"id,amount,region\n1,100,US\n2,200,EU\n",
+        );
         write_file(tmp.path(), "users.csv", b"uid,name\n1,alice\n");
 
         let catalog = scan_directory(tmp.path()).unwrap();
@@ -165,11 +169,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "data.csv", b"a,b\n1,2\n");
         std::fs::create_dir(tmp.path().join("subdir")).unwrap();
-        write_file(
-            &tmp.path().join("subdir"),
-            "nested.csv",
-            b"x,y\n3,4\n",
-        );
+        write_file(&tmp.path().join("subdir"), "nested.csv", b"x,y\n3,4\n");
 
         let catalog = scan_directory(tmp.path()).unwrap();
         // Only top-level files
@@ -186,7 +186,11 @@ mod tests {
     #[test]
     fn test_scan_tab_delimited_csv() {
         let tmp = TempDir::new().unwrap();
-        write_file(tmp.path(), "tsv_data.tsv", b"col_a\tcol_b\tcol_c\n1\t2\t3\n");
+        write_file(
+            tmp.path(),
+            "tsv_data.tsv",
+            b"col_a\tcol_b\tcol_c\n1\t2\t3\n",
+        );
 
         let catalog = scan_directory(tmp.path()).unwrap();
         assert_eq!(catalog.len(), 1);

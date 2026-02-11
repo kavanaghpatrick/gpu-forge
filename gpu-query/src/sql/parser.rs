@@ -4,8 +4,8 @@
 //! of SQL is supported -- see module-level doc for `sql::mod.rs`.
 
 use sqlparser::ast::{
-    self as sp, Expr as SpExpr, FunctionArg, FunctionArgExpr, GroupByExpr,
-    SelectItem, SetExpr, Statement, TableFactor,
+    self as sp, Expr as SpExpr, FunctionArg, FunctionArgExpr, GroupByExpr, SelectItem, SetExpr,
+    Statement, TableFactor,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -50,7 +50,8 @@ impl std::error::Error for ParseError {}
 /// - LIMIT integer
 pub fn parse_query(sql: &str) -> Result<LogicalPlan, ParseError> {
     let dialect = GenericDialect {};
-    let statements = Parser::parse_sql(&dialect, sql).map_err(|e| ParseError::SqlParser(e.to_string()))?;
+    let statements =
+        Parser::parse_sql(&dialect, sql).map_err(|e| ParseError::SqlParser(e.to_string()))?;
 
     if statements.len() != 1 {
         return Err(ParseError::Unsupported(format!(
@@ -126,25 +127,21 @@ fn convert_query(query: &sp::Query) -> Result<LogicalPlan, ParseError> {
     }
 
     // 5. ORDER BY -> Sort node
-    if let Some(order_by) = &query.order_by {
-        match order_by {
-            sp::OrderBy { exprs, .. } => {
-                if !exprs.is_empty() {
-                    let order_exprs = exprs
-                        .iter()
-                        .map(|o| {
-                            let expr = convert_expr(&o.expr)?;
-                            let asc = o.asc.unwrap_or(true);
-                            Ok((expr, asc))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(sp::OrderBy { exprs, .. }) = &query.order_by {
+        if !exprs.is_empty() {
+            let order_exprs = exprs
+                .iter()
+                .map(|o| {
+                    let expr = convert_expr(&o.expr)?;
+                    let asc = o.asc.unwrap_or(true);
+                    Ok((expr, asc))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
-                    plan = LogicalPlan::Sort {
-                        order_by: order_exprs,
-                        input: Box::new(plan),
-                    };
-                }
-            }
+            plan = LogicalPlan::Sort {
+                order_by: order_exprs,
+                input: Box::new(plan),
+            };
         }
     }
 
@@ -166,7 +163,9 @@ fn extract_table_name(select: &sp::Select) -> Result<String, ParseError> {
         return Err(ParseError::MissingFrom);
     }
     if select.from.len() > 1 {
-        return Err(ParseError::Unsupported("multiple FROM tables (joins) not supported".into()));
+        return Err(ParseError::Unsupported(
+            "multiple FROM tables (joins) not supported".into(),
+        ));
     }
 
     let table_with_joins = &select.from[0];
@@ -187,9 +186,7 @@ fn extract_table_name(select: &sp::Select) -> Result<String, ParseError> {
 }
 
 /// Convert SELECT items to our Expr types, also detecting if aggregates are present.
-fn convert_select_items(
-    items: &[SelectItem],
-) -> Result<(Vec<Expr>, bool), ParseError> {
+fn convert_select_items(items: &[SelectItem]) -> Result<(Vec<Expr>, bool), ParseError> {
     let mut exprs = Vec::new();
     let mut has_aggregates = false;
 
@@ -253,9 +250,7 @@ fn collect_aggregates(expr: &Expr, out: &mut Vec<(AggFunc, Expr)>) {
 fn convert_group_by(group_by: &GroupByExpr) -> Result<Vec<Expr>, ParseError> {
     match group_by {
         GroupByExpr::All(_) => Err(ParseError::Unsupported("GROUP BY ALL not supported".into())),
-        GroupByExpr::Expressions(exprs, _modifiers) => {
-            exprs.iter().map(convert_expr).collect()
-        }
+        GroupByExpr::Expressions(exprs, _modifiers) => exprs.iter().map(convert_expr).collect(),
     }
 }
 
@@ -416,7 +411,9 @@ fn convert_function(func: &sp::Function) -> Result<Expr, ParseError> {
     let args = match &func.args {
         sp::FunctionArguments::None => vec![],
         sp::FunctionArguments::Subquery(_) => {
-            return Err(ParseError::Unsupported("subquery arguments not supported".into()));
+            return Err(ParseError::Unsupported(
+                "subquery arguments not supported".into(),
+            ));
         }
         sp::FunctionArguments::List(arg_list) => arg_list.args.clone(),
     };
@@ -495,8 +492,7 @@ mod tests {
 
     #[test]
     fn test_parse_count_star_with_where() {
-        let plan =
-            parse_query("SELECT count(*) FROM sales WHERE amount > 100").unwrap();
+        let plan = parse_query("SELECT count(*) FROM sales WHERE amount > 100").unwrap();
         // Should be: Aggregate -> Filter -> Scan
         match &plan {
             LogicalPlan::Aggregate {
@@ -531,8 +527,7 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_aggregates() {
-        let plan =
-            parse_query("SELECT count(*), sum(amount) FROM sales").unwrap();
+        let plan = parse_query("SELECT count(*), sum(amount) FROM sales").unwrap();
         match &plan {
             LogicalPlan::Aggregate {
                 aggregates,
@@ -552,9 +547,7 @@ mod tests {
 
     #[test]
     fn test_parse_group_by() {
-        let plan =
-            parse_query("SELECT region, sum(amount) FROM sales GROUP BY region")
-                .unwrap();
+        let plan = parse_query("SELECT region, sum(amount) FROM sales GROUP BY region").unwrap();
         match &plan {
             LogicalPlan::Aggregate {
                 group_by,
@@ -572,10 +565,7 @@ mod tests {
 
     #[test]
     fn test_parse_order_by_desc_limit() {
-        let plan = parse_query(
-            "SELECT * FROM sales ORDER BY amount DESC LIMIT 10",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM sales ORDER BY amount DESC LIMIT 10").unwrap();
         match &plan {
             LogicalPlan::Limit { count, input } => {
                 assert_eq!(*count, 10);
@@ -594,8 +584,7 @@ mod tests {
 
     #[test]
     fn test_parse_order_by_asc() {
-        let plan =
-            parse_query("SELECT * FROM t ORDER BY id ASC").unwrap();
+        let plan = parse_query("SELECT * FROM t ORDER BY id ASC").unwrap();
         match &plan {
             LogicalPlan::Sort { order_by, .. } => {
                 assert_eq!(order_by[0].1, true); // ASC
@@ -606,10 +595,7 @@ mod tests {
 
     #[test]
     fn test_parse_compound_where_and() {
-        let plan = parse_query(
-            "SELECT * FROM t WHERE a > 1 AND b < 10",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE a > 1 AND b < 10").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::Compound { op, .. } => assert_eq!(*op, LogicalOp::And),
@@ -621,10 +607,7 @@ mod tests {
 
     #[test]
     fn test_parse_compound_where_or() {
-        let plan = parse_query(
-            "SELECT * FROM t WHERE x = 1 OR y = 2",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE x = 1 OR y = 2").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::Compound { op, .. } => assert_eq!(*op, LogicalOp::Or),
@@ -649,8 +632,7 @@ mod tests {
 
     #[test]
     fn test_parse_min_max() {
-        let plan =
-            parse_query("SELECT min(price), max(price) FROM items").unwrap();
+        let plan = parse_query("SELECT min(price), max(price) FROM items").unwrap();
         match &plan {
             LogicalPlan::Aggregate { aggregates, .. } => {
                 assert_eq!(aggregates[0].0, AggFunc::Min);
@@ -678,15 +660,11 @@ mod tests {
 
     #[test]
     fn test_parse_string_literal() {
-        let plan =
-            parse_query("SELECT * FROM t WHERE name = 'Alice'").unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE name = 'Alice'").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::BinaryOp { right, .. } => {
-                    assert_eq!(
-                        **right,
-                        Expr::Literal(Value::Str("Alice".into()))
-                    );
+                    assert_eq!(**right, Expr::Literal(Value::Str("Alice".into())));
                 }
                 _ => panic!("expected BinaryOp"),
             },
@@ -776,12 +754,13 @@ mod tests {
 
     #[test]
     fn test_parse_to_physical_plan() {
-        let logical =
-            parse_query("SELECT count(*) FROM t WHERE col > 100").unwrap();
+        let logical = parse_query("SELECT count(*) FROM t WHERE col > 100").unwrap();
         let physical = physical_plan::plan(&logical).unwrap();
         // Should be: GpuAggregate -> GpuFilter -> GpuScan
         match &physical {
-            physical_plan::PhysicalPlan::GpuAggregate { functions, input, .. } => {
+            physical_plan::PhysicalPlan::GpuAggregate {
+                functions, input, ..
+            } => {
                 assert_eq!(functions[0].0, AggFunc::Count);
                 match input.as_ref() {
                     physical_plan::PhysicalPlan::GpuFilter {
@@ -803,9 +782,7 @@ mod tests {
 
     #[test]
     fn test_parse_group_by_to_physical() {
-        let logical =
-            parse_query("SELECT region, sum(amount) FROM sales GROUP BY region")
-                .unwrap();
+        let logical = parse_query("SELECT region, sum(amount) FROM sales GROUP BY region").unwrap();
         let physical = physical_plan::plan(&logical).unwrap();
         match &physical {
             physical_plan::PhysicalPlan::GpuAggregate {
@@ -822,10 +799,7 @@ mod tests {
 
     #[test]
     fn test_parse_order_limit_to_physical() {
-        let logical = parse_query(
-            "SELECT * FROM sales ORDER BY amount DESC LIMIT 10",
-        )
-        .unwrap();
+        let logical = parse_query("SELECT * FROM sales ORDER BY amount DESC LIMIT 10").unwrap();
         let physical = physical_plan::plan(&logical).unwrap();
         match &physical {
             physical_plan::PhysicalPlan::GpuLimit { count, input } => {
@@ -871,8 +845,7 @@ mod tests {
 
     #[test]
     fn test_parse_where_eq_string() {
-        let plan =
-            parse_query("SELECT count(*) FROM t WHERE region = 'EU'").unwrap();
+        let plan = parse_query("SELECT count(*) FROM t WHERE region = 'EU'").unwrap();
         match &plan {
             LogicalPlan::Aggregate { input, .. } => match input.as_ref() {
                 LogicalPlan::Filter { predicate, .. } => match predicate {
@@ -918,10 +891,7 @@ mod tests {
 
     #[test]
     fn test_parse_all_five_aggregates() {
-        let plan = parse_query(
-            "SELECT count(*), sum(a), avg(b), min(c), max(d) FROM t",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT count(*), sum(a), avg(b), min(c), max(d) FROM t").unwrap();
         match &plan {
             LogicalPlan::Aggregate { aggregates, .. } => {
                 assert_eq!(aggregates.len(), 5);
@@ -944,9 +914,7 @@ mod tests {
 
     #[test]
     fn test_parse_group_by_with_count() {
-        let plan =
-            parse_query("SELECT status, count(*) FROM orders GROUP BY status")
-                .unwrap();
+        let plan = parse_query("SELECT status, count(*) FROM orders GROUP BY status").unwrap();
         match &plan {
             LogicalPlan::Aggregate {
                 group_by,
@@ -980,10 +948,9 @@ mod tests {
 
     #[test]
     fn test_parse_group_by_with_multiple_aggs() {
-        let plan = parse_query(
-            "SELECT dept, count(*), avg(salary), max(salary) FROM emp GROUP BY dept",
-        )
-        .unwrap();
+        let plan =
+            parse_query("SELECT dept, count(*), avg(salary), max(salary) FROM emp GROUP BY dept")
+                .unwrap();
         match &plan {
             LogicalPlan::Aggregate {
                 group_by,
@@ -1005,8 +972,7 @@ mod tests {
     #[test]
     fn test_parse_order_by_default_asc() {
         // Without explicit ASC/DESC, should default to ASC
-        let plan =
-            parse_query("SELECT * FROM t ORDER BY name").unwrap();
+        let plan = parse_query("SELECT * FROM t ORDER BY name").unwrap();
         match &plan {
             LogicalPlan::Sort { order_by, .. } => {
                 assert_eq!(order_by.len(), 1);
@@ -1019,10 +985,7 @@ mod tests {
 
     #[test]
     fn test_parse_order_by_multiple_columns() {
-        let plan = parse_query(
-            "SELECT * FROM t ORDER BY region ASC, amount DESC",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t ORDER BY region ASC, amount DESC").unwrap();
         match &plan {
             LogicalPlan::Sort { order_by, .. } => {
                 assert_eq!(order_by.len(), 2);
@@ -1037,16 +1000,13 @@ mod tests {
 
     #[test]
     fn test_parse_order_by_three_columns() {
-        let plan = parse_query(
-            "SELECT * FROM t ORDER BY a ASC, b DESC, c ASC",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t ORDER BY a ASC, b DESC, c ASC").unwrap();
         match &plan {
             LogicalPlan::Sort { order_by, .. } => {
                 assert_eq!(order_by.len(), 3);
-                assert!(order_by[0].1);  // ASC
+                assert!(order_by[0].1); // ASC
                 assert!(!order_by[1].1); // DESC
-                assert!(order_by[2].1);  // ASC
+                assert!(order_by[2].1); // ASC
             }
             _ => panic!("expected Sort"),
         }
@@ -1092,10 +1052,7 @@ mod tests {
     #[test]
     fn test_parse_nested_and_or() {
         // (a > 1 AND b < 10) OR c = 5 -- parser precedence: AND binds tighter
-        let plan = parse_query(
-            "SELECT * FROM t WHERE a > 1 AND b < 10 OR c = 5",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE a > 1 AND b < 10 OR c = 5").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::Compound { op, left, .. } => {
@@ -1115,10 +1072,7 @@ mod tests {
     #[test]
     fn test_parse_parenthesized_or_then_and() {
         // Explicit parens override precedence: (a = 1 OR b = 2) AND c = 3
-        let plan = parse_query(
-            "SELECT * FROM t WHERE (a = 1 OR b = 2) AND c = 3",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE (a = 1 OR b = 2) AND c = 3").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::Compound { op, left, .. } => {
@@ -1137,10 +1091,7 @@ mod tests {
 
     #[test]
     fn test_parse_triple_and() {
-        let plan = parse_query(
-            "SELECT * FROM t WHERE a > 1 AND b > 2 AND c > 3",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE a > 1 AND b > 2 AND c > 3").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => {
                 // Should be nested ANDs
@@ -1157,8 +1108,7 @@ mod tests {
 
     #[test]
     fn test_parse_where_ne_string() {
-        let plan =
-            parse_query("SELECT * FROM t WHERE status != 'closed'").unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE status != 'closed'").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::BinaryOp { op, right, .. } => {
@@ -1173,8 +1123,7 @@ mod tests {
 
     #[test]
     fn test_parse_where_le_float() {
-        let plan =
-            parse_query("SELECT * FROM t WHERE price <= 9.99").unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE price <= 9.99").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::BinaryOp { op, right, .. } => {
@@ -1189,8 +1138,7 @@ mod tests {
 
     #[test]
     fn test_parse_where_ge_int() {
-        let plan =
-            parse_query("SELECT * FROM t WHERE qty >= 100").unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE qty >= 100").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::BinaryOp { left, op, right } => {
@@ -1208,8 +1156,7 @@ mod tests {
 
     #[test]
     fn test_parse_string_with_spaces() {
-        let plan =
-            parse_query("SELECT * FROM t WHERE city = 'New York'").unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE city = 'New York'").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::BinaryOp { right, .. } => {
@@ -1223,8 +1170,7 @@ mod tests {
 
     #[test]
     fn test_parse_double_quoted_string() {
-        let plan =
-            parse_query("SELECT * FROM t WHERE name = \"Bob\"").unwrap();
+        let plan = parse_query("SELECT * FROM t WHERE name = \"Bob\"").unwrap();
         match &plan {
             LogicalPlan::Filter { predicate, .. } => match predicate {
                 Expr::BinaryOp { right, .. } => {
@@ -1295,7 +1241,9 @@ mod tests {
         let result = parse_query("SELECT * FROM t UNION SELECT * FROM u");
         assert!(result.is_err());
         match result.unwrap_err() {
-            ParseError::Unsupported(msg) => assert!(msg.contains("UNION") || msg.contains("simple SELECT")),
+            ParseError::Unsupported(msg) => {
+                assert!(msg.contains("UNION") || msg.contains("simple SELECT"))
+            }
             other => panic!("expected Unsupported for UNION, got: {:?}", other),
         }
     }
@@ -1440,12 +1388,11 @@ mod tests {
     #[test]
     fn test_parse_where_with_aggregate() {
         // WHERE clause combined with aggregate: Filter -> Aggregate
-        let plan = parse_query(
-            "SELECT sum(amount) FROM orders WHERE status = 'shipped'",
-        )
-        .unwrap();
+        let plan = parse_query("SELECT sum(amount) FROM orders WHERE status = 'shipped'").unwrap();
         match &plan {
-            LogicalPlan::Aggregate { aggregates, input, .. } => {
+            LogicalPlan::Aggregate {
+                aggregates, input, ..
+            } => {
                 assert_eq!(aggregates[0].0, AggFunc::Sum);
                 match input.as_ref() {
                     LogicalPlan::Filter { predicate, .. } => match predicate {
@@ -1475,7 +1422,11 @@ mod tests {
                         assert_eq!(order_by[0].0, Expr::Column("region".into()));
                         assert!(order_by[0].1); // ASC
                         match input.as_ref() {
-                            LogicalPlan::Aggregate { group_by, aggregates, input } => {
+                            LogicalPlan::Aggregate {
+                                group_by,
+                                aggregates,
+                                input,
+                            } => {
                                 assert_eq!(group_by[0], Expr::Column("region".into()));
                                 assert_eq!(aggregates[0].0, AggFunc::Sum);
                                 match input.as_ref() {

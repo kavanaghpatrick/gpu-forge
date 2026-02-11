@@ -21,7 +21,12 @@ fn generate_csv(n_rows: usize) -> String {
     let mut s = String::with_capacity(n_rows * 30);
     s.push_str("id,amount,quantity\n");
     for i in 0..n_rows {
-        s.push_str(&format!("{},{},{}\n", i, (i * 7 + 13) % 1000, (i * 3 + 1) % 50));
+        s.push_str(&format!(
+            "{},{},{}\n",
+            i,
+            (i * 7 + 13) % 1000,
+            (i * 3 + 1) % 50
+        ));
     }
     s
 }
@@ -128,7 +133,9 @@ fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let optimized = gpu_query::sql::optimizer::optimize(logical);
     let physical = gpu_query::sql::physical_plan::plan(&optimized).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
-    executor.execute(&physical, &catalog).expect("execute query")
+    executor
+        .execute(&physical, &catalog)
+        .expect("execute query")
 }
 
 // ============================================================
@@ -185,15 +192,11 @@ fn bench_parquet_scan(c: &mut Criterion) {
         .len();
 
     group.throughput(Throughput::Bytes(file_size));
-    group.bench_with_input(
-        BenchmarkId::new("1MB", file_size),
-        &dir_1mb,
-        |b, dir| {
-            b.iter(|| {
-                run_query(dir.path(), "SELECT count(*) FROM bench");
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("1MB", file_size), &dir_1mb, |b, dir| {
+        b.iter(|| {
+            run_query(dir.path(), "SELECT count(*) FROM bench");
+        });
+    });
 
     // ~10MB Parquet
     let rows_10mb = 400_000;

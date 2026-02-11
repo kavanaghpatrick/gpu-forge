@@ -25,7 +25,7 @@ fn generate_lineitem(n_rows: usize) -> String {
         let price = ((i * 7 + 13) % 100000) + 100;
         let discount = i % 10; // 0-9 representing 0-9%
         let tax = i % 8; // 0-7 representing 0-7%
-        // returnflag cycles 0,1,2 (representing A, N, R)
+                         // returnflag cycles 0,1,2 (representing A, N, R)
         let returnflag = i % 3;
         s.push_str(&format!(
             "{},{},{},{},{},{}\n",
@@ -112,18 +112,11 @@ fn bench_point_query(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(n_rows as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("count_where", n_rows),
-            &dir,
-            |b, dir| {
-                b.iter(|| {
-                    run_query(
-                        dir.path(),
-                        "SELECT count(*) FROM sales WHERE amount > 500",
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("count_where", n_rows), &dir, |b, dir| {
+            b.iter(|| {
+                run_query(dir.path(), "SELECT count(*) FROM sales WHERE amount > 500");
+            });
+        });
     }
 
     group.finish();
@@ -154,18 +147,14 @@ fn bench_aggregate_query(c: &mut Criterion) {
         },
     );
 
-    group.bench_with_input(
-        BenchmarkId::new("min_max_avg", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT min(amount), max(amount), avg(amount) FROM sales",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("min_max_avg", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(
+                dir.path(),
+                "SELECT min(amount), max(amount), avg(amount) FROM sales",
+            );
+        });
+    });
 
     group.finish();
 }
@@ -182,18 +171,14 @@ fn bench_group_by_query(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(n_rows as u64));
 
-    group.bench_with_input(
-        BenchmarkId::new("group_sum", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT region, sum(amount) FROM sales GROUP BY region",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("group_sum", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(
+                dir.path(),
+                "SELECT region, sum(amount) FROM sales GROUP BY region",
+            );
+        });
+    });
 
     group.bench_with_input(
         BenchmarkId::new("group_count_sum", n_rows),

@@ -27,8 +27,7 @@ fn make_csv(dir: &Path, name: &str, content: &str) {
 fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let catalog = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
-    let physical_plan =
-        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
     executor
         .execute(&physical_plan, &catalog)
@@ -43,8 +42,7 @@ fn run_batched_query(
 ) -> gpu_query::gpu::executor::QueryResult {
     let catalog = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
-    let physical_plan =
-        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
     executor
         .execute_with_batching(&physical_plan, &catalog, batch_threshold)
@@ -76,8 +74,10 @@ fn test_batched_count_matches_non_batched() {
     // Force batching with tiny threshold (50 bytes) -- file is ~100 bytes
     let batched = run_batched_query(tmp.path(), sql, 50);
 
-    assert_eq!(normal.rows[0][0], batched.rows[0][0],
-        "Batched count should match non-batched count");
+    assert_eq!(
+        normal.rows[0][0], batched.rows[0][0],
+        "Batched count should match non-batched count"
+    );
     assert_eq!(batched.rows[0][0], "10");
 }
 
@@ -105,8 +105,10 @@ fn test_batched_sum_matches_non_batched() {
     let normal = run_query(tmp.path(), sql);
     let batched = run_batched_query(tmp.path(), sql, 50);
 
-    assert_eq!(normal.rows[0][0], batched.rows[0][0],
-        "Batched sum should match non-batched sum");
+    assert_eq!(
+        normal.rows[0][0], batched.rows[0][0],
+        "Batched sum should match non-batched sum"
+    );
     assert_eq!(batched.rows[0][0], "5500");
 }
 
@@ -134,10 +136,14 @@ fn test_batched_filtered_aggregate_matches() {
     let normal = run_query(tmp.path(), sql);
     let batched = run_batched_query(tmp.path(), sql, 50);
 
-    assert_eq!(normal.rows[0][0], batched.rows[0][0],
-        "Batched filtered count should match");
-    assert_eq!(normal.rows[0][1], batched.rows[0][1],
-        "Batched filtered sum should match");
+    assert_eq!(
+        normal.rows[0][0], batched.rows[0][0],
+        "Batched filtered count should match"
+    );
+    assert_eq!(
+        normal.rows[0][1], batched.rows[0][1],
+        "Batched filtered sum should match"
+    );
     // amount > 500: rows 600,700,800,900,1000 -> count=5, sum=4000
     assert_eq!(batched.rows[0][0], "5");
     assert_eq!(batched.rows[0][1], "4000");
@@ -211,10 +217,14 @@ fn test_batched_min_max() {
     let normal = run_query(tmp.path(), sql);
     let batched = run_batched_query(tmp.path(), sql, 30);
 
-    assert_eq!(normal.rows[0][0], batched.rows[0][0],
-        "Batched min should match");
-    assert_eq!(normal.rows[0][1], batched.rows[0][1],
-        "Batched max should match");
+    assert_eq!(
+        normal.rows[0][0], batched.rows[0][0],
+        "Batched min should match"
+    );
+    assert_eq!(
+        normal.rows[0][1], batched.rows[0][1],
+        "Batched max should match"
+    );
     assert_eq!(batched.rows[0][0], "10");
     assert_eq!(batched.rows[0][1], "100");
 }
@@ -237,8 +247,10 @@ fn test_batched_avg() {
     let normal = run_query(tmp.path(), sql);
     let batched = run_batched_query(tmp.path(), sql, 20);
 
-    assert_eq!(normal.rows[0][0], batched.rows[0][0],
-        "Batched avg should match non-batched");
+    assert_eq!(
+        normal.rows[0][0], batched.rows[0][0],
+        "Batched avg should match non-batched"
+    );
     // avg(10,20,30,40) = 25
     assert_eq!(batched.rows[0][0], "25");
 }
@@ -263,9 +275,11 @@ fn test_batched_all_aggregates() {
     let batched = run_batched_query(tmp.path(), sql, 30);
 
     for i in 0..5 {
-        assert_eq!(normal.rows[0][i], batched.rows[0][i],
+        assert_eq!(
+            normal.rows[0][i], batched.rows[0][i],
             "Function {} mismatch: normal={} batched={}",
-            i, normal.rows[0][i], batched.rows[0][i]);
+            i, normal.rows[0][i], batched.rows[0][i]
+        );
     }
 }
 

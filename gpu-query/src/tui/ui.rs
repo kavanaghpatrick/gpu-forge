@@ -77,13 +77,18 @@ pub fn render_ui(f: &mut Frame, app: &mut AppState, metrics: &GpuMetricsCollecto
 }
 
 /// Full three-panel layout: title | catalog | editor+results | GPU dashboard | status
-fn render_full_layout(f: &mut Frame, size: Rect, app: &mut AppState, metrics: &GpuMetricsCollector) {
+fn render_full_layout(
+    f: &mut Frame,
+    size: Rect,
+    app: &mut AppState,
+    metrics: &GpuMetricsCollector,
+) {
     // Main vertical layout: title (3) + content (fill) + status (3)
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // title bar
-            Constraint::Min(5),   // content area
+            Constraint::Min(5),    // content area
             Constraint::Length(3), // status bar
         ])
         .split(size);
@@ -124,12 +129,17 @@ fn render_full_layout(f: &mut Frame, size: Rect, app: &mut AppState, metrics: &G
 }
 
 /// Two-panel layout (no catalog): title | editor+results | GPU dashboard | status
-fn render_two_panel_layout(f: &mut Frame, size: Rect, app: &mut AppState, metrics: &GpuMetricsCollector) {
+fn render_two_panel_layout(
+    f: &mut Frame,
+    size: Rect,
+    app: &mut AppState,
+    metrics: &GpuMetricsCollector,
+) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // title bar
-            Constraint::Min(5),   // content area
+            Constraint::Min(5),    // content area
             Constraint::Length(3), // status bar
         ])
         .split(size);
@@ -172,7 +182,7 @@ fn render_minimal_layout(f: &mut Frame, size: Rect, app: &mut AppState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // compact editor
-            Constraint::Min(3),   // results fill
+            Constraint::Min(3),    // results fill
         ])
         .split(size);
 
@@ -332,12 +342,11 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     app.status_message = "Executing query...".into();
 
     // Scan catalog
-    let catalog = crate::io::catalog::scan_directory(&app.data_dir)
-        .map_err(|e| {
-            let msg = format!("Catalog scan error: {}", e);
-            app.set_error(msg.clone());
-            msg
-        })?;
+    let catalog = crate::io::catalog::scan_directory(&app.data_dir).map_err(|e| {
+        let msg = format!("Catalog scan error: {}", e);
+        app.set_error(msg.clone());
+        msg
+    })?;
 
     if catalog.is_empty() {
         let msg = format!("No data files in '{}'", app.data_dir.display());
@@ -346,39 +355,35 @@ pub fn execute_editor_query(app: &mut AppState) -> Result<(), String> {
     }
 
     // Parse SQL
-    let logical_plan = crate::sql::parser::parse_query(&sql)
-        .map_err(|e| {
-            let msg = format!("SQL parse error: {}", e);
-            app.set_error(msg.clone());
-            msg
-        })?;
+    let logical_plan = crate::sql::parser::parse_query(&sql).map_err(|e| {
+        let msg = format!("SQL parse error: {}", e);
+        app.set_error(msg.clone());
+        msg
+    })?;
 
     // Optimize
     let logical_plan = crate::sql::optimizer::optimize(logical_plan);
 
     // Plan
-    let physical_plan = crate::sql::physical_plan::plan(&logical_plan)
-        .map_err(|e| {
-            let msg = format!("Plan error: {:?}", e);
-            app.set_error(msg.clone());
-            msg
-        })?;
+    let physical_plan = crate::sql::physical_plan::plan(&logical_plan).map_err(|e| {
+        let msg = format!("Plan error: {:?}", e);
+        app.set_error(msg.clone());
+        msg
+    })?;
 
     // Execute on GPU
-    let mut executor = crate::gpu::executor::QueryExecutor::new()
-        .map_err(|e| {
-            let msg = format!("GPU init error: {}", e);
-            app.set_error(msg.clone());
-            msg
-        })?;
+    let mut executor = crate::gpu::executor::QueryExecutor::new().map_err(|e| {
+        let msg = format!("GPU init error: {}", e);
+        app.set_error(msg.clone());
+        msg
+    })?;
 
     let start = std::time::Instant::now();
-    let result = executor.execute(&physical_plan, &catalog)
-        .map_err(|e| {
-            let msg = format!("Execution error: {}", e);
-            app.set_error(msg.clone());
-            msg
-        })?;
+    let result = executor.execute(&physical_plan, &catalog).map_err(|e| {
+        let msg = format!("Execution error: {}", e);
+        app.set_error(msg.clone());
+        msg
+    })?;
     let elapsed = start.elapsed();
 
     // Update timing

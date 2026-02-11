@@ -36,6 +36,12 @@ pub struct PsoCache {
     cache: HashMap<PsoKey, Retained<ProtocolObject<dyn MTLComputePipelineState>>>,
 }
 
+impl Default for PsoCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PsoCache {
     /// Create a new empty PSO cache.
     pub fn new() -> Self {
@@ -79,8 +85,8 @@ impl PsoCache {
 
         for (index, type_tag, value_bytes) in &key.constants {
             let mtl_type = match type_tag {
-                0 => MTLDataType::UInt,  // uint
-                1 => MTLDataType::Bool,  // bool
+                0 => MTLDataType::UInt, // uint
+                1 => MTLDataType::Bool, // bool
                 _ => panic!("Unknown function constant type tag: {}", type_tag),
             };
 
@@ -104,12 +110,7 @@ impl PsoCache {
         let device = library.device();
         device
             .newComputePipelineStateWithFunction_error(&function)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to create PSO for '{}': {:?}",
-                    key.function_name, e
-                )
-            })
+            .unwrap_or_else(|e| panic!("Failed to create PSO for '{}': {:?}", key.function_name, e))
     }
 }
 

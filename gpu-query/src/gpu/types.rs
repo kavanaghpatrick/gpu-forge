@@ -96,22 +96,38 @@ mod tests {
 
     #[test]
     fn filter_params_size() {
-        assert_eq!(mem::size_of::<FilterParams>(), 40, "FilterParams must be 40 bytes (MSL sizeof)");
+        assert_eq!(
+            mem::size_of::<FilterParams>(),
+            40,
+            "FilterParams must be 40 bytes (MSL sizeof)"
+        );
     }
 
     #[test]
     fn filter_params_alignment() {
-        assert_eq!(mem::align_of::<FilterParams>(), 8, "FilterParams must be 8-byte aligned (contains i64/f64)");
+        assert_eq!(
+            mem::align_of::<FilterParams>(),
+            8,
+            "FilterParams must be 8-byte aligned (contains i64/f64)"
+        );
     }
 
     #[test]
     fn filter_params_offset_compare_value_int() {
-        assert_eq!(offset_of!(FilterParams, compare_value_int), 0, "MSL offset 0");
+        assert_eq!(
+            offset_of!(FilterParams, compare_value_int),
+            0,
+            "MSL offset 0"
+        );
     }
 
     #[test]
     fn filter_params_offset_compare_value_float() {
-        assert_eq!(offset_of!(FilterParams, compare_value_float), 8, "MSL offset 8");
+        assert_eq!(
+            offset_of!(FilterParams, compare_value_float),
+            8,
+            "MSL offset 8"
+        );
     }
 
     #[test]
@@ -126,7 +142,11 @@ mod tests {
 
     #[test]
     fn filter_params_offset_null_bitmap_present() {
-        assert_eq!(offset_of!(FilterParams, null_bitmap_present), 24, "MSL offset 24");
+        assert_eq!(
+            offset_of!(FilterParams, null_bitmap_present),
+            24,
+            "MSL offset 24"
+        );
     }
 
     #[test]
@@ -136,7 +156,11 @@ mod tests {
 
     #[test]
     fn filter_params_offset_compare_value_int_hi() {
-        assert_eq!(offset_of!(FilterParams, compare_value_int_hi), 32, "MSL offset 32");
+        assert_eq!(
+            offset_of!(FilterParams, compare_value_int_hi),
+            32,
+            "MSL offset 32"
+        );
     }
 
     #[test]
@@ -167,12 +191,20 @@ mod tests {
 
     #[test]
     fn agg_params_size() {
-        assert_eq!(mem::size_of::<AggParams>(), 16, "AggParams must be 16 bytes (MSL sizeof)");
+        assert_eq!(
+            mem::size_of::<AggParams>(),
+            16,
+            "AggParams must be 16 bytes (MSL sizeof)"
+        );
     }
 
     #[test]
     fn agg_params_alignment() {
-        assert_eq!(mem::align_of::<AggParams>(), 4, "AggParams must be 4-byte aligned");
+        assert_eq!(
+            mem::align_of::<AggParams>(),
+            4,
+            "AggParams must be 4-byte aligned"
+        );
     }
 
     #[test]
@@ -206,8 +238,16 @@ mod tests {
         let base = &ap as *const AggParams as *const u8;
         unsafe {
             assert_eq!(*(base as *const u32), 5000u32, "row_count at offset 0");
-            assert_eq!(*(base.add(4) as *const u32), 10u32, "group_count at offset 4");
-            assert_eq!(*(base.add(8) as *const u32), 1u32, "agg_function at offset 8");
+            assert_eq!(
+                *(base.add(4) as *const u32),
+                10u32,
+                "group_count at offset 4"
+            );
+            assert_eq!(
+                *(base.add(8) as *const u32),
+                1u32,
+                "agg_function at offset 8"
+            );
         }
     }
 
@@ -217,12 +257,20 @@ mod tests {
 
     #[test]
     fn csv_parse_params_size() {
-        assert_eq!(mem::size_of::<CsvParseParams>(), 24, "CsvParseParams must be 24 bytes (MSL sizeof)");
+        assert_eq!(
+            mem::size_of::<CsvParseParams>(),
+            24,
+            "CsvParseParams must be 24 bytes (MSL sizeof)"
+        );
     }
 
     #[test]
     fn csv_parse_params_alignment() {
-        assert_eq!(mem::align_of::<CsvParseParams>(), 4, "CsvParseParams must be 4-byte aligned");
+        assert_eq!(
+            mem::align_of::<CsvParseParams>(),
+            4,
+            "CsvParseParams must be 4-byte aligned"
+        );
     }
 
     #[test]
@@ -281,12 +329,20 @@ mod tests {
 
     #[test]
     fn dispatch_args_size() {
-        assert_eq!(mem::size_of::<DispatchArgs>(), 12, "DispatchArgs must be 12 bytes (3 x u32)");
+        assert_eq!(
+            mem::size_of::<DispatchArgs>(),
+            12,
+            "DispatchArgs must be 12 bytes (3 x u32)"
+        );
     }
 
     #[test]
     fn dispatch_args_alignment() {
-        assert_eq!(mem::align_of::<DispatchArgs>(), 4, "DispatchArgs must be 4-byte aligned");
+        assert_eq!(
+            mem::align_of::<DispatchArgs>(),
+            4,
+            "DispatchArgs must be 4-byte aligned"
+        );
     }
 
     #[test]
@@ -325,12 +381,20 @@ mod tests {
 
     #[test]
     fn column_schema_size() {
-        assert_eq!(mem::size_of::<ColumnSchema>(), 8, "ColumnSchema must be 8 bytes (2 x u32)");
+        assert_eq!(
+            mem::size_of::<ColumnSchema>(),
+            8,
+            "ColumnSchema must be 8 bytes (2 x u32)"
+        );
     }
 
     #[test]
     fn column_schema_alignment() {
-        assert_eq!(mem::align_of::<ColumnSchema>(), 4, "ColumnSchema must be 4-byte aligned");
+        assert_eq!(
+            mem::align_of::<ColumnSchema>(),
+            4,
+            "ColumnSchema must be 4-byte aligned"
+        );
     }
 
     #[test]
@@ -346,7 +410,7 @@ mod tests {
     #[test]
     fn column_schema_nonzero_round_trip() {
         let cs = ColumnSchema {
-            data_type: 2,     // VARCHAR
+            data_type: 2, // VARCHAR
             dict_encoded: 1,
         };
         let base = &cs as *const ColumnSchema as *const u8;

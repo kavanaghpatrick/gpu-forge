@@ -8,14 +8,13 @@
 use std::collections::HashSet;
 
 use super::logical_plan::LogicalPlan;
-use super::types::{CompareOp, Expr, LogicalOp, Value};
+use super::types::{CompareOp, Expr, Value};
 
 /// Run all optimization passes on a logical plan.
 pub fn optimize(plan: LogicalPlan) -> LogicalPlan {
     let plan = prune_columns(plan);
     let plan = push_down_predicates(plan);
-    let plan = fold_constants(plan);
-    plan
+    fold_constants(plan)
 }
 
 // ---------------------------------------------------------------------------
@@ -308,16 +307,11 @@ fn fold_expr(expr: Expr) -> Expr {
             let left = fold_expr(*left);
             let right = fold_expr(*right);
 
-            // Fold trivial compound predicates
-            match (&left, &op, &right) {
-                // TRUE AND x -> x, x AND TRUE -> x (represented as tautologies)
-                // FALSE OR x -> x, x OR FALSE -> x
-                // We can't easily detect TRUE/FALSE from our Value type, so skip
-                _ => Expr::Compound {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                },
+            // No trivial constant folding possible without TRUE/FALSE detection
+            Expr::Compound {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
             }
         }
         Expr::Aggregate { func, arg } => Expr::Aggregate {
@@ -343,7 +337,7 @@ pub fn try_fold_arithmetic(left: &Value, op: CompareOp, right: &Value) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::types::AggFunc;
+    use crate::sql::types::{AggFunc, LogicalOp};
 
     // Helper to build a Scan plan
     fn scan(table: &str) -> LogicalPlan {
@@ -432,10 +426,7 @@ mod tests {
         let plan = LogicalPlan::Sort {
             order_by: vec![(Expr::Column("name".into()), true)],
             input: Box::new(LogicalPlan::Projection {
-                columns: vec![
-                    Expr::Column("id".into()),
-                    Expr::Column("name".into()),
-                ],
+                columns: vec![Expr::Column("id".into()), Expr::Column("name".into())],
                 input: Box::new(scan("t")),
             }),
         };
@@ -843,9 +834,7 @@ mod tests {
     fn test_optimize_parsed_query() {
         use crate::sql::parser::parse_query;
 
-        let plan =
-            parse_query("SELECT sum(amount) FROM wide_table WHERE region = 'EU'")
-                .unwrap();
+        let plan = parse_query("SELECT sum(amount) FROM wide_table WHERE region = 'EU'").unwrap();
         let optimized = optimize(plan);
 
         let scan_proj = find_scan_projection(&optimized).unwrap();
@@ -858,10 +847,8 @@ mod tests {
     fn test_optimize_parsed_group_by() {
         use crate::sql::parser::parse_query;
 
-        let plan = parse_query(
-            "SELECT region, count(*), sum(amount) FROM sales GROUP BY region",
-        )
-        .unwrap();
+        let plan =
+            parse_query("SELECT region, count(*), sum(amount) FROM sales GROUP BY region").unwrap();
         let optimized = optimize(plan);
 
         let scan_proj = find_scan_projection(&optimized).unwrap();
@@ -874,8 +861,7 @@ mod tests {
     fn test_optimize_parsed_order_by() {
         use crate::sql::parser::parse_query;
 
-        let plan =
-            parse_query("SELECT id, name FROM users ORDER BY name ASC").unwrap();
+        let plan = parse_query("SELECT id, name FROM users ORDER BY name ASC").unwrap();
         let optimized = optimize(plan);
 
         let scan_proj = find_scan_projection(&optimized).unwrap();

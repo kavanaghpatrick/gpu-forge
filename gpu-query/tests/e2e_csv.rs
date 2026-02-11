@@ -27,10 +27,13 @@ fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let optimized = gpu_query::sql::optimizer::optimize(logical);
     let physical = gpu_query::sql::physical_plan::plan(&optimized).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
-    executor.execute(&physical, &catalog).expect("execute query")
+    executor
+        .execute(&physical, &catalog)
+        .expect("execute query")
 }
 
 /// Run a query and expect it to fail.
+#[allow(dead_code)]
 fn run_query_err(dir: &Path, sql: &str) -> String {
     let catalog = catalog::scan_directory(dir).expect("scan directory");
     let logical = gpu_query::sql::parser::parse_query(sql);
@@ -53,7 +56,11 @@ fn run_query_err(dir: &Path, sql: &str) -> String {
 
 /// Assert a single-row single-column result equals expected integer.
 fn assert_int_result(result: &gpu_query::gpu::executor::QueryResult, expected: i64) {
-    assert_eq!(result.row_count, 1, "expected 1 row, got {}", result.row_count);
+    assert_eq!(
+        result.row_count, 1,
+        "expected 1 row, got {}",
+        result.row_count
+    );
     assert_eq!(
         result.rows[0][0],
         expected.to_string(),
@@ -65,7 +72,11 @@ fn assert_int_result(result: &gpu_query::gpu::executor::QueryResult, expected: i
 
 /// Assert a single-row result with multiple int columns.
 fn assert_int_row(result: &gpu_query::gpu::executor::QueryResult, expected: &[i64]) {
-    assert_eq!(result.row_count, 1, "expected 1 row, got {}", result.row_count);
+    assert_eq!(
+        result.row_count, 1,
+        "expected 1 row, got {}",
+        result.row_count
+    );
     for (i, exp) in expected.iter().enumerate() {
         assert_eq!(
             result.rows[0][i],
@@ -203,12 +214,15 @@ fn csv_max_amount() {
 #[test]
 fn csv_all_aggregates() {
     let (_d, p) = make_sales_dir();
-    let r = run_query(&p, "SELECT count(*), sum(amount), min(amount), max(amount) FROM sales");
+    let r = run_query(
+        &p,
+        "SELECT count(*), sum(amount), min(amount), max(amount) FROM sales",
+    );
     assert_eq!(r.row_count, 1);
-    assert_eq!(r.rows[0][0], "10");   // count
+    assert_eq!(r.rows[0][0], "10"); // count
     assert_eq!(r.rows[0][1], "1930"); // sum
-    assert_eq!(r.rows[0][2], "25");   // min
-    assert_eq!(r.rows[0][3], "500");  // max
+    assert_eq!(r.rows[0][2], "25"); // min
+    assert_eq!(r.rows[0][3], "500"); // max
 }
 
 // ============================================================
@@ -302,7 +316,10 @@ fn csv_where_max_filtered() {
 #[test]
 fn csv_where_and() {
     let (_d, p) = make_sales_dir();
-    let r = run_query(&p, "SELECT count(*) FROM sales WHERE amount > 100 AND amount < 400");
+    let r = run_query(
+        &p,
+        "SELECT count(*) FROM sales WHERE amount > 100 AND amount < 400",
+    );
     // 150,200,300 = 3
     assert_int_result(&r, 3);
 }
@@ -310,7 +327,10 @@ fn csv_where_and() {
 #[test]
 fn csv_where_or() {
     let (_d, p) = make_sales_dir();
-    let r = run_query(&p, "SELECT count(*) FROM sales WHERE amount < 50 OR amount > 400");
+    let r = run_query(
+        &p,
+        "SELECT count(*) FROM sales WHERE amount < 50 OR amount > 400",
+    );
     // <50: 25. >400: 500,450 => total 3
     assert_int_result(&r, 3);
 }
@@ -318,7 +338,10 @@ fn csv_where_or() {
 #[test]
 fn csv_where_and_sum() {
     let (_d, p) = make_sales_dir();
-    let r = run_query(&p, "SELECT sum(amount) FROM sales WHERE amount >= 100 AND quantity >= 3");
+    let r = run_query(
+        &p,
+        "SELECT sum(amount) FROM sales WHERE amount >= 100 AND quantity >= 3",
+    );
     // amount>=100: 150,200,300,500,100,450
     // AND qty>=3: row2(150,3), row7(500,5), row8(100,3)
     // sum = 150+500+100 = 750
@@ -342,7 +365,10 @@ fn csv_group_by_count() {
          4,West,400\n\
          5,East,500\n",
     );
-    let r = run_query(dir.path(), "SELECT region, count(*) FROM orders GROUP BY region");
+    let r = run_query(
+        dir.path(),
+        "SELECT region, count(*) FROM orders GROUP BY region",
+    );
     assert_eq!(r.row_count, 2);
     // Groups sorted alphabetically: East, West
     assert_eq!(r.rows[0][0], "East");
@@ -364,12 +390,15 @@ fn csv_group_by_sum() {
          4,West,400\n\
          5,East,500\n",
     );
-    let r = run_query(dir.path(), "SELECT region, sum(amount) FROM orders GROUP BY region");
+    let r = run_query(
+        dir.path(),
+        "SELECT region, sum(amount) FROM orders GROUP BY region",
+    );
     assert_eq!(r.row_count, 2);
     assert_eq!(r.rows[0][0], "East");
-    assert_eq!(r.rows[0][1], "900");  // 100+300+500
+    assert_eq!(r.rows[0][1], "900"); // 100+300+500
     assert_eq!(r.rows[1][0], "West");
-    assert_eq!(r.rows[1][1], "600");  // 200+400
+    assert_eq!(r.rows[1][1], "600"); // 200+400
 }
 
 // ============================================================
@@ -506,7 +535,11 @@ fn csv_describe() {
     assert_eq!(describe_result.table_name, "sales");
     assert_eq!(describe_result.columns.len(), 4);
 
-    let col_names: Vec<&str> = describe_result.columns.iter().map(|c| c.name.as_str()).collect();
+    let col_names: Vec<&str> = describe_result
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
     assert_eq!(col_names, &["id", "name", "amount", "region"]);
 
     // Verify row counts

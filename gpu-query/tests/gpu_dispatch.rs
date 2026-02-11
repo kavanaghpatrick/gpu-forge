@@ -101,10 +101,8 @@ fn run_prepare_dispatch(
     match_count_buffer: &objc2::runtime::ProtocolObject<dyn MTLBuffer>,
     threads_per_tg: u32,
 ) -> DispatchArgs {
-    let dispatch_args_buffer = encode::alloc_buffer(
-        &gpu.device,
-        std::mem::size_of::<DispatchArgs>(),
-    );
+    let dispatch_args_buffer =
+        encode::alloc_buffer(&gpu.device, std::mem::size_of::<DispatchArgs>());
     let tpt_buffer = encode::alloc_buffer_with_data(&gpu.device, &[threads_per_tg]);
 
     let pipeline = encode::make_pipeline(&gpu.library, "prepare_query_dispatch");
@@ -122,8 +120,16 @@ fn run_prepare_dispatch(
             encoder.setBuffer_offset_atIndex(Some(&tpt_buffer), 0, 2);
         }
 
-        let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
-        let tg = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+        let grid = objc2_metal::MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+        let tg = objc2_metal::MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
         encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
         encoder.endEncoding();
     }
@@ -162,9 +168,7 @@ fn run_count_direct(
 
     let cmd_buf = encode::make_command_buffer(&gpu.command_queue);
     {
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .expect("compute encoder");
+        let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
         encode::dispatch_1d(
             &encoder,
@@ -209,9 +213,7 @@ fn run_count_indirect(
 
     let cmd_buf = encode::make_command_buffer(&gpu.command_queue);
     {
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .expect("compute encoder");
+        let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
         encoder.setComputePipelineState(&pipeline);
         unsafe {
@@ -228,11 +230,12 @@ fn run_count_indirect(
 
         // Indirect dispatch: threadgroup count comes from GPU buffer
         unsafe {
-            encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
-                dispatch_args_buffer,
-                0,
-                tg_size,
-            );
+            encoder
+                .dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                    dispatch_args_buffer,
+                    0,
+                    tg_size,
+                );
         }
         encoder.endEncoding();
     }
@@ -262,10 +265,8 @@ fn run_filter_indirect_count_single_cmdbuf(
     let bitmask_buffer = encode::alloc_buffer(&gpu.device, std::cmp::max(bitmask_words * 4, 4));
     let match_count_buffer = encode::alloc_buffer(&gpu.device, 4);
     let null_bitmap_buffer = encode::alloc_buffer(&gpu.device, std::cmp::max(bitmask_words * 4, 4));
-    let dispatch_args_buffer = encode::alloc_buffer(
-        &gpu.device,
-        std::mem::size_of::<DispatchArgs>(),
-    );
+    let dispatch_args_buffer =
+        encode::alloc_buffer(&gpu.device, std::mem::size_of::<DispatchArgs>());
     let agg_result_buffer = encode::alloc_buffer(&gpu.device, 4);
 
     // Zero buffers
@@ -316,9 +317,7 @@ fn run_filter_indirect_count_single_cmdbuf(
 
     // Stage 1: Filter
     {
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .expect("compute encoder");
+        let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
         encode::dispatch_threads_1d(
             &encoder,
@@ -337,9 +336,7 @@ fn run_filter_indirect_count_single_cmdbuf(
 
     // Stage 2: Prepare dispatch args (single thread)
     {
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .expect("compute encoder");
+        let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
         encoder.setComputePipelineState(&prepare_pipeline);
         unsafe {
@@ -348,17 +345,23 @@ fn run_filter_indirect_count_single_cmdbuf(
             encoder.setBuffer_offset_atIndex(Some(&tpt_buffer), 0, 2);
         }
 
-        let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
-        let tg = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+        let grid = objc2_metal::MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+        let tg = objc2_metal::MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
         encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
         encoder.endEncoding();
     }
 
     // Stage 3: Aggregate count with indirect dispatch
     {
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .expect("compute encoder");
+        let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
         encoder.setComputePipelineState(&count_pipeline);
         unsafe {
@@ -373,11 +376,12 @@ fn run_filter_indirect_count_single_cmdbuf(
             depth: 1,
         };
         unsafe {
-            encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
-                &dispatch_args_buffer,
-                0,
-                tg_size,
-            );
+            encoder
+                .dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                    &dispatch_args_buffer,
+                    0,
+                    tg_size,
+                );
         }
         encoder.endEncoding();
     }
@@ -390,7 +394,6 @@ fn run_filter_indirect_count_single_cmdbuf(
         *ptr
     }
 }
-
 
 // ============================================================
 // Tests
@@ -423,7 +426,10 @@ fn test_prepare_dispatch_zero_matches() {
 
     let args = run_prepare_dispatch(&gpu, &match_count_buffer, 256);
 
-    assert_eq!(args.threadgroups_x, 1, "zero matches should still dispatch 1 threadgroup");
+    assert_eq!(
+        args.threadgroups_x, 1,
+        "zero matches should still dispatch 1 threadgroup"
+    );
     assert_eq!(args.threadgroups_y, 1);
     assert_eq!(args.threadgroups_z, 1);
 }
@@ -488,10 +494,7 @@ fn test_indirect_vs_direct_all_match() {
     let args = run_prepare_dispatch(&gpu, &word_count_buffer, threads_per_tg);
 
     // Create dispatch args buffer for indirect
-    let dispatch_args_buffer = encode::alloc_buffer_with_data(
-        &gpu.device,
-        &[args],
-    );
+    let dispatch_args_buffer = encode::alloc_buffer_with_data(&gpu.device, &[args]);
     let indirect_count = run_count_indirect(&gpu, &bitmask, &dispatch_args_buffer, row_count);
 
     assert_eq!(direct_count, 1000);
@@ -552,15 +555,13 @@ fn test_single_cmdbuf_filter_indirect_aggregate() {
     let mut pso_cache = PsoCache::new();
 
     let data: Vec<i64> = (1..=1000).collect();
-    let count = run_filter_indirect_count_single_cmdbuf(
-        &gpu,
-        &mut pso_cache,
-        &data,
-        CompareOp::Gt,
-        500,
-    );
+    let count =
+        run_filter_indirect_count_single_cmdbuf(&gpu, &mut pso_cache, &data, CompareOp::Gt, 500);
 
-    assert_eq!(count, 500, "single cmdbuf pipeline: 501..=1000 match GT 500");
+    assert_eq!(
+        count, 500,
+        "single cmdbuf pipeline: 501..=1000 match GT 500"
+    );
 }
 
 #[test]
@@ -569,13 +570,8 @@ fn test_single_cmdbuf_all_match() {
     let mut pso_cache = PsoCache::new();
 
     let data: Vec<i64> = (1..=2048).collect();
-    let count = run_filter_indirect_count_single_cmdbuf(
-        &gpu,
-        &mut pso_cache,
-        &data,
-        CompareOp::Gt,
-        0,
-    );
+    let count =
+        run_filter_indirect_count_single_cmdbuf(&gpu, &mut pso_cache, &data, CompareOp::Gt, 0);
 
     assert_eq!(count, 2048);
 }
@@ -586,13 +582,8 @@ fn test_single_cmdbuf_none_match() {
     let mut pso_cache = PsoCache::new();
 
     let data: Vec<i64> = (1..=2048).collect();
-    let count = run_filter_indirect_count_single_cmdbuf(
-        &gpu,
-        &mut pso_cache,
-        &data,
-        CompareOp::Gt,
-        9999,
-    );
+    let count =
+        run_filter_indirect_count_single_cmdbuf(&gpu, &mut pso_cache, &data, CompareOp::Gt, 9999);
 
     assert_eq!(count, 0);
 }

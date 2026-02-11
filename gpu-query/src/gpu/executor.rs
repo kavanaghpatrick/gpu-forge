@@ -18,13 +18,13 @@ use objc2_metal::{
 
 use crate::gpu::device::GpuDevice;
 use crate::gpu::encode;
-use crate::gpu::pipeline::{filter_pso_key, ColumnTypeCode, PsoCache};
 use crate::gpu::pipeline::CompareOp as GpuCompareOp;
+use crate::gpu::pipeline::{filter_pso_key, ColumnTypeCode, PsoCache};
 use crate::gpu::types::{AggParams, CsvParseParams, FilterParams};
 use crate::io::catalog::TableEntry;
 use crate::io::format_detect::FileFormat;
-use crate::io::mmap::MmapFile;
 use crate::io::json;
+use crate::io::mmap::MmapFile;
 use crate::io::parquet::{self, ColumnData};
 use crate::sql::physical_plan::PhysicalPlan;
 use crate::sql::types::{AggFunc, CompareOp, LogicalOp, Value};
@@ -200,7 +200,11 @@ impl QueryResult {
             println!("{}", formatted.join(" | "));
         }
 
-        println!("({} row{})", self.row_count, if self.row_count == 1 { "" } else { "s" });
+        println!(
+            "({} row{})",
+            self.row_count,
+            if self.row_count == 1 { "" } else { "s" }
+        );
     }
 }
 
@@ -213,7 +217,7 @@ struct ScanResult {
     /// Runtime schema for the parsed data.
     schema: RuntimeSchema,
     /// CSV metadata delimiter.
-    delimiter: u8,
+    _delimiter: u8,
 }
 
 /// Intermediate result from a filter stage.
@@ -224,7 +228,7 @@ struct FilterResult {
     match_count_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
     /// Indirect dispatch args buffer for downstream kernels.
     /// Written by `prepare_query_dispatch` kernel.
-    dispatch_args_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    _dispatch_args_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
     /// Cached CPU-side match count (populated lazily on first read).
     match_count_cached: std::cell::Cell<Option<u32>>,
     /// Total row count from input.
@@ -337,8 +341,6 @@ impl QueryExecutor {
                     row_count: 1,
                 })
             }
-
-            _ => Err(format!("Unsupported plan node for POC: {:?}", plan)),
         }
     }
 
@@ -386,11 +388,8 @@ impl QueryExecutor {
                     "Compound filter: right side produced no filter result".to_string()
                 })?;
 
-                let compound_filter = self.execute_compound_filter(
-                    &left_filter,
-                    &right_filter,
-                    *op,
-                )?;
+                let compound_filter =
+                    self.execute_compound_filter(&left_filter, &right_filter, *op)?;
 
                 Ok((scan_left, Some(compound_filter)))
             }
@@ -410,11 +409,7 @@ impl QueryExecutor {
     }
 
     /// Execute a table scan: mmap file -> GPU CSV/Parquet parse -> ColumnarBatch.
-    fn execute_scan(
-        &self,
-        table: &str,
-        catalog: &[TableEntry],
-    ) -> Result<ScanResult, String> {
+    fn execute_scan(&self, table: &str, catalog: &[TableEntry]) -> Result<ScanResult, String> {
         // Find the table in the catalog
         let entry = catalog
             .iter()
@@ -439,40 +434,26 @@ impl QueryExecutor {
                 let mut batch = self.gpu_parse_csv(&mmap, &schema, csv_meta.delimiter);
 
                 // Build dictionaries for VARCHAR columns from raw CSV data (CPU-side)
-                build_csv_dictionaries(
-                    &entry.path,
-                    csv_meta,
-                    &schema,
-                    &mut batch,
-                )?;
+                build_csv_dictionaries(&entry.path, csv_meta, &schema, &mut batch)?;
 
                 Ok(ScanResult {
                     _mmap: mmap,
                     batch,
                     schema,
-                    delimiter: csv_meta.delimiter,
+                    _delimiter: csv_meta.delimiter,
                 })
             }
-            FileFormat::Parquet => {
-                self.execute_parquet_scan(&entry.path)
-            }
-            FileFormat::Json => {
-                self.execute_json_scan(&entry.path)
-            }
-            other => {
-                Err(format!(
-                    "File format {:?} not yet supported for table '{}'",
-                    other, table
-                ))
-            }
+            FileFormat::Parquet => self.execute_parquet_scan(&entry.path),
+            FileFormat::Json => self.execute_json_scan(&entry.path),
+            other => Err(format!(
+                "File format {:?} not yet supported for table '{}'",
+                other, table
+            )),
         }
     }
 
     /// Execute a Parquet scan: read metadata -> read column data -> upload to GPU buffers.
-    fn execute_parquet_scan(
-        &self,
-        path: &std::path::Path,
-    ) -> Result<ScanResult, String> {
+    fn execute_parquet_scan(&self, path: &std::path::Path) -> Result<ScanResult, String> {
         let meta = parquet::read_metadata(path)?;
         let columns_data = parquet::read_columns(path, &meta, None)?;
 
@@ -543,15 +524,12 @@ impl QueryExecutor {
             _mmap: mmap,
             batch,
             schema,
-            delimiter: b',',
+            _delimiter: b',',
         })
     }
 
     /// Execute an NDJSON scan: mmap file -> GPU structural index -> GPU field extraction -> ColumnarBatch.
-    fn execute_json_scan(
-        &self,
-        path: &std::path::Path,
-    ) -> Result<ScanResult, String> {
+    fn execute_json_scan(&self, path: &std::path::Path) -> Result<ScanResult, String> {
         let json_meta = json::parse_ndjson_header(path)
             .map_err(|e| format!("Failed to parse NDJSON header '{}': {}", path.display(), e))?;
 
@@ -570,7 +548,7 @@ impl QueryExecutor {
             _mmap: mmap,
             batch,
             schema,
-            delimiter: b',', // unused for JSON
+            _delimiter: b',', // unused for JSON
         })
     }
 
@@ -578,11 +556,7 @@ impl QueryExecutor {
     ///
     /// Pass 1: json_structural_index - detect newlines for row boundaries
     /// Pass 2: json_extract_columns - extract fields to SoA column buffers
-    fn gpu_parse_json(
-        &self,
-        mmap: &MmapFile,
-        schema: &RuntimeSchema,
-    ) -> ColumnarBatch {
+    fn gpu_parse_json(&self, mmap: &MmapFile, schema: &RuntimeSchema) -> ColumnarBatch {
         let file_size = mmap.file_size();
         let max_rows = 1_048_576u32; // 1M rows max for POC
 
@@ -592,7 +566,7 @@ impl QueryExecutor {
         let params = CsvParseParams {
             file_size: file_size as u32,
             num_columns: schema.num_columns() as u32,
-            delimiter: 0, // unused for JSON
+            delimiter: 0,  // unused for JSON
             has_header: 0, // NDJSON has no header
             max_rows,
             _pad0: 0,
@@ -612,17 +586,13 @@ impl QueryExecutor {
         );
         let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let index_pipeline =
-            encode::make_pipeline(&self.device.library, "json_structural_index");
-        let extract_pipeline =
-            encode::make_pipeline(&self.device.library, "json_extract_columns");
+        let index_pipeline = encode::make_pipeline(&self.device.library, "json_structural_index");
+        let extract_pipeline = encode::make_pipeline(&self.device.library, "json_extract_columns");
 
         // ---- Pass 1: Structural indexing (newline detection) ----
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encode::dispatch_threads_1d(
                 &encoder,
@@ -658,8 +628,7 @@ impl QueryExecutor {
         let num_data_rows = newline_count as usize;
 
         if num_data_rows == 0 {
-            let mut batch =
-                ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+            let mut batch = ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
             batch.row_count = 0;
             return batch;
         }
@@ -680,12 +649,10 @@ impl QueryExecutor {
             *ptr = num_data_rows as u32;
         }
 
-        let mut batch =
-            ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+        let mut batch = ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
 
         let gpu_schemas = schema.to_gpu_schemas();
-        let schemas_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
+        let schemas_buffer = encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
 
         let extract_params = CsvParseParams {
             file_size: file_size as u32,
@@ -701,9 +668,7 @@ impl QueryExecutor {
         // ---- Pass 2: Field extraction ----
         let cmd_buf2 = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf2
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf2.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&extract_pipeline);
             unsafe {
@@ -717,7 +682,7 @@ impl QueryExecutor {
             }
 
             let threads_per_tg = extract_pipeline.maxTotalThreadsPerThreadgroup().min(256);
-            let tg_count = (num_data_rows + threads_per_tg - 1) / threads_per_tg;
+            let tg_count = num_data_rows.div_ceil(threads_per_tg);
 
             let grid = objc2_metal::MTLSize {
                 width: tg_count,
@@ -775,17 +740,13 @@ impl QueryExecutor {
         );
         let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let detect_pipeline =
-            encode::make_pipeline(&self.device.library, "csv_detect_newlines");
-        let parse_pipeline =
-            encode::make_pipeline(&self.device.library, "csv_parse_fields");
+        let detect_pipeline = encode::make_pipeline(&self.device.library, "csv_detect_newlines");
+        let parse_pipeline = encode::make_pipeline(&self.device.library, "csv_parse_fields");
 
         // ---- Pass 1: Detect newlines ----
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encode::dispatch_threads_1d(
                 &encoder,
@@ -819,8 +780,7 @@ impl QueryExecutor {
         let num_data_rows = (newline_count as usize).saturating_sub(1);
 
         if num_data_rows == 0 {
-            let mut batch =
-                ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+            let mut batch = ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
             batch.row_count = 0;
             return batch;
         }
@@ -835,12 +795,10 @@ impl QueryExecutor {
             *ptr = num_data_rows as u32;
         }
 
-        let mut batch =
-            ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+        let mut batch = ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
 
         let gpu_schemas = schema.to_gpu_schemas();
-        let schemas_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
+        let schemas_buffer = encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
 
         let parse_params = CsvParseParams {
             file_size: file_size as u32,
@@ -856,9 +814,7 @@ impl QueryExecutor {
         // ---- Pass 2: Parse fields ----
         let cmd_buf2 = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf2
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf2.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&parse_pipeline);
             unsafe {
@@ -872,7 +828,7 @@ impl QueryExecutor {
             }
 
             let threads_per_tg = parse_pipeline.maxTotalThreadsPerThreadgroup().min(256);
-            let tg_count = (num_data_rows + threads_per_tg - 1) / threads_per_tg;
+            let tg_count = num_data_rows.div_ceil(threads_per_tg);
 
             let grid = objc2_metal::MTLSize {
                 width: tg_count,
@@ -904,7 +860,7 @@ impl QueryExecutor {
         value: &Value,
     ) -> Result<FilterResult, String> {
         let row_count = scan.batch.row_count as u32;
-        let bitmask_words = ((row_count + 31) / 32) as usize;
+        let bitmask_words = (row_count as usize).div_ceil(32);
 
         // Resolve column index and type
         let col_idx = scan
@@ -949,9 +905,7 @@ impl QueryExecutor {
             DataType::Varchar => {
                 // Dictionary-encoded string column: look up the comparison value's
                 // dict code on CPU, then filter on dict codes using INT64 filter kernel.
-                let local_idx = scan
-                    .schema
-                    .columns[..col_idx]
+                let local_idx = scan.schema.columns[..col_idx]
                     .iter()
                     .filter(|c| c.data_type == DataType::Varchar)
                     .count();
@@ -967,17 +921,17 @@ impl QueryExecutor {
                     .dictionaries
                     .get(col_idx)
                     .and_then(|d| d.as_ref())
-                    .ok_or_else(|| {
-                        format!("No dictionary for VARCHAR column '{}'", column)
-                    })?;
+                    .ok_or_else(|| format!("No dictionary for VARCHAR column '{}'", column))?;
 
                 // Encode the comparison value. If not in dict, no rows can match.
                 let dict_code = match dict.encode(str_val) {
                     Some(code) => code as i64,
                     None => {
                         // Value not in dictionary -> 0 matches. Return empty result.
-                        let bitmask_buffer =
-                            encode::alloc_buffer(&self.device.device, std::cmp::max(bitmask_words * 4, 4));
+                        let bitmask_buffer = encode::alloc_buffer(
+                            &self.device.device,
+                            std::cmp::max(bitmask_words * 4, 4),
+                        );
                         let match_count_buffer = encode::alloc_buffer(&self.device.device, 4);
                         let dispatch_args_buffer = encode::alloc_buffer(
                             &self.device.device,
@@ -994,7 +948,7 @@ impl QueryExecutor {
                         return Ok(FilterResult {
                             bitmask_buffer,
                             match_count_buffer,
-                            dispatch_args_buffer,
+                            _dispatch_args_buffer: dispatch_args_buffer,
                             match_count_cached: std::cell::Cell::new(Some(0)),
                             row_count,
                         });
@@ -1035,8 +989,7 @@ impl QueryExecutor {
         };
 
         // Allocate output buffers
-        let bitmask_buffer =
-            encode::alloc_buffer(&self.device.device, bitmask_words * 4);
+        let bitmask_buffer = encode::alloc_buffer(&self.device.device, bitmask_words * 4);
         let match_count_buffer = encode::alloc_buffer(&self.device.device, 4);
         let null_bitmap_buffer =
             encode::alloc_buffer(&self.device.device, std::cmp::max(bitmask_words * 4, 4));
@@ -1068,8 +1021,7 @@ impl QueryExecutor {
             _pad0: 0,
             compare_value_int_hi: 0,
         };
-        let params_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
         // Get specialized PSO
         let key = filter_pso_key(gpu_compare_op, gpu_col_type, false);
@@ -1092,9 +1044,7 @@ impl QueryExecutor {
 
         let data_offset = match col_def.data_type {
             DataType::Int64 => col_local_idx * scan.batch.max_rows * std::mem::size_of::<i64>(),
-            DataType::Float64 => {
-                col_local_idx * scan.batch.max_rows * std::mem::size_of::<f32>()
-            }
+            DataType::Float64 => col_local_idx * scan.batch.max_rows * std::mem::size_of::<f32>(),
             DataType::Varchar => 0, // temp buffer has data at offset 0
             _ => 0,
         };
@@ -1110,9 +1060,7 @@ impl QueryExecutor {
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
             // --- Stage 1: Filter kernel ---
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(pipeline);
             unsafe {
@@ -1145,12 +1093,9 @@ impl QueryExecutor {
                 encode::make_pipeline(&self.device.library, "prepare_query_dispatch");
 
             let tpt = 256u32; // threads per threadgroup for downstream kernels
-            let tpt_buffer =
-                encode::alloc_buffer_with_data(&self.device.device, &[tpt]);
+            let tpt_buffer = encode::alloc_buffer_with_data(&self.device.device, &[tpt]);
 
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&prepare_pipeline);
             unsafe {
@@ -1160,8 +1105,16 @@ impl QueryExecutor {
             }
 
             // Single thread dispatch
-            let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
-            let tg = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+            let grid = objc2_metal::MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            };
+            let tg = objc2_metal::MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            };
             encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
             encoder.endEncoding();
         }
@@ -1173,7 +1126,7 @@ impl QueryExecutor {
         Ok(FilterResult {
             bitmask_buffer,
             match_count_buffer,
-            dispatch_args_buffer,
+            _dispatch_args_buffer: dispatch_args_buffer,
             match_count_cached: std::cell::Cell::new(None),
             row_count,
         })
@@ -1191,13 +1144,11 @@ impl QueryExecutor {
         op: LogicalOp,
     ) -> Result<FilterResult, String> {
         let row_count = left.row_count;
-        let num_words = ((row_count + 31) / 32) as usize;
+        let num_words = (row_count as usize).div_ceil(32);
 
         // Allocate output buffers
-        let out_bitmask = encode::alloc_buffer(
-            &self.device.device,
-            std::cmp::max(num_words * 4, 4),
-        );
+        let out_bitmask =
+            encode::alloc_buffer(&self.device.device, std::cmp::max(num_words * 4, 4));
         let match_count_buffer = encode::alloc_buffer(&self.device.device, 4);
         let dispatch_args_buffer = encode::alloc_buffer(
             &self.device.device,
@@ -1226,9 +1177,7 @@ impl QueryExecutor {
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
             // --- Stage 1: Compound filter kernel ---
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encode::dispatch_threads_1d(
                 &encoder,
@@ -1251,12 +1200,9 @@ impl QueryExecutor {
                 encode::make_pipeline(&self.device.library, "prepare_query_dispatch");
 
             let tpt = 256u32;
-            let tpt_buffer =
-                encode::alloc_buffer_with_data(&self.device.device, &[tpt]);
+            let tpt_buffer = encode::alloc_buffer_with_data(&self.device.device, &[tpt]);
 
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&prepare_pipeline);
             unsafe {
@@ -1265,8 +1211,16 @@ impl QueryExecutor {
                 encoder.setBuffer_offset_atIndex(Some(&tpt_buffer), 0, 2);
             }
 
-            let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
-            let tg = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
+            let grid = objc2_metal::MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            };
+            let tg = objc2_metal::MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            };
             encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
             encoder.endEncoding();
         }
@@ -1276,7 +1230,7 @@ impl QueryExecutor {
         Ok(FilterResult {
             bitmask_buffer: out_bitmask,
             match_count_buffer,
-            dispatch_args_buffer,
+            _dispatch_args_buffer: dispatch_args_buffer,
             match_count_cached: std::cell::Cell::new(None),
             row_count,
         })
@@ -1343,14 +1297,20 @@ impl QueryExecutor {
                     DataType::Int64 => {
                         let local_idx = self.int_local_idx(scan, col_idx);
                         let sum = self.run_aggregate_sum_int64(
-                            &scan.batch, mask_buffer, row_count, local_idx,
+                            &scan.batch,
+                            mask_buffer,
+                            row_count,
+                            local_idx,
                         )?;
                         Ok((label, sum.to_string()))
                     }
                     DataType::Float64 => {
                         let local_idx = self.float_local_idx(scan, col_idx);
                         let sum = self.run_aggregate_sum_float(
-                            &scan.batch, mask_buffer, row_count, local_idx,
+                            &scan.batch,
+                            mask_buffer,
+                            row_count,
+                            local_idx,
                         )?;
                         // Format float with reasonable precision
                         Ok((label, format_float(sum as f64)))
@@ -1370,7 +1330,10 @@ impl QueryExecutor {
                     DataType::Int64 => {
                         let local_idx = self.int_local_idx(scan, col_idx);
                         let sum = self.run_aggregate_sum_int64(
-                            &scan.batch, mask_buffer, row_count, local_idx,
+                            &scan.batch,
+                            mask_buffer,
+                            row_count,
+                            local_idx,
                         )?;
                         let avg = sum as f64 / count as f64;
                         Ok((label, format_float(avg)))
@@ -1378,7 +1341,10 @@ impl QueryExecutor {
                     DataType::Float64 => {
                         let local_idx = self.float_local_idx(scan, col_idx);
                         let sum = self.run_aggregate_sum_float(
-                            &scan.batch, mask_buffer, row_count, local_idx,
+                            &scan.batch,
+                            mask_buffer,
+                            row_count,
+                            local_idx,
                         )?;
                         let avg = sum as f64 / count as f64;
                         Ok((label, format_float(avg)))
@@ -1393,16 +1359,18 @@ impl QueryExecutor {
                     DataType::Int64 => {
                         let local_idx = self.int_local_idx(scan, col_idx);
                         let min = self.run_aggregate_min_int64(
-                            &scan.batch, mask_buffer, row_count, local_idx,
+                            &scan.batch,
+                            mask_buffer,
+                            row_count,
+                            local_idx,
                         )?;
                         Ok((label, min.to_string()))
                     }
                     DataType::Float64 => {
                         // CPU fallback for float MIN
                         let local_idx = self.float_local_idx(scan, col_idx);
-                        let vals = self.read_masked_floats(
-                            &scan.batch, mask_buffer, row_count, local_idx,
-                        );
+                        let vals =
+                            self.read_masked_floats(&scan.batch, mask_buffer, row_count, local_idx);
                         let min = vals.iter().cloned().fold(f32::INFINITY, f32::min);
                         Ok((label, format_float(min as f64)))
                     }
@@ -1416,16 +1384,18 @@ impl QueryExecutor {
                     DataType::Int64 => {
                         let local_idx = self.int_local_idx(scan, col_idx);
                         let max = self.run_aggregate_max_int64(
-                            &scan.batch, mask_buffer, row_count, local_idx,
+                            &scan.batch,
+                            mask_buffer,
+                            row_count,
+                            local_idx,
                         )?;
                         Ok((label, max.to_string()))
                     }
                     DataType::Float64 => {
                         // CPU fallback for float MAX
                         let local_idx = self.float_local_idx(scan, col_idx);
-                        let vals = self.read_masked_floats(
-                            &scan.batch, mask_buffer, row_count, local_idx,
-                        );
+                        let vals =
+                            self.read_masked_floats(&scan.batch, mask_buffer, row_count, local_idx);
                         let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                         Ok((label, format_float(max as f64)))
                     }
@@ -1566,7 +1536,12 @@ impl QueryExecutor {
                     let all_vals = unsafe { scan.batch.read_float_column(local_idx) };
                     agg_data.push(AggColumnData::Float64(all_vals));
                 }
-                _ => return Err(format!("Aggregate on {:?} not supported", col_def.data_type)),
+                _ => {
+                    return Err(format!(
+                        "Aggregate on {:?} not supported",
+                        col_def.data_type
+                    ))
+                }
             }
         }
 
@@ -1646,10 +1621,12 @@ impl QueryExecutor {
                         .iter()
                         .filter(|c| c.data_type == DataType::Varchar)
                         .count();
-                    let dict_codes = unsafe {
-                        scan_result.batch.read_string_dict_column(local_idx)
-                    };
-                    let dict = scan_result.batch.dictionaries.get(col_idx)
+                    let dict_codes =
+                        unsafe { scan_result.batch.read_string_dict_column(local_idx) };
+                    let dict = scan_result
+                        .batch
+                        .dictionaries
+                        .get(col_idx)
                         .and_then(|d| d.as_ref());
                     let vals: Vec<String> = dict_codes
                         .iter()
@@ -1704,9 +1681,9 @@ impl QueryExecutor {
             for &(col_idx, ascending) in &sort_specs {
                 let cmp = match &col_data[col_idx] {
                     ColumnValues::Int64(vals) => vals[a].cmp(&vals[b]),
-                    ColumnValues::Float64(vals) => {
-                        vals[a].partial_cmp(&vals[b]).unwrap_or(std::cmp::Ordering::Equal)
-                    }
+                    ColumnValues::Float64(vals) => vals[a]
+                        .partial_cmp(&vals[b])
+                        .unwrap_or(std::cmp::Ordering::Equal),
                     ColumnValues::Varchar(vals) => vals[a].cmp(&vals[b]),
                 };
                 let cmp = if ascending { cmp } else { cmp.reverse() };
@@ -1770,7 +1747,10 @@ impl QueryExecutor {
                         .filter(|c| c.data_type == DataType::Varchar)
                         .count();
                     let dict_codes = unsafe { scan.batch.read_string_dict_column(local_idx) };
-                    let dict = scan.batch.dictionaries.get(col_idx)
+                    let dict = scan
+                        .batch
+                        .dictionaries
+                        .get(col_idx)
                         .and_then(|d| d.as_ref());
                     let vals: Vec<String> = dict_codes
                         .iter()
@@ -1789,10 +1769,7 @@ impl QueryExecutor {
                     col_readers.push(GroupColumnReader::Varchar(vals));
                 }
                 _ => {
-                    return Err(format!(
-                        "GROUP BY on {:?} not supported",
-                        col_def.data_type
-                    ));
+                    return Err(format!("GROUP BY on {:?} not supported", col_def.data_type));
                 }
             }
         }
@@ -1832,7 +1809,7 @@ impl QueryExecutor {
         mask_buffer: &ProtocolObject<dyn MTLBuffer>,
         row_count: u32,
     ) -> Result<u64, String> {
-        let num_words = ((row_count + 31) / 32) as usize;
+        let num_words = (row_count as usize).div_ceil(32);
 
         let result_buffer = encode::alloc_buffer(&self.device.device, 4);
         unsafe {
@@ -1846,26 +1823,18 @@ impl QueryExecutor {
             agg_function: 0, // COUNT
             _pad0: 0,
         };
-        let params_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let pipeline =
-            encode::make_pipeline(&self.device.library, "aggregate_count");
+        let pipeline = encode::make_pipeline(&self.device.library, "aggregate_count");
 
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encode::dispatch_1d(
                 &encoder,
                 &pipeline,
-                &[
-                    (mask_buffer, 0),
-                    (&result_buffer, 1),
-                    (&params_buffer, 2),
-                ],
+                &[(mask_buffer, 0), (&result_buffer, 1), (&params_buffer, 2)],
                 num_words,
             );
 
@@ -1904,29 +1873,20 @@ impl QueryExecutor {
             agg_function: 1, // SUM
             _pad0: 0,
         };
-        let params_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let pipeline =
-            encode::make_pipeline(&self.device.library, "aggregate_sum_int64");
+        let pipeline = encode::make_pipeline(&self.device.library, "aggregate_sum_int64");
 
-        let data_offset =
-            int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
+        let data_offset = int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
 
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&pipeline);
 
             unsafe {
-                encoder.setBuffer_offset_atIndex(
-                    Some(&batch.int_buffer),
-                    data_offset,
-                    0,
-                );
+                encoder.setBuffer_offset_atIndex(Some(&batch.int_buffer), data_offset, 0);
                 encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
                 encoder.setBuffer_offset_atIndex(Some(&result_buffer), 0, 2); // result_lo
                 encoder.setBuffer_offset_atIndex(Some(&result_buffer), 4, 3); // result_hi
@@ -1934,8 +1894,7 @@ impl QueryExecutor {
             }
 
             let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-            let threadgroup_count =
-                (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+            let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
             let grid_size = objc2_metal::MTLSize {
                 width: threadgroup_count,
@@ -1976,12 +1935,10 @@ impl QueryExecutor {
         row_count: u32,
         int_col_local_idx: usize,
     ) -> Result<i64, String> {
-        let pipeline =
-            encode::make_pipeline(&self.device.library, "aggregate_min_int64");
+        let pipeline = encode::make_pipeline(&self.device.library, "aggregate_min_int64");
 
         let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-        let threadgroup_count =
-            (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+        let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
         // Allocate partials buffer: one i64 per threadgroup, initialized to INT64_MAX
         let partials_buffer = encode::alloc_buffer(
@@ -2001,24 +1958,18 @@ impl QueryExecutor {
             agg_function: 3, // MIN
             _pad0: 0,
         };
-        let params_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let data_offset =
-            int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
+        let data_offset = int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
 
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&pipeline);
 
             unsafe {
-                encoder.setBuffer_offset_atIndex(
-                    Some(&batch.int_buffer), data_offset, 0,
-                );
+                encoder.setBuffer_offset_atIndex(Some(&batch.int_buffer), data_offset, 0);
                 encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
                 encoder.setBuffer_offset_atIndex(Some(&partials_buffer), 0, 2);
                 encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
@@ -2067,12 +2018,10 @@ impl QueryExecutor {
         row_count: u32,
         int_col_local_idx: usize,
     ) -> Result<i64, String> {
-        let pipeline =
-            encode::make_pipeline(&self.device.library, "aggregate_max_int64");
+        let pipeline = encode::make_pipeline(&self.device.library, "aggregate_max_int64");
 
         let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-        let threadgroup_count =
-            (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+        let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
         // Allocate partials buffer: one i64 per threadgroup, initialized to INT64_MIN
         let partials_buffer = encode::alloc_buffer(
@@ -2092,24 +2041,18 @@ impl QueryExecutor {
             agg_function: 4, // MAX
             _pad0: 0,
         };
-        let params_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let data_offset =
-            int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
+        let data_offset = int_col_local_idx * batch.max_rows * std::mem::size_of::<i64>();
 
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&pipeline);
 
             unsafe {
-                encoder.setBuffer_offset_atIndex(
-                    Some(&batch.int_buffer), data_offset, 0,
-                );
+                encoder.setBuffer_offset_atIndex(Some(&batch.int_buffer), data_offset, 0);
                 encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
                 encoder.setBuffer_offset_atIndex(Some(&partials_buffer), 0, 2);
                 encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
@@ -2169,37 +2112,27 @@ impl QueryExecutor {
             agg_function: 1, // SUM
             _pad0: 0,
         };
-        let params_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &[params]);
+        let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let pipeline =
-            encode::make_pipeline(&self.device.library, "aggregate_sum_float");
+        let pipeline = encode::make_pipeline(&self.device.library, "aggregate_sum_float");
 
-        let data_offset =
-            float_col_local_idx * batch.max_rows * std::mem::size_of::<f32>();
+        let data_offset = float_col_local_idx * batch.max_rows * std::mem::size_of::<f32>();
 
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&pipeline);
 
             unsafe {
-                encoder.setBuffer_offset_atIndex(
-                    Some(&batch.float_buffer),
-                    data_offset,
-                    0,
-                );
+                encoder.setBuffer_offset_atIndex(Some(&batch.float_buffer), data_offset, 0);
                 encoder.setBuffer_offset_atIndex(Some(mask_buffer), 0, 1);
                 encoder.setBuffer_offset_atIndex(Some(&result_buffer), 0, 2);
                 encoder.setBuffer_offset_atIndex(Some(&params_buffer), 0, 3);
             }
 
             let threads_per_tg = pipeline.maxTotalThreadsPerThreadgroup().min(256);
-            let threadgroup_count =
-                (row_count as usize + threads_per_tg - 1) / threads_per_tg;
+            let threadgroup_count = (row_count as usize).div_ceil(threads_per_tg);
 
             let grid_size = objc2_metal::MTLSize {
                 width: threadgroup_count,
@@ -2256,7 +2189,7 @@ impl QueryExecutor {
         let csv_meta = entry
             .csv_metadata
             .as_ref()
-            .ok_or_else(|| format!("Batched execution only supports CSV files currently"))?;
+            .ok_or_else(|| "Batched execution only supports CSV files currently".to_string())?;
 
         let schema = infer_schema_from_csv(&entry.path, csv_meta)?;
 
@@ -2265,9 +2198,7 @@ impl QueryExecutor {
             .map_err(|e| format!("Failed to mmap '{}': {}", entry.path.display(), e))?;
 
         let file_size = mmap.file_size();
-        let file_bytes = unsafe {
-            std::slice::from_raw_parts(mmap.as_ptr() as *const u8, file_size)
-        };
+        let file_bytes = unsafe { std::slice::from_raw_parts(mmap.as_ptr(), file_size) };
 
         // Split into chunks at newline boundaries
         let chunk_ranges = split_into_chunks(file_bytes, batch_threshold);
@@ -2314,12 +2245,11 @@ impl QueryExecutor {
             }
 
             let scan_result = ScanResult {
-                _mmap: MmapFile::open(&entry.path).map_err(|e| {
-                    format!("Failed to mmap '{}': {}", entry.path.display(), e)
-                })?,
+                _mmap: MmapFile::open(&entry.path)
+                    .map_err(|e| format!("Failed to mmap '{}': {}", entry.path.display(), e))?,
                 batch,
                 schema: schema.clone(),
-                delimiter: csv_meta.delimiter,
+                _delimiter: csv_meta.delimiter,
             };
 
             // Apply filter if present
@@ -2330,11 +2260,8 @@ impl QueryExecutor {
             };
 
             // Compute partial aggregates for this chunk
-            let partial = self.compute_partial_aggregates(
-                &scan_result,
-                filter_result.as_ref(),
-                functions,
-            )?;
+            let partial =
+                self.compute_partial_aggregates(&scan_result, filter_result.as_ref(), functions)?;
 
             all_partials.push(partial);
         }
@@ -2411,10 +2338,8 @@ impl QueryExecutor {
         );
         let params_buffer = encode::alloc_buffer_with_data(&self.device.device, &[params]);
 
-        let detect_pipeline =
-            encode::make_pipeline(&self.device.library, "csv_detect_newlines");
-        let parse_pipeline =
-            encode::make_pipeline(&self.device.library, "csv_parse_fields");
+        let detect_pipeline = encode::make_pipeline(&self.device.library, "csv_detect_newlines");
+        let parse_pipeline = encode::make_pipeline(&self.device.library, "csv_parse_fields");
 
         // ---- Pass 1: Detect newlines within the chunk ----
         // We dispatch threads only for the chunk range.
@@ -2430,9 +2355,7 @@ impl QueryExecutor {
 
         let cmd_buf = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&detect_pipeline);
             unsafe {
@@ -2491,8 +2414,7 @@ impl QueryExecutor {
         };
 
         if num_data_rows == 0 {
-            let mut batch =
-                ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+            let mut batch = ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
             batch.row_count = 0;
             return batch;
         }
@@ -2507,12 +2429,10 @@ impl QueryExecutor {
             *ptr = num_data_rows as u32;
         }
 
-        let mut batch =
-            ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
+        let mut batch = ColumnarBatch::allocate(&self.device.device, schema, max_rows as usize);
 
         let gpu_schemas = schema.to_gpu_schemas();
-        let schemas_buffer =
-            encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
+        let schemas_buffer = encode::alloc_buffer_with_data(&self.device.device, &gpu_schemas);
 
         let parse_params = CsvParseParams {
             file_size: chunk_size as u32,
@@ -2528,9 +2448,7 @@ impl QueryExecutor {
         // ---- Pass 2: Parse fields ----
         let cmd_buf2 = encode::make_command_buffer(&self.device.command_queue);
         {
-            let encoder = cmd_buf2
-                .computeCommandEncoder()
-                .expect("compute encoder");
+            let encoder = cmd_buf2.computeCommandEncoder().expect("compute encoder");
 
             encoder.setComputePipelineState(&parse_pipeline);
             unsafe {
@@ -2545,7 +2463,7 @@ impl QueryExecutor {
             }
 
             let threads_per_tg = parse_pipeline.maxTotalThreadsPerThreadgroup().min(256);
-            let tg_count = (num_data_rows + threads_per_tg - 1) / threads_per_tg;
+            let tg_count = num_data_rows.div_ceil(threads_per_tg);
 
             let grid = objc2_metal::MTLSize {
                 width: tg_count,
@@ -2601,14 +2519,20 @@ impl QueryExecutor {
                         DataType::Int64 => {
                             let local_idx = self.int_local_idx(scan, col_idx);
                             let sum = self.run_aggregate_sum_int64(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             )?;
                             PartialAggregate::SumInt64(sum)
                         }
                         DataType::Float64 => {
                             let local_idx = self.float_local_idx(scan, col_idx);
                             let sum = self.run_aggregate_sum_float(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             )?;
                             PartialAggregate::SumFloat(sum as f64)
                         }
@@ -2622,14 +2546,20 @@ impl QueryExecutor {
                         DataType::Int64 => {
                             let local_idx = self.int_local_idx(scan, col_idx);
                             let sum = self.run_aggregate_sum_int64(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             )?;
                             PartialAggregate::AvgInt64(sum, count)
                         }
                         DataType::Float64 => {
                             let local_idx = self.float_local_idx(scan, col_idx);
                             let sum = self.run_aggregate_sum_float(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             )?;
                             PartialAggregate::AvgFloat(sum as f64, count)
                         }
@@ -2642,14 +2572,20 @@ impl QueryExecutor {
                         DataType::Int64 => {
                             let local_idx = self.int_local_idx(scan, col_idx);
                             let min = self.run_aggregate_min_int64(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             )?;
                             PartialAggregate::MinInt64(min)
                         }
                         DataType::Float64 => {
                             let local_idx = self.float_local_idx(scan, col_idx);
                             let vals = self.read_masked_floats(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             );
                             let min = vals.iter().cloned().fold(f32::INFINITY, f32::min);
                             PartialAggregate::MinFloat(min as f64)
@@ -2663,14 +2599,20 @@ impl QueryExecutor {
                         DataType::Int64 => {
                             let local_idx = self.int_local_idx(scan, col_idx);
                             let max = self.run_aggregate_max_int64(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             )?;
                             PartialAggregate::MaxInt64(max)
                         }
                         DataType::Float64 => {
                             let local_idx = self.float_local_idx(scan, col_idx);
                             let vals = self.read_masked_floats(
-                                &scan.batch, mask_buffer, row_count, local_idx,
+                                &scan.batch,
+                                mask_buffer,
+                                row_count,
+                                local_idx,
                             );
                             let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                             PartialAggregate::MaxFloat(max as f64)
@@ -2707,9 +2649,7 @@ impl QueryExecutor {
         {
             // Only batch non-grouped aggregates on simple scan or filtered scan
             if group_by.is_empty() {
-                if let Some((table, filter_info, file_size)) =
-                    extract_scan_info(input, catalog)
-                {
+                if let Some((table, filter_info, file_size)) = extract_scan_info(input, catalog) {
                     if Self::needs_batching(file_size, batch_threshold) {
                         return self.execute_batched_aggregate(
                             table,
@@ -2823,7 +2763,13 @@ impl QueryExecutor {
                         "NULL".to_string()
                     };
 
-                    (null_count, distinct, min.to_string(), max.to_string(), sample)
+                    (
+                        null_count,
+                        distinct,
+                        min.to_string(),
+                        max.to_string(),
+                        sample,
+                    )
                 }
                 DataType::Float64 => {
                     let local_idx = self.float_local_idx(&scan, col_idx);
@@ -2875,10 +2821,7 @@ impl QueryExecutor {
 
                     let dict_codes = unsafe { scan.batch.read_string_dict_column(local_idx) };
 
-                    let null_count = dict_codes
-                        .iter()
-                        .filter(|&&c| c == u32::MAX)
-                        .count() as u64;
+                    let null_count = dict_codes.iter().filter(|&&c| c == u32::MAX).count() as u64;
 
                     let distinct = if let Some(d) = dict {
                         d.len() as u64
@@ -2898,7 +2841,10 @@ impl QueryExecutor {
                                 values[0].clone()
                             };
                             (
-                                values.first().cloned().unwrap_or_else(|| "NULL".to_string()),
+                                values
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| "NULL".to_string()),
                                 values.last().cloned().unwrap_or_else(|| "NULL".to_string()),
                                 sample,
                             )
@@ -2911,7 +2857,13 @@ impl QueryExecutor {
                 }
                 _ => {
                     // Unsupported type: return placeholder stats
-                    (0u64, 0u64, "N/A".to_string(), "N/A".to_string(), "N/A".to_string())
+                    (
+                        0u64,
+                        0u64,
+                        "N/A".to_string(),
+                        "N/A".to_string(),
+                        "N/A".to_string(),
+                    )
                 }
             };
 
@@ -2956,11 +2908,7 @@ enum AggColumnData {
 }
 
 /// Compute a CPU-side aggregate over the given row indices.
-fn compute_cpu_aggregate(
-    func: &AggFunc,
-    data: &AggColumnData,
-    row_indices: &[usize],
-) -> String {
+fn compute_cpu_aggregate(func: &AggFunc, data: &AggColumnData, row_indices: &[usize]) -> String {
     if row_indices.is_empty() {
         return "NULL".to_string();
     }
@@ -3036,7 +2984,7 @@ fn build_all_ones_mask(
     device: &ProtocolObject<dyn objc2_metal::MTLDevice>,
     row_count: usize,
 ) -> Retained<ProtocolObject<dyn MTLBuffer>> {
-    let num_words = (row_count + 31) / 32;
+    let num_words = row_count.div_ceil(32);
     let buf = encode::alloc_buffer(device, std::cmp::max(num_words * 4, 4));
     unsafe {
         let ptr = buf.contents().as_ptr() as *mut u32;
@@ -3075,8 +3023,8 @@ pub fn infer_schema_from_csv(
 ) -> Result<RuntimeSchema, String> {
     use std::io::BufRead;
 
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
     let reader = std::io::BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -3173,8 +3121,8 @@ fn build_csv_dictionaries(
     }
 
     // Read the entire CSV to extract string column values
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
     let reader = std::io::BufReader::new(file);
     let mut lines = reader.lines();
     let delimiter = csv_meta.delimiter as char;
@@ -3248,8 +3196,8 @@ fn build_json_dictionaries(
         return Ok(());
     }
 
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Cannot open '{}': {}", path.display(), e))?;
     let reader = std::io::BufReader::new(file);
 
     // Identify VARCHAR columns
@@ -3311,9 +3259,8 @@ fn build_json_dictionaries(
 /// Handles both quoted strings and unquoted values.
 fn extract_json_string_value(s: &str) -> String {
     let s = s.trim_start();
-    if s.starts_with('"') {
+    if let Some(inner) = s.strip_prefix('"') {
         // Quoted string
-        let inner = &s[1..];
         if let Some(end) = inner.find('"') {
             inner[..end].to_string()
         } else {
@@ -3321,7 +3268,8 @@ fn extract_json_string_value(s: &str) -> String {
         }
     } else {
         // Unquoted value (number, null, bool)
-        let end = s.find(|c: char| c == ',' || c == '}' || c == ']' || c.is_whitespace())
+        let end = s
+            .find(|c: char| c == ',' || c == '}' || c == ']' || c.is_whitespace())
             .unwrap_or(s.len());
         s[..end].to_string()
     }
@@ -3372,8 +3320,8 @@ pub fn split_into_chunks(file_bytes: &[u8], batch_size: usize) -> Vec<(usize, us
 /// Scans forward from `pos` to find '\n'. If none found, returns the end of the data.
 /// The returned position is the byte AFTER the newline (start of next row).
 fn find_newline_boundary(data: &[u8], pos: usize) -> usize {
-    for i in pos..data.len() {
-        if data[i] == b'\n' {
+    for (i, &byte) in data.iter().enumerate().skip(pos) {
+        if byte == b'\n' {
             return i + 1; // Position after the newline
         }
     }
@@ -3384,13 +3332,16 @@ fn find_newline_boundary(data: &[u8], pos: usize) -> usize {
 ///
 /// Returns (table_name, optional_filter_info, file_size) if the plan is a
 /// simple scan or filtered scan on a CSV file.
+#[allow(clippy::type_complexity)]
 fn extract_scan_info<'a>(
     plan: &'a PhysicalPlan,
     catalog: &[TableEntry],
 ) -> Option<(&'a str, Option<(&'a CompareOp, &'a str, &'a Value)>, usize)> {
     match plan {
         PhysicalPlan::GpuScan { table, .. } => {
-            let entry = catalog.iter().find(|e| e.name.eq_ignore_ascii_case(table))?;
+            let entry = catalog
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(table))?;
             if entry.format != FileFormat::Csv {
                 return None;
             }
@@ -3404,7 +3355,9 @@ fn extract_scan_info<'a>(
             input,
         } => {
             if let PhysicalPlan::GpuScan { table, .. } = input.as_ref() {
-                let entry = catalog.iter().find(|e| e.name.eq_ignore_ascii_case(table))?;
+                let entry = catalog
+                    .iter()
+                    .find(|e| e.name.eq_ignore_ascii_case(table))?;
                 if entry.format != FileFormat::Csv {
                     return None;
                 }
@@ -3463,7 +3416,8 @@ fn build_csv_dictionaries_for_chunk(
 
     let delimiter = csv_meta.delimiter as char;
     let chunk = &file_bytes[chunk_start..chunk_start + chunk_size];
-    let chunk_str = std::str::from_utf8(chunk).map_err(|e| format!("Invalid UTF-8 in chunk: {}", e))?;
+    let chunk_str =
+        std::str::from_utf8(chunk).map_err(|e| format!("Invalid UTF-8 in chunk: {}", e))?;
 
     let varchar_cols: Vec<(usize, usize)> = schema
         .columns
@@ -3534,8 +3488,7 @@ pub fn merge_partial_results(
     let num_functions = functions.len();
     let mut merged = Vec::with_capacity(num_functions);
 
-    for i in 0..num_functions {
-        let func = &functions[i].0;
+    for (i, (func, _)) in functions.iter().enumerate() {
         let func_partials: Vec<&PartialAggregate> =
             partials.iter().map(|p| &p.partials[i]).collect();
 
@@ -3744,7 +3697,11 @@ mod batch_tests {
         let data = b"header\nrow1,100\nrow2,200\nrow3,300\nrow4,400\n";
         // Batch size = 15 bytes forces multiple chunks
         let chunks = split_into_chunks(data, 15);
-        assert!(chunks.len() >= 2, "Expected at least 2 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "Expected at least 2 chunks, got {}",
+            chunks.len()
+        );
 
         // Verify all chunks cover the full file
         assert_eq!(chunks.first().unwrap().0, 0);
@@ -3799,15 +3756,24 @@ mod batch_tests {
         assert!(!QueryExecutor::needs_batching(100, 1024));
         assert!(!QueryExecutor::needs_batching(1024, 1024));
         assert!(QueryExecutor::needs_batching(1025, 1024));
-        assert!(QueryExecutor::needs_batching(BATCH_SIZE_BYTES + 1, BATCH_SIZE_BYTES));
+        assert!(QueryExecutor::needs_batching(
+            BATCH_SIZE_BYTES + 1,
+            BATCH_SIZE_BYTES
+        ));
     }
 
     #[test]
     fn test_merge_partial_count() {
         let partials = vec![
-            BatchPartialResult { partials: vec![PartialAggregate::Count(100)] },
-            BatchPartialResult { partials: vec![PartialAggregate::Count(200)] },
-            BatchPartialResult { partials: vec![PartialAggregate::Count(50)] },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::Count(100)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::Count(200)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::Count(50)],
+            },
         ];
         let functions = vec![(AggFunc::Count, "*".to_string())];
         let merged = merge_partial_results(&partials, &functions);
@@ -3820,8 +3786,12 @@ mod batch_tests {
     #[test]
     fn test_merge_partial_sum_int64() {
         let partials = vec![
-            BatchPartialResult { partials: vec![PartialAggregate::SumInt64(1000)] },
-            BatchPartialResult { partials: vec![PartialAggregate::SumInt64(2000)] },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::SumInt64(1000)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::SumInt64(2000)],
+            },
         ];
         let functions = vec![(AggFunc::Sum, "amount".to_string())];
         let merged = merge_partial_results(&partials, &functions);
@@ -3834,8 +3804,12 @@ mod batch_tests {
     #[test]
     fn test_merge_partial_sum_float() {
         let partials = vec![
-            BatchPartialResult { partials: vec![PartialAggregate::SumFloat(1.5)] },
-            BatchPartialResult { partials: vec![PartialAggregate::SumFloat(2.5)] },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::SumFloat(1.5)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::SumFloat(2.5)],
+            },
         ];
         let functions = vec![(AggFunc::Sum, "price".to_string())];
         let merged = merge_partial_results(&partials, &functions);
@@ -3848,9 +3822,15 @@ mod batch_tests {
     #[test]
     fn test_merge_partial_min_int64() {
         let partials = vec![
-            BatchPartialResult { partials: vec![PartialAggregate::MinInt64(50)] },
-            BatchPartialResult { partials: vec![PartialAggregate::MinInt64(10)] },
-            BatchPartialResult { partials: vec![PartialAggregate::MinInt64(30)] },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::MinInt64(50)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::MinInt64(10)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::MinInt64(30)],
+            },
         ];
         let functions = vec![(AggFunc::Min, "val".to_string())];
         let merged = merge_partial_results(&partials, &functions);
@@ -3863,9 +3843,15 @@ mod batch_tests {
     #[test]
     fn test_merge_partial_max_int64() {
         let partials = vec![
-            BatchPartialResult { partials: vec![PartialAggregate::MaxInt64(50)] },
-            BatchPartialResult { partials: vec![PartialAggregate::MaxInt64(100)] },
-            BatchPartialResult { partials: vec![PartialAggregate::MaxInt64(30)] },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::MaxInt64(50)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::MaxInt64(100)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::MaxInt64(30)],
+            },
         ];
         let functions = vec![(AggFunc::Max, "val".to_string())];
         let merged = merge_partial_results(&partials, &functions);
@@ -3881,8 +3867,12 @@ mod batch_tests {
         // Batch 2: sum=600, count=6 (avg=100)
         // Merged: sum=900, count=9, avg=100
         let partials = vec![
-            BatchPartialResult { partials: vec![PartialAggregate::AvgInt64(300, 3)] },
-            BatchPartialResult { partials: vec![PartialAggregate::AvgInt64(600, 6)] },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::AvgInt64(300, 3)],
+            },
+            BatchPartialResult {
+                partials: vec![PartialAggregate::AvgInt64(600, 6)],
+            },
         ];
         let functions = vec![(AggFunc::Avg, "val".to_string())];
         let merged = merge_partial_results(&partials, &functions);
@@ -3950,12 +3940,18 @@ mod batch_tests {
 
     #[test]
     fn test_format_partial_result_sum_int64() {
-        assert_eq!(format_partial_result(&PartialAggregate::SumInt64(1000)), "1000");
+        assert_eq!(
+            format_partial_result(&PartialAggregate::SumInt64(1000)),
+            "1000"
+        );
     }
 
     #[test]
     fn test_format_partial_result_avg_zero_count() {
-        assert_eq!(format_partial_result(&PartialAggregate::AvgInt64(0, 0)), "NULL");
+        assert_eq!(
+            format_partial_result(&PartialAggregate::AvgInt64(0, 0)),
+            "NULL"
+        );
     }
 
     #[test]

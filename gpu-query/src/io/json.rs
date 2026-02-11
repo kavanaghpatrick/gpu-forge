@@ -231,7 +231,10 @@ mod tests {
         );
         let meta = parse_ndjson_header(tmp.path()).unwrap();
         assert_eq!(meta.field_names, vec!["id", "amount", "name"]);
-        assert_eq!(meta.field_types, vec![DataType::Int64, DataType::Int64, DataType::Varchar]);
+        assert_eq!(
+            meta.field_types,
+            vec![DataType::Int64, DataType::Int64, DataType::Varchar]
+        );
         assert_eq!(meta.field_count, 3);
     }
 
@@ -291,6 +294,9 @@ mod tests {
         let tmp = make_ndjson(r#"{"id": 1, "amount": 200, "name": "bob"}"#);
         let meta = parse_ndjson_header(tmp.path()).unwrap();
         assert_eq!(meta.field_names, vec!["id", "amount", "name"]);
-        assert_eq!(meta.field_types, vec![DataType::Int64, DataType::Int64, DataType::Varchar]);
+        assert_eq!(
+            meta.field_types,
+            vec![DataType::Int64, DataType::Int64, DataType::Varchar]
+        );
     }
 }

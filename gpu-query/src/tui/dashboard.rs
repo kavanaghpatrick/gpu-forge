@@ -51,7 +51,7 @@ pub fn render_gpu_dashboard(
             Constraint::Length(1), // Throughput + query count
             Constraint::Length(1), // Average stats
             Constraint::Length(1), // Spacer
-            Constraint::Min(2),   // Sparkline history
+            Constraint::Min(2),    // Sparkline history
         ])
         .split(inner);
 
@@ -147,31 +147,20 @@ fn render_utilization_bar(
 }
 
 /// Render the throughput and query count stats line.
-fn render_stats_line(
-    f: &mut Frame,
-    area: Rect,
-    metrics: &GpuMetricsCollector,
-    theme: &Theme,
-) {
+fn render_stats_line(f: &mut Frame, area: Rect, metrics: &GpuMetricsCollector, theme: &Theme) {
     let throughput_str = format_throughput(metrics.latest.scan_throughput_gbps);
     let mem_str = format_bytes(metrics.latest.memory_used_bytes);
     let time_str = format_time(metrics.latest.gpu_time_ms);
 
     let line = Line::from(vec![
         Span::styled(
-            format!("{}", throughput_str),
+            throughput_str.to_string(),
             Style::default().fg(theme.accent),
         ),
         Span::styled(" | ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}", time_str),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(time_str.to_string(), Style::default().fg(theme.text)),
         Span::styled(" | ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}", mem_str),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(mem_str.to_string(), Style::default().fg(theme.text)),
         Span::styled(" | ", Style::default().fg(theme.muted)),
         Span::styled(
             format!("Q#{}", metrics.query_count),
@@ -183,12 +172,7 @@ fn render_stats_line(
 }
 
 /// Render average statistics line.
-fn render_avg_line(
-    f: &mut Frame,
-    area: Rect,
-    metrics: &GpuMetricsCollector,
-    theme: &Theme,
-) {
+fn render_avg_line(f: &mut Frame, area: Rect, metrics: &GpuMetricsCollector, theme: &Theme) {
     if metrics.query_count == 0 {
         let line = Line::from(Span::styled(
             "No queries yet",
@@ -204,32 +188,18 @@ fn render_avg_line(
 
     let line = Line::from(vec![
         Span::styled("avg: ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}", avg_time),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(avg_time.to_string(), Style::default().fg(theme.text)),
         Span::styled(" | ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}", avg_throughput),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(avg_throughput.to_string(), Style::default().fg(theme.text)),
         Span::styled(" | peak: ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}", peak_mem),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(peak_mem.to_string(), Style::default().fg(theme.text)),
     ]);
 
     f.render_widget(Paragraph::new(line), area);
 }
 
 /// Render sparkline history of throughput over recent queries.
-fn render_sparkline(
-    f: &mut Frame,
-    area: Rect,
-    metrics: &GpuMetricsCollector,
-    theme: &Theme,
-) {
+fn render_sparkline(f: &mut Frame, area: Rect, metrics: &GpuMetricsCollector, theme: &Theme) {
     let data = metrics.throughput_history_mbs();
 
     if data.is_empty() {
@@ -285,7 +255,7 @@ mod tests {
             is_warm: false,
         });
 
-        let theme = Theme::thermal();
+        let _theme = Theme::thermal();
 
         // Verify data is recorded for rendering
         assert_eq!(metrics.query_count, 1);
@@ -307,12 +277,7 @@ mod tests {
 
     #[test]
     fn test_all_themes_render_dashboard_colors() {
-        let themes = [
-            Theme::thermal(),
-            Theme::glow(),
-            Theme::ice(),
-            Theme::mono(),
-        ];
+        let themes = [Theme::thermal(), Theme::glow(), Theme::ice(), Theme::mono()];
 
         for theme in &themes {
             // Each theme should provide valid gradient colors
@@ -321,7 +286,11 @@ mod tests {
             let gpu_100 = theme.thermal.at(1.0);
 
             // Colors should be different at different points
-            assert_ne!(gpu_0, gpu_100, "theme {} gradient endpoints should differ", theme.name);
+            assert_ne!(
+                gpu_0, gpu_100,
+                "theme {} gradient endpoints should differ",
+                theme.name
+            );
             let _ = gpu_50; // Just ensure no panic
 
             let glow_mid = theme.glow.at(0.5);

@@ -39,8 +39,7 @@ fn make_parquet(dir: &Path, name: &str, ids: &[i64], amounts: &[i64], quantities
 
     let path = dir.join(name);
     let file = File::create(&path).expect("create parquet file");
-    let mut writer =
-        SerializedFileWriter::new(file, schema, props).expect("create parquet writer");
+    let mut writer = SerializedFileWriter::new(file, schema, props).expect("create parquet writer");
 
     let mut rg = writer.next_row_group().expect("next row group");
 
@@ -80,7 +79,9 @@ fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let optimized = gpu_query::sql::optimizer::optimize(logical);
     let physical = gpu_query::sql::physical_plan::plan(&optimized).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
-    executor.execute(&physical, &catalog).expect("execute query")
+    executor
+        .execute(&physical, &catalog)
+        .expect("execute query")
 }
 
 fn assert_int(result: &gpu_query::gpu::executor::QueryResult, expected: i64) {
@@ -183,7 +184,10 @@ fn parquet_where_ne() {
 fn parquet_where_sum_filtered() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT sum(amount) FROM sales WHERE amount > 100");
+    let r = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM sales WHERE amount > 100",
+    );
     // 150+200+300+500+450 = 1600
     assert_int(&r, 1600);
 }
@@ -192,7 +196,10 @@ fn parquet_where_sum_filtered() {
 fn parquet_where_min_filtered() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT min(amount) FROM sales WHERE amount > 100");
+    let r = run_query(
+        tmp.path(),
+        "SELECT min(amount) FROM sales WHERE amount > 100",
+    );
     assert_int(&r, 150);
 }
 
@@ -200,7 +207,10 @@ fn parquet_where_min_filtered() {
 fn parquet_where_cross_column() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT sum(amount) FROM sales WHERE quantity > 3");
+    let r = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM sales WHERE quantity > 3",
+    );
     // qty>3: row4(75,4), row7(500,5) => 575
     assert_int(&r, 575);
 }
@@ -213,7 +223,10 @@ fn parquet_where_cross_column() {
 fn parquet_where_and() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT count(*) FROM sales WHERE amount > 100 AND amount < 400");
+    let r = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE amount > 100 AND amount < 400",
+    );
     // 150,200,300 = 3
     assert_int(&r, 3);
 }
@@ -222,7 +235,10 @@ fn parquet_where_and() {
 fn parquet_where_or() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT count(*) FROM sales WHERE amount < 50 OR amount > 400");
+    let r = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE amount < 50 OR amount > 400",
+    );
     // <50: 25. >400: 500,450 => 3
     assert_int(&r, 3);
 }

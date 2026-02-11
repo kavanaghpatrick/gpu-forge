@@ -43,7 +43,9 @@ fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let optimized = gpu_query::sql::optimizer::optimize(logical);
     let physical = gpu_query::sql::physical_plan::plan(&optimized).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
-    executor.execute(&physical, &catalog).expect("execute query")
+    executor
+        .execute(&physical, &catalog)
+        .expect("execute query")
 }
 
 fn assert_int(result: &gpu_query::gpu::executor::QueryResult, expected: i64) {
@@ -145,7 +147,10 @@ fn json_where_eq() {
 fn json_where_sum_filtered() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT sum(amount) FROM sales WHERE amount > 100");
+    let r = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM sales WHERE amount > 100",
+    );
     assert_int(&r, 1600);
 }
 
@@ -153,7 +158,10 @@ fn json_where_sum_filtered() {
 fn json_where_min_filtered() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT min(amount) FROM sales WHERE amount > 100");
+    let r = run_query(
+        tmp.path(),
+        "SELECT min(amount) FROM sales WHERE amount > 100",
+    );
     assert_int(&r, 150);
 }
 
@@ -161,7 +169,10 @@ fn json_where_min_filtered() {
 fn json_where_cross_column() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT sum(amount) FROM sales WHERE quantity > 3");
+    let r = run_query(
+        tmp.path(),
+        "SELECT sum(amount) FROM sales WHERE quantity > 3",
+    );
     assert_int(&r, 575);
 }
 
@@ -173,7 +184,10 @@ fn json_where_cross_column() {
 fn json_where_and() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT count(*) FROM sales WHERE amount > 100 AND amount < 400");
+    let r = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE amount > 100 AND amount < 400",
+    );
     assert_int(&r, 3);
 }
 
@@ -181,7 +195,10 @@ fn json_where_and() {
 fn json_where_or() {
     let tmp = TempDir::new().unwrap();
     make_sales_10(tmp.path());
-    let r = run_query(tmp.path(), "SELECT count(*) FROM sales WHERE amount < 50 OR amount > 400");
+    let r = run_query(
+        tmp.path(),
+        "SELECT count(*) FROM sales WHERE amount < 50 OR amount > 400",
+    );
     assert_int(&r, 3);
 }
 

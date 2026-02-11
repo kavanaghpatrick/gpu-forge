@@ -316,7 +316,11 @@ mod tests {
         unsafe {
             let buf_ptr = buffer.contents().as_ptr() as *const u8;
             let buf_slice = std::slice::from_raw_parts(buf_ptr, content.len());
-            assert_eq!(buf_slice, content.as_slice(), "Metal buffer contents mismatch");
+            assert_eq!(
+                buf_slice,
+                content.as_slice(),
+                "Metal buffer contents mismatch"
+            );
         }
     }
 

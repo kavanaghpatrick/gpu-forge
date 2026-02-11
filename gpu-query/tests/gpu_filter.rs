@@ -6,9 +6,7 @@
 
 use gpu_query::gpu::device::GpuDevice;
 use gpu_query::gpu::encode;
-use gpu_query::gpu::pipeline::{
-    filter_pso_key, ColumnTypeCode, CompareOp, PsoCache,
-};
+use gpu_query::gpu::pipeline::{filter_pso_key, ColumnTypeCode, CompareOp, PsoCache};
 use gpu_query::gpu::types::FilterParams;
 
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder};
@@ -420,11 +418,11 @@ fn test_float_filter_eq() {
 
 // ---- String filter tests (dictionary-encoded via executor) ----
 
+use gpu_query::gpu::executor::QueryExecutor;
+use gpu_query::io::catalog;
 use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
-use gpu_query::gpu::executor::QueryExecutor;
-use gpu_query::io::catalog;
 
 /// Helper: create a CSV file in a directory.
 fn make_csv(dir: &Path, name: &str, content: &str) {
@@ -438,8 +436,7 @@ fn make_csv(dir: &Path, name: &str, content: &str) {
 fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let cat = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
-    let physical_plan =
-        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
     executor
         .execute(&physical_plan, &cat)
@@ -463,7 +460,10 @@ fn test_string_filter_eq_europe() {
         "SELECT count(*) FROM sales WHERE region = 'Europe'",
     );
     assert_eq!(result.row_count, 1);
-    assert_eq!(result.rows[0][0], "3", "Should match 3 rows where region = 'Europe'");
+    assert_eq!(
+        result.rows[0][0], "3",
+        "Should match 3 rows where region = 'Europe'"
+    );
 }
 
 #[test]
@@ -480,7 +480,10 @@ fn test_string_filter_nonexistent_value() {
         "SELECT count(*) FROM sales WHERE region = 'Antarctica'",
     );
     assert_eq!(result.row_count, 1);
-    assert_eq!(result.rows[0][0], "0", "Nonexistent value should return 0 rows");
+    assert_eq!(
+        result.rows[0][0], "0",
+        "Nonexistent value should return 0 rows"
+    );
 }
 
 #[test]
@@ -534,7 +537,10 @@ fn test_string_filter_with_sum() {
     );
     assert_eq!(result.row_count, 1);
     // Europe rows: amount 100 + 300 + 500 = 900
-    assert_eq!(result.rows[0][0], "900", "SUM of Europe amounts should be 900");
+    assert_eq!(
+        result.rows[0][0], "900",
+        "SUM of Europe amounts should be 900"
+    );
 }
 
 #[test]
@@ -674,7 +680,10 @@ fn test_compound_and_all_match() {
         tmp.path(),
         "SELECT count(*) FROM data WHERE amount > 100 AND quantity > 10",
     );
-    assert_eq!(result.rows[0][0], "3", "AND: all rows match both predicates");
+    assert_eq!(
+        result.rows[0][0], "3",
+        "AND: all rows match both predicates"
+    );
 }
 
 #[test]
@@ -709,7 +718,10 @@ fn test_compound_or_overlap() {
         tmp.path(),
         "SELECT count(*) FROM data WHERE amount > 100 OR quantity > 20",
     );
-    assert_eq!(result.rows[0][0], "3", "OR: 3 rows match at least one predicate");
+    assert_eq!(
+        result.rows[0][0], "3",
+        "OR: 3 rows match at least one predicate"
+    );
 }
 
 #[test]
@@ -747,7 +759,10 @@ fn test_compound_same_column_or() {
         tmp.path(),
         "SELECT count(*) FROM data WHERE amount < 100 OR amount > 200",
     );
-    assert_eq!(result.rows[0][0], "2", "OR: exclusive ranges on same column");
+    assert_eq!(
+        result.rows[0][0], "2",
+        "OR: exclusive ranges on same column"
+    );
 }
 
 // ---- FLOAT filter additional operator tests ----

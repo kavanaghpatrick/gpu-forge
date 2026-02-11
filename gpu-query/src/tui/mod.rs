@@ -20,16 +20,13 @@ pub mod themes;
 pub mod ui;
 
 use app::AppState;
-use event::{poll_event, handle_key, AppEvent};
+use event::{handle_key, poll_event, AppEvent};
 
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;

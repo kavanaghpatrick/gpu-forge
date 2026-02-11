@@ -7,10 +7,10 @@
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-use gpu_query::io::csv::CsvMetadata;
-use gpu_query::storage::schema::DataType;
-use gpu_query::storage::null_bitmap::NullBitmap;
 use gpu_query::gpu::executor::infer_schema_from_csv;
+use gpu_query::io::csv::CsvMetadata;
+use gpu_query::storage::null_bitmap::NullBitmap;
+use gpu_query::storage::schema::DataType;
 
 // ---- Schema inference tests ----
 
@@ -23,7 +23,10 @@ fn make_csv(content: &str) -> (NamedTempFile, CsvMetadata) {
     // Parse header to build CsvMetadata
     let first_line = content.lines().next().unwrap_or("");
     let delimiter = b',';
-    let column_names: Vec<String> = first_line.split(',').map(|s| s.trim().to_string()).collect();
+    let column_names: Vec<String> = first_line
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
     let column_count = column_names.len();
     let meta = CsvMetadata {
         column_names,
@@ -233,13 +236,13 @@ fn test_null_bitmap_clear_and_recount() {
 fn test_null_bitmap_gpu_buffer_format() {
     // Verify the word layout matches what GPU expects
     let mut bm = NullBitmap::new(64);
-    bm.set_null(0);   // bit 0 of word 0
-    bm.set_null(1);   // bit 1 of word 0
-    bm.set_null(32);  // bit 0 of word 1
-    bm.set_null(63);  // bit 31 of word 1
+    bm.set_null(0); // bit 0 of word 0
+    bm.set_null(1); // bit 1 of word 0
+    bm.set_null(32); // bit 0 of word 1
+    bm.set_null(63); // bit 31 of word 1
 
     let words = bm.as_words();
     assert_eq!(words.len(), 2);
-    assert_eq!(words[0], 0b11);               // bits 0 and 1
+    assert_eq!(words[0], 0b11); // bits 0 and 1
     assert_eq!(words[1], (1 << 0) | (1 << 31)); // bits 0 and 31
 }

@@ -7,9 +7,9 @@
 use std::fs::File;
 use std::path::Path;
 
-use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::basic::Type as ParquetPhysicalType;
 use parquet::file::metadata::RowGroupMetaData;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use crate::storage::schema::{ColumnDef, DataType, RuntimeSchema};
 
@@ -49,7 +49,7 @@ pub struct ColumnChunkInfo {
 /// Convert a Parquet physical type to our DataType enum.
 fn parquet_type_to_data_type(ptype: ParquetPhysicalType) -> DataType {
     match ptype {
-        ParquetPhysicalType::INT32 => DataType::Int64,   // widen to i64
+        ParquetPhysicalType::INT32 => DataType::Int64, // widen to i64
         ParquetPhysicalType::INT64 => DataType::Int64,
         ParquetPhysicalType::FLOAT => DataType::Float64,
         ParquetPhysicalType::DOUBLE => DataType::Float64,
@@ -57,7 +57,7 @@ fn parquet_type_to_data_type(ptype: ParquetPhysicalType) -> DataType {
             DataType::Varchar
         }
         ParquetPhysicalType::BOOLEAN => DataType::Bool,
-        ParquetPhysicalType::INT96 => DataType::Int64,   // timestamp fallback
+        ParquetPhysicalType::INT96 => DataType::Int64, // timestamp fallback
     }
 }
 
@@ -67,8 +67,13 @@ fn parquet_type_to_data_type(ptype: ParquetPhysicalType) -> DataType {
 /// schema information. Does NOT read column data -- that's done later
 /// with column pruning.
 pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<ParquetMetadata, String> {
-    let file = File::open(path.as_ref())
-        .map_err(|e| format!("Cannot open Parquet file '{}': {}", path.as_ref().display(), e))?;
+    let file = File::open(path.as_ref()).map_err(|e| {
+        format!(
+            "Cannot open Parquet file '{}': {}",
+            path.as_ref().display(),
+            e
+        )
+    })?;
 
     let reader = SerializedFileReader::new(file)
         .map_err(|e| format!("Invalid Parquet file '{}': {}", path.as_ref().display(), e))?;
@@ -142,10 +147,9 @@ pub fn read_columns<P: AsRef<Path>>(
 ) -> Result<Vec<(String, ColumnData)>, String> {
     use parquet::column::reader::ColumnReader;
 
-    let file = File::open(path.as_ref())
-        .map_err(|e| format!("Cannot open Parquet file: {}", e))?;
-    let reader = SerializedFileReader::new(file)
-        .map_err(|e| format!("Invalid Parquet file: {}", e))?;
+    let file = File::open(path.as_ref()).map_err(|e| format!("Cannot open Parquet file: {}", e))?;
+    let reader =
+        SerializedFileReader::new(file).map_err(|e| format!("Invalid Parquet file: {}", e))?;
 
     let total_rows = metadata.row_count;
     let schema_descr = reader.metadata().file_metadata().schema_descr_ptr();
@@ -222,32 +226,30 @@ pub fn read_columns<P: AsRef<Path>>(
                         }
                     }
                 }
-                ColumnData::Float64(ref mut values) => {
-                    match col_reader {
-                        ColumnReader::FloatColumnReader(ref mut r) => {
-                            let mut buf = Vec::with_capacity(num_rows);
-                            let mut def_levels = Vec::with_capacity(num_rows);
-                            let (records_read, _, _) = r
-                                .read_records(num_rows, Some(&mut def_levels), None, &mut buf)
-                                .map_err(|e| format!("Read FLOAT column error: {}", e))?;
-                            values.extend(buf[..records_read].iter().map(|&v| v as f64));
-                        }
-                        ColumnReader::DoubleColumnReader(ref mut r) => {
-                            let mut buf = Vec::with_capacity(num_rows);
-                            let mut def_levels = Vec::with_capacity(num_rows);
-                            let (records_read, _, _) = r
-                                .read_records(num_rows, Some(&mut def_levels), None, &mut buf)
-                                .map_err(|e| format!("Read DOUBLE column error: {}", e))?;
-                            values.extend_from_slice(&buf[..records_read]);
-                        }
-                        _ => {
-                            return Err(format!(
-                                "Unexpected column reader type for FLOAT64 column '{}'",
-                                col_descr.name()
-                            ));
-                        }
+                ColumnData::Float64(ref mut values) => match col_reader {
+                    ColumnReader::FloatColumnReader(ref mut r) => {
+                        let mut buf = Vec::with_capacity(num_rows);
+                        let mut def_levels = Vec::with_capacity(num_rows);
+                        let (records_read, _, _) = r
+                            .read_records(num_rows, Some(&mut def_levels), None, &mut buf)
+                            .map_err(|e| format!("Read FLOAT column error: {}", e))?;
+                        values.extend(buf[..records_read].iter().map(|&v| v as f64));
                     }
-                }
+                    ColumnReader::DoubleColumnReader(ref mut r) => {
+                        let mut buf = Vec::with_capacity(num_rows);
+                        let mut def_levels = Vec::with_capacity(num_rows);
+                        let (records_read, _, _) = r
+                            .read_records(num_rows, Some(&mut def_levels), None, &mut buf)
+                            .map_err(|e| format!("Read DOUBLE column error: {}", e))?;
+                        values.extend_from_slice(&buf[..records_read]);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Unexpected column reader type for FLOAT64 column '{}'",
+                            col_descr.name()
+                        ));
+                    }
+                },
             }
         }
     }
@@ -400,7 +402,11 @@ mod tests {
         let needed = vec!["amount".to_string()];
         let cols = read_columns(tmp.path(), &meta, Some(&needed)).unwrap();
 
-        assert_eq!(cols.len(), 1, "Column pruning should only return requested columns");
+        assert_eq!(
+            cols.len(),
+            1,
+            "Column pruning should only return requested columns"
+        );
         assert_eq!(cols[0].0, "amount");
         if let ColumnData::Int64(ref v) = cols[0].1 {
             assert_eq!(v, &[100, 200, 300, 400, 500]);

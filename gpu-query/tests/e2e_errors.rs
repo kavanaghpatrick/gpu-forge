@@ -30,8 +30,7 @@ fn try_query(dir: &Path, sql: &str) -> Result<gpu_query::gpu::executor::QueryRes
     let optimized = gpu_query::sql::optimizer::optimize(logical);
     let physical =
         gpu_query::sql::physical_plan::plan(&optimized).map_err(|e| format!("{:?}", e))?;
-    let mut executor =
-        gpu_query::gpu::executor::QueryExecutor::new().map_err(|e| e.to_string())?;
+    let mut executor = gpu_query::gpu::executor::QueryExecutor::new().map_err(|e| e.to_string())?;
     executor.execute(&physical, &catalog)
 }
 
@@ -104,14 +103,22 @@ fn error_missing_table() {
 fn error_bad_column_in_where() {
     let (_d, p) = make_test_dir();
     let result = try_query(&p, "SELECT count(*) FROM sales WHERE nonexistent > 0");
-    assert!(result.is_err(), "bad column in WHERE should fail: {:?}", result.as_ref().err());
+    assert!(
+        result.is_err(),
+        "bad column in WHERE should fail: {:?}",
+        result.as_ref().err()
+    );
 }
 
 #[test]
 fn error_bad_column_in_aggregate() {
     let (_d, p) = make_test_dir();
     let result = try_query(&p, "SELECT sum(nonexistent) FROM sales");
-    assert!(result.is_err(), "bad column in aggregate should fail: {:?}", result.as_ref().err());
+    assert!(
+        result.is_err(),
+        "bad column in aggregate should fail: {:?}",
+        result.as_ref().err()
+    );
 }
 
 #[test]

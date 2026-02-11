@@ -189,10 +189,7 @@ pub fn plan(logical: &LogicalPlan) -> Result<PhysicalPlan, PlanError> {
 }
 
 /// Lower a predicate expression to physical filter plan(s).
-fn lower_predicate(
-    predicate: &Expr,
-    input_plan: PhysicalPlan,
-) -> Result<PhysicalPlan, PlanError> {
+fn lower_predicate(predicate: &Expr, input_plan: PhysicalPlan) -> Result<PhysicalPlan, PlanError> {
     match predicate {
         // Simple comparison: col op value or value op col
         Expr::BinaryOp { left, op, right } => {
@@ -206,11 +203,7 @@ fn lower_predicate(
         }
 
         // Compound predicate: AND/OR
-        Expr::Compound {
-            left,
-            op,
-            right,
-        } => {
+        Expr::Compound { left, op, right } => {
             // For compound predicates, we need the same input for both sides.
             // The executor will dispatch two separate filter kernels on the same
             // data and combine their bitmasks.

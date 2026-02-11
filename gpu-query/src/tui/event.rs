@@ -15,8 +15,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use crate::cli::commands::{
-    is_dot_command, parse_dot_command, handle_dot_command, append_to_history,
-    DotCommandContext, DotCommandResult,
+    append_to_history, handle_dot_command, is_dot_command, parse_dot_command, DotCommandContext,
+    DotCommandResult, TableMetadata,
 };
 
 /// Events produced by the event loop.
@@ -128,7 +128,7 @@ fn execute_dot_command(app: &mut super::app::AppState) {
     };
 
     // Build context from app state
-    let tables: Vec<(String, String, Vec<(String, String)>)> = app
+    let tables: Vec<TableMetadata> = app
         .catalog_state
         .entries
         .iter()
@@ -148,9 +148,10 @@ fn execute_dot_command(app: &mut super::app::AppState) {
         })
         .collect();
 
-    let last_result_text = app.last_result.as_ref().map(|r| {
-        crate::cli::format_result(r, &crate::cli::args::OutputFormat::Table)
-    });
+    let last_result_text = app
+        .last_result
+        .as_ref()
+        .map(|r| crate::cli::format_result(r, &crate::cli::args::OutputFormat::Table));
     let last_result_ref = last_result_text.as_deref();
 
     let comparison_text = app.last_query_metrics.as_ref().map(|m| {
@@ -211,19 +212,16 @@ fn execute_dot_command(app: &mut super::app::AppState) {
             // Execute GPU-parallel DESCRIBE: re-scan catalog and invoke executor
             match crate::io::catalog::scan_directory(&app.data_dir) {
                 Ok(catalog) => match crate::gpu::executor::QueryExecutor::new() {
-                    Ok(mut executor) => {
-                        match executor.execute_describe(&table_name, &catalog) {
-                            Ok(desc) => {
-                                let result = desc.to_query_result();
-                                app.set_result(result);
-                                app.status_message =
-                                    format!("DESCRIBE {} complete.", table_name);
-                            }
-                            Err(e) => {
-                                app.set_error(format!("DESCRIBE failed: {}", e));
-                            }
+                    Ok(mut executor) => match executor.execute_describe(&table_name, &catalog) {
+                        Ok(desc) => {
+                            let result = desc.to_query_result();
+                            app.set_result(result);
+                            app.status_message = format!("DESCRIBE {} complete.", table_name);
                         }
-                    }
+                        Err(e) => {
+                            app.set_error(format!("DESCRIBE failed: {}", e));
+                        }
+                    },
                     Err(e) => {
                         app.set_error(format!("GPU init error: {}", e));
                     }
@@ -468,8 +466,8 @@ mod tests {
 
     #[test]
     fn test_catalog_navigation() {
-        use crate::tui::catalog::{CatalogEntry, ColumnInfo};
         use crate::io::format_detect::FileFormat;
+        use crate::tui::catalog::{CatalogEntry, ColumnInfo};
 
         let mut app = super::super::app::AppState::new(PathBuf::from("/tmp"), "thermal");
         app.focus = super::super::app::FocusPanel::Catalog;
@@ -479,7 +477,10 @@ mod tests {
                 name: "a".into(),
                 format: FileFormat::Csv,
                 row_count: None,
-                columns: vec![ColumnInfo { name: "x".into(), type_name: "INT64".into() }],
+                columns: vec![ColumnInfo {
+                    name: "x".into(),
+                    type_name: "INT64".into(),
+                }],
             },
             CatalogEntry {
                 name: "b".into(),

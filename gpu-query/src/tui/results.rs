@@ -62,7 +62,7 @@ impl ResultsState {
         if self.page_size == 0 {
             return 1;
         }
-        (total_rows + self.page_size - 1) / self.page_size
+        total_rows.div_ceil(self.page_size)
     }
 
     /// Go to next page.
@@ -196,7 +196,7 @@ fn insert_thousands_sep(digits: &str) -> String {
 
     let mut result = String::with_capacity(len + len / 3);
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(ch);
@@ -255,12 +255,7 @@ pub fn compute_column_widths(result: &QueryResult, max_total_width: u16) -> Vec<
 
     // Clamp individual columns
     for w in widths.iter_mut() {
-        if *w < 4 {
-            *w = 4;
-        }
-        if *w > 40 {
-            *w = 40;
-        }
+        *w = (*w).clamp(4, 40);
     }
 
     // If total exceeds available width, scale down proportionally
@@ -280,11 +275,7 @@ pub fn compute_column_widths(result: &QueryResult, max_total_width: u16) -> Vec<
 
 /// Render the results table into the given area.
 /// This replaces the inline rendering in mod.rs with a proper table widget.
-pub fn render_results_table(
-    f: &mut Frame,
-    area: Rect,
-    app: &AppState,
-) {
+pub fn render_results_table(f: &mut Frame, area: Rect, app: &AppState) {
     let is_focused = app.focus == super::app::FocusPanel::Results;
     let theme = &app.theme;
     let border_style = if is_focused {
@@ -295,7 +286,13 @@ pub fn render_results_table(
 
     match &app.query_state {
         super::app::QueryState::Idle => {
-            render_placeholder(f, area, theme, border_style, "Run a query to see results here.");
+            render_placeholder(
+                f,
+                area,
+                theme,
+                border_style,
+                "Run a query to see results here.",
+            );
         }
         super::app::QueryState::Running => {
             let dots = ".".repeat(((app.frame_count / 10) % 4) as usize);
@@ -318,26 +315,38 @@ pub fn render_results_table(
                 } else {
                     None
                 };
-                render_data_table(f, area, result, &app.results_state, app.last_exec_us, app.last_query_metrics.as_ref(), profile_info, theme, border_style, is_focused);
+                render_data_table(
+                    f,
+                    area,
+                    result,
+                    &app.results_state,
+                    app.last_exec_us,
+                    app.last_query_metrics.as_ref(),
+                    profile_info,
+                    theme,
+                    border_style,
+                    is_focused,
+                );
             } else {
                 render_placeholder(f, area, theme, border_style, "(no results)");
             }
         }
         super::app::QueryState::Error(msg) => {
             let err_style = Style::default().fg(ratatui::style::Color::Rgb(255, 80, 80));
-            render_placeholder_styled(f, area, theme, border_style, &format!("Error: {}", msg), err_style);
+            render_placeholder_styled(
+                f,
+                area,
+                theme,
+                border_style,
+                &format!("Error: {}", msg),
+                err_style,
+            );
         }
     }
 }
 
 /// Render a simple placeholder message in the results panel.
-fn render_placeholder(
-    f: &mut Frame,
-    area: Rect,
-    theme: &Theme,
-    border_style: Style,
-    msg: &str,
-) {
+fn render_placeholder(f: &mut Frame, area: Rect, theme: &Theme, border_style: Style, msg: &str) {
     render_placeholder_styled(
         f,
         area,
@@ -367,15 +376,14 @@ fn render_placeholder_styled(
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    let paragraph = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
-        format!("  {}", msg),
-        style,
-    )))
-    .block(block);
+    let paragraph =
+        ratatui::widgets::Paragraph::new(Line::from(Span::styled(format!("  {}", msg), style)))
+            .block(block);
     f.render_widget(paragraph, area);
 }
 
 /// Render the data table with headers, formatted rows, pagination, and performance line.
+#[allow(clippy::too_many_arguments)]
 fn render_data_table(
     f: &mut Frame,
     area: Rect,
@@ -389,10 +397,7 @@ fn render_data_table(
     is_focused: bool,
 ) {
     // Block with title
-    let title = format!(
-        " Results ({} rows) ",
-        format_i64(result.row_count as i64)
-    );
+    let title = format!(" Results ({} rows) ", format_i64(result.row_count as i64));
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -417,30 +422,30 @@ fn render_data_table(
 
     // Compute column widths
     let col_widths = compute_column_widths(result, inner_area.width);
-    let constraints: Vec<Constraint> = col_widths
-        .iter()
-        .map(|&w| Constraint::Length(w))
-        .collect();
+    let constraints: Vec<Constraint> = col_widths.iter().map(|&w| Constraint::Length(w)).collect();
 
     // Detect which columns are numeric (by scanning first rows)
     let ncols = result.columns.len();
     let is_col_numeric = detect_numeric_columns(result);
 
     // Header row
-    let header_cells: Vec<Cell> = result.columns.iter().enumerate().map(|(i, col)| {
-        let style = Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD);
-        if i < is_col_numeric.len() && is_col_numeric[i] {
-            // Right-align numeric headers by padding
-            Cell::from(col.clone()).style(style)
-        } else {
-            Cell::from(col.clone()).style(style)
-        }
-    }).collect();
-    let header = Row::new(header_cells)
-        .height(1)
-        .bottom_margin(0);
+    let header_cells: Vec<Cell> = result
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, col)| {
+            let style = Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD);
+            if i < is_col_numeric.len() && is_col_numeric[i] {
+                // Right-align numeric headers by padding
+                Cell::from(col.clone()).style(style)
+            } else {
+                Cell::from(col.clone()).style(style)
+            }
+        })
+        .collect();
+    let header = Row::new(header_cells).height(1).bottom_margin(0);
 
     // Compute visible row range (page)
     let page_start = results_state.page_start();
@@ -448,33 +453,36 @@ fn render_data_table(
     let visible_rows = &result.rows[page_start..page_end];
 
     // Build data rows
-    let rows: Vec<Row> = visible_rows.iter().enumerate().map(|(local_idx, row)| {
-        let global_idx = page_start + local_idx;
-        let cells: Vec<Cell> = (0..ncols).map(|col_idx| {
-            let val = row.get(col_idx).map(|s| s.as_str()).unwrap_or("");
-            if is_null(val) {
-                Cell::from("NULL".to_string()).style(
-                    Style::default().fg(ratatui::style::Color::Rgb(100, 100, 110))
-                        .add_modifier(Modifier::DIM),
-                )
-            } else if col_idx < is_col_numeric.len() && is_col_numeric[col_idx] {
-                Cell::from(format_number(val)).style(
-                    Style::default().fg(theme.text),
-                )
-            } else {
-                Cell::from(val.to_string()).style(
-                    Style::default().fg(theme.text),
-                )
-            }
-        }).collect();
+    let rows: Vec<Row> = visible_rows
+        .iter()
+        .enumerate()
+        .map(|(local_idx, row)| {
+            let global_idx = page_start + local_idx;
+            let cells: Vec<Cell> = (0..ncols)
+                .map(|col_idx| {
+                    let val = row.get(col_idx).map(|s| s.as_str()).unwrap_or("");
+                    if is_null(val) {
+                        Cell::from("NULL".to_string()).style(
+                            Style::default()
+                                .fg(ratatui::style::Color::Rgb(100, 100, 110))
+                                .add_modifier(Modifier::DIM),
+                        )
+                    } else if col_idx < is_col_numeric.len() && is_col_numeric[col_idx] {
+                        Cell::from(format_number(val)).style(Style::default().fg(theme.text))
+                    } else {
+                        Cell::from(val.to_string()).style(Style::default().fg(theme.text))
+                    }
+                })
+                .collect();
 
-        let row_style = if is_focused && global_idx == results_state.selected_row {
-            theme.selection
-        } else {
-            Style::default()
-        };
-        Row::new(cells).style(row_style).height(1)
-    }).collect();
+            let row_style = if is_focused && global_idx == results_state.selected_row {
+                theme.selection
+            } else {
+                Style::default()
+            };
+            Row::new(cells).style(row_style).height(1)
+        })
+        .collect();
 
     // Render table (limited to table_height rows)
     let visible_count = rows.len().min(table_height);
@@ -504,10 +512,7 @@ fn render_data_table(
         } else {
             build_performance_line(result, exec_time_us)
         };
-        let perf_line = Line::from(Span::styled(
-            perf_text,
-            Style::default().fg(theme.muted),
-        ));
+        let perf_line = Line::from(Span::styled(perf_text, Style::default().fg(theme.muted)));
         let perf_area = Rect {
             x: inner_area.x,
             y: perf_y,
@@ -522,7 +527,12 @@ fn render_data_table(
         let timeline_text = metrics::render_profile_timeline(profile);
         let timeline_lines: Vec<Line> = timeline_text
             .lines()
-            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.muted))))
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(theme.muted),
+                ))
+            })
             .collect();
         let timeline_y = perf_y + 1;
         let timeline_height = profile_lines.min(inner_area.y + inner_area.height - timeline_y);
@@ -598,18 +608,10 @@ fn build_performance_line(result: &QueryResult, exec_time_us: Option<u64>) -> St
     let row_count = format_i64(result.row_count as i64);
     match exec_time_us {
         Some(us) if us >= 1_000_000 => {
-            format!(
-                " {} rows | {:.2}s",
-                row_count,
-                us as f64 / 1_000_000.0,
-            )
+            format!(" {} rows | {:.2}s", row_count, us as f64 / 1_000_000.0,)
         }
         Some(us) if us >= 1_000 => {
-            format!(
-                " {} rows | {:.1}ms",
-                row_count,
-                us as f64 / 1_000.0,
-            )
+            format!(" {} rows | {:.1}ms", row_count, us as f64 / 1_000.0,)
         }
         Some(us) => {
             format!(" {} rows | {}us", row_count, format_i64(us as i64))

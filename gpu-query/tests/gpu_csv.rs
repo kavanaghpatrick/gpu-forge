@@ -69,8 +69,10 @@ fn gpu_parse_csv(
         *ptr = 0;
     }
 
-    let row_offsets_buffer =
-        encode::alloc_buffer(&gpu.device, (max_rows as usize + 1) * std::mem::size_of::<u32>());
+    let row_offsets_buffer = encode::alloc_buffer(
+        &gpu.device,
+        (max_rows as usize + 1) * std::mem::size_of::<u32>(),
+    );
 
     let params_buffer = encode::alloc_buffer_with_data(&gpu.device, &[params]);
 
@@ -583,11 +585,31 @@ fn test_gpu_csv_parse_many_columns() {
     let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
 
     let schema = RuntimeSchema::new(vec![
-        ColumnDef { name: "a".to_string(), data_type: DataType::Int64, nullable: false },
-        ColumnDef { name: "b".to_string(), data_type: DataType::Int64, nullable: false },
-        ColumnDef { name: "c".to_string(), data_type: DataType::Int64, nullable: false },
-        ColumnDef { name: "d".to_string(), data_type: DataType::Int64, nullable: false },
-        ColumnDef { name: "e".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef {
+            name: "a".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "b".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "c".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "d".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "e".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
     ]);
 
     let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);
@@ -610,8 +632,16 @@ fn test_gpu_csv_parse_pipe_delimiter() {
     let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
 
     let schema = RuntimeSchema::new(vec![
-        ColumnDef { name: "id".to_string(), data_type: DataType::Int64, nullable: false },
-        ColumnDef { name: "value".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef {
+            name: "id".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "value".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
     ]);
 
     let batch = gpu_parse_csv(&gpu, &mmap, &schema, b'|', true);
@@ -634,8 +664,16 @@ fn test_gpu_csv_parse_two_rows() {
     let mmap = MmapFile::open(tmp.path()).expect("mmap failed");
 
     let schema = RuntimeSchema::new(vec![
-        ColumnDef { name: "a".to_string(), data_type: DataType::Int64, nullable: false },
-        ColumnDef { name: "b".to_string(), data_type: DataType::Int64, nullable: false },
+        ColumnDef {
+            name: "a".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
+        ColumnDef {
+            name: "b".to_string(),
+            data_type: DataType::Int64,
+            nullable: false,
+        },
     ]);
 
     let batch = gpu_parse_csv(&gpu, &mmap, &schema, b',', true);

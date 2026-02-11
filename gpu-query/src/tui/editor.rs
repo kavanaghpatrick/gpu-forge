@@ -13,21 +13,18 @@ use ratatui::{
 
 /// SQL keyword list for syntax highlighting (uppercase canonical forms).
 const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
-    "AS", "ON", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS",
-    "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING", "LIMIT", "OFFSET",
-    "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
-    "TABLE", "DROP", "ALTER", "INDEX", "DISTINCT", "COUNT", "SUM",
-    "AVG", "MIN", "MAX", "BETWEEN", "LIKE", "EXISTS", "UNION", "ALL",
-    "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "TRUE", "FALSE",
-    "WITH", "DESCRIBE",
+    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON", "JOIN", "LEFT",
+    "RIGHT", "INNER", "OUTER", "CROSS", "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING", "LIMIT",
+    "OFFSET", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP",
+    "ALTER", "INDEX", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "BETWEEN", "LIKE", "EXISTS",
+    "UNION", "ALL", "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "TRUE", "FALSE", "WITH",
+    "DESCRIBE",
 ];
 
 /// SQL aggregate/function names for highlighting.
 const SQL_FUNCTIONS: &[&str] = &[
-    "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF",
-    "UPPER", "LOWER", "LENGTH", "TRIM", "SUBSTR", "CAST",
-    "ABS", "ROUND", "CEIL", "FLOOR",
+    "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF", "UPPER", "LOWER", "LENGTH", "TRIM",
+    "SUBSTR", "CAST", "ABS", "ROUND", "CEIL", "FLOOR",
 ];
 
 /// Token types for SQL syntax highlighting.
@@ -175,14 +172,14 @@ pub fn tokenize_sql(input: &str) -> Vec<Token> {
 /// Get the color for a token kind.
 pub fn token_color(kind: TokenKind) -> Color {
     match kind {
-        TokenKind::Keyword => Color::Rgb(100, 140, 255),    // blue
-        TokenKind::Function => Color::Rgb(100, 140, 255),   // blue (same as keywords)
-        TokenKind::Identifier => Color::Rgb(80, 220, 120),  // green
+        TokenKind::Keyword => Color::Rgb(100, 140, 255), // blue
+        TokenKind::Function => Color::Rgb(100, 140, 255), // blue (same as keywords)
+        TokenKind::Identifier => Color::Rgb(80, 220, 120), // green
         TokenKind::StringLiteral => Color::Rgb(240, 220, 80), // yellow
-        TokenKind::Number => Color::Rgb(220, 120, 255),     // magenta
-        TokenKind::Operator => Color::Rgb(200, 200, 210),   // light gray
+        TokenKind::Number => Color::Rgb(220, 120, 255),  // magenta
+        TokenKind::Operator => Color::Rgb(200, 200, 210), // light gray
         TokenKind::Whitespace => Color::Rgb(200, 200, 210), // light gray
-        TokenKind::Comment => Color::Rgb(100, 100, 120),    // dim gray
+        TokenKind::Comment => Color::Rgb(100, 100, 120), // dim gray
     }
 }
 
@@ -510,7 +507,10 @@ mod tests {
     #[test]
     fn test_tokenize_string_literal() {
         let tokens = tokenize_sql("WHERE region = 'Europe'");
-        let lit = tokens.iter().find(|t| t.kind == TokenKind::StringLiteral).unwrap();
+        let lit = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .unwrap();
         assert_eq!(lit.text, "'Europe'");
     }
 
@@ -519,7 +519,7 @@ mod tests {
         let tokens = tokenize_sql("SELECT count(*) FROM t");
         // count is in both SQL_KEYWORDS and SQL_FUNCTIONS -- keyword takes priority
         assert!(tokens[0].kind == TokenKind::Keyword); // SELECT
-        // count is checked as keyword first
+                                                       // count is checked as keyword first
         let count_tok = &tokens[2];
         assert_eq!(count_tok.text, "count");
         assert!(count_tok.kind == TokenKind::Keyword || count_tok.kind == TokenKind::Function);
@@ -528,14 +528,20 @@ mod tests {
     #[test]
     fn test_tokenize_comment() {
         let tokens = tokenize_sql("SELECT 1 -- comment here");
-        let comment = tokens.iter().find(|t| t.kind == TokenKind::Comment).unwrap();
+        let comment = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::Comment)
+            .unwrap();
         assert_eq!(comment.text, "-- comment here");
     }
 
     #[test]
     fn test_tokenize_multichar_operator() {
         let tokens = tokenize_sql("a >= 10");
-        let op = tokens.iter().find(|t| t.kind == TokenKind::Operator && t.text.len() > 1).unwrap();
+        let op = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::Operator && t.text.len() > 1)
+            .unwrap();
         assert_eq!(op.text, ">=");
     }
 

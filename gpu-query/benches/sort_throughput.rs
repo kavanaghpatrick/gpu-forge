@@ -18,7 +18,11 @@ fn generate_csv(n_rows: usize) -> String {
     s.push_str("id,amount,quantity\n");
     for i in 0..n_rows {
         // Pseudo-random via LCG-like formula for non-trivial sort
-        let amount = ((i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 33) % 100000;
+        let amount = ((i as u64)
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407)
+            >> 33)
+            % 100000;
         s.push_str(&format!("{},{},{}\n", i, amount, (i * 3 + 1) % 50));
     }
     s
@@ -54,18 +58,11 @@ fn bench_sort_asc(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(n_rows as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("rows", n_rows),
-            &dir,
-            |b, dir| {
-                b.iter(|| {
-                    run_query(
-                        dir.path(),
-                        "SELECT id, amount FROM data ORDER BY amount",
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("rows", n_rows), &dir, |b, dir| {
+            b.iter(|| {
+                run_query(dir.path(), "SELECT id, amount FROM data ORDER BY amount");
+            });
+        });
     }
 
     group.finish();
@@ -84,18 +81,14 @@ fn bench_sort_desc(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(n_rows as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("rows", n_rows),
-            &dir,
-            |b, dir| {
-                b.iter(|| {
-                    run_query(
-                        dir.path(),
-                        "SELECT id, amount FROM data ORDER BY amount DESC",
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("rows", n_rows), &dir, |b, dir| {
+            b.iter(|| {
+                run_query(
+                    dir.path(),
+                    "SELECT id, amount FROM data ORDER BY amount DESC",
+                );
+            });
+        });
     }
 
     group.finish();
@@ -115,19 +108,15 @@ fn bench_sort_with_limit(c: &mut Criterion) {
 
     let limits = [10, 100, 1000];
     for &limit in &limits {
-        group.bench_with_input(
-            BenchmarkId::new("top_n", limit),
-            &dir,
-            |b, dir| {
-                let sql = format!(
-                    "SELECT id, amount FROM data ORDER BY amount DESC LIMIT {}",
-                    limit
-                );
-                b.iter(|| {
-                    run_query(dir.path(), &sql);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("top_n", limit), &dir, |b, dir| {
+            let sql = format!(
+                "SELECT id, amount FROM data ORDER BY amount DESC LIMIT {}",
+                limit
+            );
+            b.iter(|| {
+                run_query(dir.path(), &sql);
+            });
+        });
     }
 
     group.finish();
@@ -145,18 +134,14 @@ fn bench_filtered_sort(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(n_rows as u64));
 
-    group.bench_with_input(
-        BenchmarkId::new("where_order", n_rows),
-        &dir,
-        |b, dir| {
-            b.iter(|| {
-                run_query(
-                    dir.path(),
-                    "SELECT id, amount FROM data WHERE amount > 50000 ORDER BY amount",
-                );
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("where_order", n_rows), &dir, |b, dir| {
+        b.iter(|| {
+            run_query(
+                dir.path(),
+                "SELECT id, amount FROM data WHERE amount > 50000 ORDER BY amount",
+            );
+        });
+    });
 
     group.finish();
 }

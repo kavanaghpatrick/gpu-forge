@@ -93,18 +93,15 @@ impl CompletionItem {
 
 /// SQL keywords available for completion.
 const COMPLETION_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
-    "AS", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON",
-    "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING", "LIMIT", "OFFSET",
-    "DISTINCT", "BETWEEN", "LIKE", "EXISTS", "UNION", "ALL",
-    "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "TRUE", "FALSE",
-    "WITH", "DESCRIBE",
+    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "JOIN", "LEFT",
+    "RIGHT", "INNER", "OUTER", "ON", "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING", "LIMIT",
+    "OFFSET", "DISTINCT", "BETWEEN", "LIKE", "EXISTS", "UNION", "ALL", "CASE", "WHEN", "THEN",
+    "ELSE", "END", "CAST", "TRUE", "FALSE", "WITH", "DESCRIBE",
 ];
 
 /// SQL functions available for completion.
 const COMPLETION_FUNCTIONS: &[&str] = &[
-    "COUNT", "SUM", "AVG", "MIN", "MAX",
-    "COALESCE", "NULLIF", "UPPER", "LOWER", "LENGTH", "TRIM",
+    "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF", "UPPER", "LOWER", "LENGTH", "TRIM",
 ];
 
 /// Autocomplete state managing suggestions and selection.
@@ -268,11 +265,11 @@ impl AutocompleteState {
             .map(|item| item.label.len() as u16 + 4) // padding
             .max()
             .unwrap_or(20)
-            .min(60)
-            .max(20);
+            .clamp(20, 60);
 
         // Position popup below the cursor line, within the editor area
-        let popup_x = (anchor.x + cursor_col + 1).min(anchor.x + anchor.width.saturating_sub(popup_width));
+        let popup_x =
+            (anchor.x + cursor_col + 1).min(anchor.x + anchor.width.saturating_sub(popup_width));
         let popup_y = anchor.y + cursor_row + 2; // below cursor line (+1 for border)
 
         // Ensure popup doesn't go off screen
@@ -295,12 +292,10 @@ impl AutocompleteState {
                 let is_selected = i == self.selected;
                 let (icon, icon_color) = kind_icon(&item.kind);
 
-                let mut spans = vec![
-                    Span::styled(
-                        format!(" {} ", icon),
-                        Style::default().fg(icon_color),
-                    ),
-                ];
+                let mut spans = vec![Span::styled(
+                    format!(" {} ", icon),
+                    Style::default().fg(icon_color),
+                )];
 
                 let text_style = if is_selected {
                     Style::default()
@@ -381,9 +376,9 @@ fn kind_order(kind: &CompletionKind) -> u8 {
 /// Get a display icon and color for a completion kind.
 fn kind_icon(kind: &CompletionKind) -> (&'static str, Color) {
     match kind {
-        CompletionKind::Keyword => ("K", Color::Rgb(100, 140, 255)),    // blue
-        CompletionKind::Function => ("f", Color::Rgb(220, 120, 255)),   // magenta
-        CompletionKind::Table => ("T", Color::Rgb(80, 220, 120)),       // green
+        CompletionKind::Keyword => ("K", Color::Rgb(100, 140, 255)), // blue
+        CompletionKind::Function => ("f", Color::Rgb(220, 120, 255)), // magenta
+        CompletionKind::Table => ("T", Color::Rgb(80, 220, 120)),    // green
         CompletionKind::Column { .. } => ("C", Color::Rgb(240, 220, 80)), // yellow
     }
 }
@@ -402,7 +397,7 @@ mod tests {
     #[test]
     fn test_fuzzy_match_subsequence() {
         assert!(fuzzy_match("slct", "select")); // s-l-c-t in s-e-l-e-c-t
-        assert!(fuzzy_match("cnt", "count"));   // c-n-t in c-o-u-n-t
+        assert!(fuzzy_match("cnt", "count")); // c-n-t in c-o-u-n-t
         assert!(!fuzzy_match("zz", "select"));
     }
 
@@ -442,7 +437,10 @@ mod tests {
         assert!(item.label.contains("VARCHAR"));
         assert!(item.label.contains("8 distinct"));
         match &item.kind {
-            CompletionKind::Column { data_type, distinct_count } => {
+            CompletionKind::Column {
+                data_type,
+                distinct_count,
+            } => {
                 assert_eq!(data_type, "VARCHAR");
                 assert_eq!(*distinct_count, 8);
             }
@@ -577,14 +575,15 @@ mod tests {
     fn test_autocomplete_sort_order() {
         // Columns should sort before keywords for data-oriented UX
         let mut ac = AutocompleteState::new();
-        ac.set_columns(vec![
-            ("t".into(), "sum_val".into(), "INT64".into(), 0),
-        ]);
+        ac.set_columns(vec![("t".into(), "sum_val".into(), "INT64".into(), 0)]);
         ac.update("sum");
 
         // Should have both SUM function/keyword and sum_val column
         let col_idx = ac.items.iter().position(|i| i.text == "sum_val");
-        let kw_idx = ac.items.iter().position(|i| i.text == "SUM" || i.text == "SUM(");
+        let kw_idx = ac
+            .items
+            .iter()
+            .position(|i| i.text == "SUM" || i.text == "SUM(");
 
         // Column should come before keyword (lower index)
         if let (Some(ci), Some(ki)) = (col_idx, kw_idx) {
@@ -600,7 +599,10 @@ mod tests {
         assert_eq!(icon, "f");
         let (icon, _) = kind_icon(&CompletionKind::Table);
         assert_eq!(icon, "T");
-        let (icon, _) = kind_icon(&CompletionKind::Column { data_type: "INT64".into(), distinct_count: 0 });
+        let (icon, _) = kind_icon(&CompletionKind::Column {
+            data_type: "INT64".into(),
+            distinct_count: 0,
+        });
         assert_eq!(icon, "C");
     }
 }

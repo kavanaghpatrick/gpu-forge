@@ -60,11 +60,9 @@ impl ColumnarBatch {
         let string_col_count = schema.count_type(DataType::Varchar);
 
         // Minimum 1 element to avoid zero-size buffer allocation
-        let int_size =
-            std::cmp::max(int_col_count * max_rows, 1) * std::mem::size_of::<i64>();
+        let int_size = std::cmp::max(int_col_count * max_rows, 1) * std::mem::size_of::<i64>();
         // Metal uses float (32-bit), not double, for float columns.
-        let float_size =
-            std::cmp::max(float_col_count * max_rows, 1) * std::mem::size_of::<f32>();
+        let float_size = std::cmp::max(float_col_count * max_rows, 1) * std::mem::size_of::<f32>();
         // String dict buffer: u32 codes per row per varchar column
         let string_dict_size =
             std::cmp::max(string_col_count * max_rows, 1) * std::mem::size_of::<u32>();
@@ -96,7 +94,10 @@ impl ColumnarBatch {
     /// # Safety
     /// Must be called after GPU work completes (waitUntilCompleted).
     pub unsafe fn read_int_column(&self, col_local_idx: usize) -> Vec<i64> {
-        assert!(col_local_idx < self.int_col_count, "INT64 column index out of bounds");
+        assert!(
+            col_local_idx < self.int_col_count,
+            "INT64 column index out of bounds"
+        );
         let ptr = self.int_buffer.contents().as_ptr() as *const i64;
         let offset = col_local_idx * self.max_rows;
         let slice = std::slice::from_raw_parts(ptr.add(offset), self.row_count);

@@ -29,7 +29,7 @@ impl CsvMetadata {
 }
 
 /// Candidate delimiters in priority order.
-const CANDIDATES: &[u8] = &[b',', b'\t', b'|'];
+const CANDIDATES: &[u8] = b",\t|";
 
 /// Detect the most likely delimiter in a header line.
 ///
@@ -74,7 +74,7 @@ pub fn parse_header<P: AsRef<Path>>(path: P) -> io::Result<CsvMetadata> {
     }
 
     // Strip trailing newline / carriage return
-    let line = header_line.trim_end_matches(|c| c == '\n' || c == '\r');
+    let line = header_line.trim_end_matches(['\n', '\r']);
 
     if line.is_empty() {
         return Err(io::Error::new(
@@ -163,8 +163,14 @@ mod tests {
 
     #[test]
     fn test_parse_many_columns() {
-        let header = (0..20).map(|i| format!("col{}", i)).collect::<Vec<_>>().join(",");
-        let content = format!("{}\n1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20\n", header);
+        let header = (0..20)
+            .map(|i| format!("col{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let content = format!(
+            "{}\n1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20\n",
+            header
+        );
         let tmp = make_csv(&content);
         let meta = parse_header(tmp.path()).unwrap();
         assert_eq!(meta.column_count, 20);

@@ -1,5 +1,5 @@
-use gpu_query::cli::args::CliArgs;
 use clap::Parser;
+use gpu_query::cli::args::CliArgs;
 
 fn main() {
     let args = CliArgs::parse();

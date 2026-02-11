@@ -35,8 +35,7 @@ fn make_parquet(dir: &Path, name: &str, ids: &[i64], amounts: &[i64], quantities
 
     let path = dir.join(name);
     let file = File::create(&path).expect("create parquet file");
-    let mut writer =
-        SerializedFileWriter::new(file, schema, props).expect("create parquet writer");
+    let mut writer = SerializedFileWriter::new(file, schema, props).expect("create parquet writer");
 
     let mut rg_writer = writer.next_row_group().expect("next row group");
 
@@ -78,8 +77,7 @@ fn make_parquet(dir: &Path, name: &str, ids: &[i64], amounts: &[i64], quantities
 fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let catalog = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
-    let physical_plan =
-        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
     executor
         .execute(&physical_plan, &catalog)
@@ -111,10 +109,7 @@ fn test_parquet_count_filtered() {
     let quantities: Vec<i64> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
     make_parquet(tmp.path(), "sales.parquet", &ids, &amounts, &quantities);
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM sales WHERE amount > 500",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM sales WHERE amount > 500");
     assert_eq!(result.row_count, 1);
     // amount > 500: 600, 700, 800, 900, 1000 = 5 rows
     assert_eq!(result.rows[0][0], "5");
@@ -162,7 +157,7 @@ fn test_parquet_count_and_sum() {
         "SELECT count(*), sum(amount) FROM sales WHERE amount > 200",
     );
     assert_eq!(result.row_count, 1);
-    assert_eq!(result.rows[0][0], "3");    // 300, 400, 500
+    assert_eq!(result.rows[0][0], "3"); // 300, 400, 500
     assert_eq!(result.rows[0][1], "1200"); // 300+400+500
 }
 
@@ -210,10 +205,7 @@ fn test_parquet_larger_dataset() {
     assert_eq!(result.rows[0][0], "5005000");
 
     // Filter: amount > 5000 means i*10 > 5000, so i > 500, i.e. 501..=1000 = 500 rows
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM big WHERE amount > 5000",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM big WHERE amount > 5000");
     assert_eq!(result.rows[0][0], "500");
 }
 
@@ -228,10 +220,7 @@ fn test_parquet_negative_values() {
     let result = run_query(tmp.path(), "SELECT sum(amount) FROM neg");
     assert_eq!(result.rows[0][0], "0"); // -100-50+0+50+100 = 0
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM neg WHERE amount > 0",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM neg WHERE amount > 0");
     assert_eq!(result.rows[0][0], "2"); // 50, 100
 }
 
@@ -243,9 +232,6 @@ fn test_parquet_eq_filter() {
     let quantities: Vec<i64> = vec![1, 2, 3, 4, 5];
     make_parquet(tmp.path(), "data.parquet", &ids, &amounts, &quantities);
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM data WHERE amount = 200",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM data WHERE amount = 200");
     assert_eq!(result.rows[0][0], "3"); // Three rows with amount=200
 }

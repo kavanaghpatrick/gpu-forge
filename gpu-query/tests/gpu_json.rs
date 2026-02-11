@@ -37,8 +37,7 @@ fn build_ndjson(rows: &[(i64, i64, i64)]) -> String {
 fn run_query(dir: &Path, sql: &str) -> gpu_query::gpu::executor::QueryResult {
     let catalog = catalog::scan_directory(dir).expect("scan directory");
     let logical_plan = gpu_query::sql::parser::parse_query(sql).expect("parse SQL");
-    let physical_plan =
-        gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
+    let physical_plan = gpu_query::sql::physical_plan::plan(&logical_plan).expect("plan SQL");
     let mut executor = QueryExecutor::new().expect("create executor");
     executor
         .execute(&physical_plan, &catalog)
@@ -79,10 +78,7 @@ fn test_json_count_filtered() {
     let content = build_ndjson(&rows);
     make_ndjson(tmp.path(), "sales.ndjson", &content);
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM sales WHERE amount > 500",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM sales WHERE amount > 500");
     assert_eq!(result.row_count, 1);
     // amount > 500: 600, 700, 800, 900, 1000 = 5 rows
     assert_eq!(result.rows[0][0], "5");
@@ -145,7 +141,7 @@ fn test_json_count_and_sum() {
         "SELECT count(*), sum(amount) FROM sales WHERE amount > 200",
     );
     assert_eq!(result.row_count, 1);
-    assert_eq!(result.rows[0][0], "3");    // 300, 400, 500
+    assert_eq!(result.rows[0][0], "3"); // 300, 400, 500
     assert_eq!(result.rows[0][1], "1200"); // 300+400+500
 }
 
@@ -177,10 +173,7 @@ fn test_json_single_row() {
     let content = build_ndjson(&[(42, 100, 1)]);
     make_ndjson(tmp.path(), "single.ndjson", &content);
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*), sum(amount) FROM single",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*), sum(amount) FROM single");
     assert_eq!(result.rows[0][0], "1");
     assert_eq!(result.rows[0][1], "100");
 }
@@ -201,10 +194,7 @@ fn test_json_larger_dataset() {
     assert_eq!(result.rows[0][0], "5005000");
 
     // Filter: amount > 5000 means i*10 > 5000, so i > 500, i.e. 501..=1000 = 500 rows
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM big WHERE amount > 5000",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM big WHERE amount > 5000");
     assert_eq!(result.rows[0][0], "500");
 }
 
@@ -224,10 +214,7 @@ fn test_json_negative_values() {
     let result = run_query(tmp.path(), "SELECT sum(amount) FROM neg");
     assert_eq!(result.rows[0][0], "0"); // -100-50+0+50+100 = 0
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM neg WHERE amount > 0",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM neg WHERE amount > 0");
     assert_eq!(result.rows[0][0], "2"); // 50, 100
 }
 
@@ -244,9 +231,6 @@ fn test_json_eq_filter() {
     let content = build_ndjson(&rows);
     make_ndjson(tmp.path(), "data.ndjson", &content);
 
-    let result = run_query(
-        tmp.path(),
-        "SELECT count(*) FROM data WHERE amount = 200",
-    );
+    let result = run_query(tmp.path(), "SELECT count(*) FROM data WHERE amount = 200");
     assert_eq!(result.rows[0][0], "3"); // Three rows with amount=200
 }

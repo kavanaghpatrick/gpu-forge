@@ -94,11 +94,7 @@ fn test_cli_filtered_count() {
 fn test_cli_sum_query() {
     let (_dir, dir_path) = make_test_dir();
     let dir_str = dir_path.to_str().unwrap();
-    let (stdout, stderr, code) = run_cli(&[
-        dir_str,
-        "-e",
-        "SELECT sum(amount) FROM sales",
-    ]);
+    let (stdout, stderr, code) = run_cli(&[dir_str, "-e", "SELECT sum(amount) FROM sales"]);
 
     assert_eq!(code, 0, "exit code should be 0, stderr: {}", stderr);
     assert!(
@@ -124,7 +120,11 @@ fn test_cli_format_csv() {
 
     assert_eq!(code, 0, "exit code should be 0, stderr: {}", stderr);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    assert!(lines.len() >= 2, "csv should have header + data, got: {}", stdout);
+    assert!(
+        lines.len() >= 2,
+        "csv should have header + data, got: {}",
+        stdout
+    );
     // First line should be header
     assert!(
         lines[0].contains("count"),
@@ -352,7 +352,12 @@ fn test_cli_pipe_input() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let code = output.status.code().unwrap_or(-1);
 
-    assert_eq!(code, 0, "pipe input should succeed, stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        code,
+        0,
+        "pipe input should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
         stdout.contains("5"),
         "pipe query should return count=5, got: {}",

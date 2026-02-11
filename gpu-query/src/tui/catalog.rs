@@ -243,9 +243,9 @@ impl Default for CatalogState {
 fn format_badge_color(format: FileFormat) -> Color {
     match format {
         FileFormat::Csv => Color::Rgb(80, 200, 80),       // green
-        FileFormat::Parquet => Color::Rgb(80, 120, 255),   // blue
-        FileFormat::Json => Color::Rgb(255, 200, 60),      // yellow
-        FileFormat::Unknown => Color::Rgb(120, 120, 120),  // gray
+        FileFormat::Parquet => Color::Rgb(80, 120, 255),  // blue
+        FileFormat::Json => Color::Rgb(255, 200, 60),     // yellow
+        FileFormat::Unknown => Color::Rgb(120, 120, 120), // gray
     }
 }
 
@@ -310,9 +310,7 @@ pub fn build_tree_lines<'a>(
                 if is_selected {
                     selection_style
                 } else {
-                    Style::default()
-                        .fg(text_color)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(text_color).add_modifier(Modifier::BOLD)
                 },
             ),
             Span::styled(" ", Style::default()),
@@ -325,10 +323,7 @@ pub fn build_tree_lines<'a>(
         ];
 
         if !row_badge.is_empty() {
-            spans.push(Span::styled(
-                row_badge,
-                Style::default().fg(muted_color),
-            ));
+            spans.push(Span::styled(row_badge, Style::default().fg(muted_color)));
         }
 
         lines.push(Line::from(spans));
@@ -341,9 +336,9 @@ pub fn build_tree_lines<'a>(
                 let type_color = match col.type_name.as_str() {
                     "INT64" => Color::Rgb(100, 180, 255),   // light blue
                     "FLOAT64" => Color::Rgb(180, 100, 255), // purple
-                    "VARCHAR" => Color::Rgb(100, 255, 150),  // light green
-                    "BOOL" => Color::Rgb(255, 180, 100),     // orange
-                    "DATE" => Color::Rgb(255, 255, 100),     // yellow
+                    "VARCHAR" => Color::Rgb(100, 255, 150), // light green
+                    "BOOL" => Color::Rgb(255, 180, 100),    // orange
+                    "DATE" => Color::Rgb(255, 255, 100),    // yellow
                     _ => muted_color,
                 };
 
@@ -366,9 +361,7 @@ pub fn build_tree_lines<'a>(
                         if col_selected {
                             selection_style
                         } else {
-                            Style::default()
-                                .fg(type_color)
-                                .add_modifier(Modifier::DIM)
+                            Style::default().fg(type_color).add_modifier(Modifier::DIM)
                         },
                     ),
                 ]));
@@ -381,6 +374,7 @@ pub fn build_tree_lines<'a>(
 }
 
 /// Render the catalog tree view in the given area.
+#[allow(clippy::too_many_arguments)]
 pub fn render_catalog_tree(
     f: &mut Frame,
     area: Rect,
@@ -419,7 +413,13 @@ pub fn render_catalog_tree(
     // Adjust scroll for viewport
     state.adjust_scroll_for_viewport(inner_height);
 
-    let all_lines = build_tree_lines(state, text_color, muted_color, accent_color, selection_style);
+    let all_lines = build_tree_lines(
+        state,
+        text_color,
+        muted_color,
+        accent_color,
+        selection_style,
+    );
 
     // Apply scroll offset: skip directory header (always shown) + scroll
     let has_header = !state.directory_name.is_empty();
@@ -430,11 +430,7 @@ pub fn render_catalog_tree(
         let mut result = vec![all_lines[0].clone()];
         let data_lines = &all_lines[header_lines..];
         let skip = state.scroll_offset;
-        let take = if inner_height > header_lines {
-            inner_height - header_lines
-        } else {
-            0
-        };
+        let take = inner_height.saturating_sub(header_lines);
         result.extend(data_lines.iter().skip(skip).take(take).cloned());
         result
     } else {
@@ -483,7 +479,11 @@ mod tests {
     fn test_catalog_state_load() {
         let mut state = CatalogState::new();
         let entries = vec![
-            make_entry("sales", FileFormat::Csv, vec![("id", "INT64"), ("amount", "FLOAT64")]),
+            make_entry(
+                "sales",
+                FileFormat::Csv,
+                vec![("id", "INT64"), ("amount", "FLOAT64")],
+            ),
             make_entry("users", FileFormat::Json, vec![("uid", "INT64")]),
         ];
         state.load(entries, "test-data".into());
@@ -589,9 +589,11 @@ mod tests {
     #[test]
     fn test_handle_enter_expands_table() {
         let mut state = CatalogState::new();
-        let entries = vec![
-            make_entry("sales", FileFormat::Csv, vec![("id", "INT64"), ("amount", "FLOAT64")]),
-        ];
+        let entries = vec![make_entry(
+            "sales",
+            FileFormat::Csv,
+            vec![("id", "INT64"), ("amount", "FLOAT64")],
+        )];
         state.load(entries, "dir".into());
 
         // Enter on table row: should expand + trigger DESCRIBE
@@ -607,9 +609,11 @@ mod tests {
     #[test]
     fn test_handle_enter_on_column_triggers_describe() {
         let mut state = CatalogState::new();
-        let entries = vec![
-            make_entry("sales", FileFormat::Csv, vec![("id", "INT64"), ("amount", "FLOAT64")]),
-        ];
+        let entries = vec![make_entry(
+            "sales",
+            FileFormat::Csv,
+            vec![("id", "INT64"), ("amount", "FLOAT64")],
+        )];
         state.load(entries, "dir".into());
         state.toggle_expand(0);
 
@@ -645,9 +649,7 @@ mod tests {
     #[test]
     fn test_build_tree_lines_basic() {
         let mut state = CatalogState::new();
-        let entries = vec![
-            make_entry("sales", FileFormat::Csv, vec![("id", "INT64")]),
-        ];
+        let entries = vec![make_entry("sales", FileFormat::Csv, vec![("id", "INT64")])];
         state.load(entries, "data".into());
 
         let lines = build_tree_lines(
@@ -655,7 +657,9 @@ mod tests {
             Color::White,
             Color::Gray,
             Color::Yellow,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         );
 
         // Should have: directory header + 1 table row = 2 lines
@@ -665,9 +669,11 @@ mod tests {
     #[test]
     fn test_build_tree_lines_expanded() {
         let mut state = CatalogState::new();
-        let entries = vec![
-            make_entry("sales", FileFormat::Csv, vec![("id", "INT64"), ("amount", "FLOAT64")]),
-        ];
+        let entries = vec![make_entry(
+            "sales",
+            FileFormat::Csv,
+            vec![("id", "INT64"), ("amount", "FLOAT64")],
+        )];
         state.load(entries, "data".into());
         state.toggle_expand(0);
 
@@ -773,7 +779,11 @@ mod tests {
         assert_eq!(lines.len(), 2);
         // The table row should contain row count text
         let table_line = &lines[1];
-        let full_text: String = table_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let full_text: String = table_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(full_text.contains("1000000 rows"), "line: {}", full_text);
     }
 

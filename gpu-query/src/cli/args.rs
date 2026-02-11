@@ -144,10 +144,16 @@ mod tests {
 
     #[test]
     fn test_output_format_from_str() {
-        assert_eq!("table".parse::<OutputFormat>().unwrap(), OutputFormat::Table);
+        assert_eq!(
+            "table".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Table
+        );
         assert_eq!("csv".parse::<OutputFormat>().unwrap(), OutputFormat::Csv);
         assert_eq!("json".parse::<OutputFormat>().unwrap(), OutputFormat::Json);
-        assert_eq!("jsonl".parse::<OutputFormat>().unwrap(), OutputFormat::Jsonl);
+        assert_eq!(
+            "jsonl".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Jsonl
+        );
         assert_eq!(
             "ndjson".parse::<OutputFormat>().unwrap(),
             OutputFormat::Jsonl

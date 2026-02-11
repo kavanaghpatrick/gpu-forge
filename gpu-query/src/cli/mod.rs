@@ -182,11 +182,11 @@ fn json_escape(s: &str) -> String {
 /// Format a value for JSON output. Attempts numeric parsing.
 fn json_value(val: &str) -> String {
     // Try integer
-    if let Ok(_) = val.parse::<i64>() {
+    if val.parse::<i64>().is_ok() {
         return val.to_string();
     }
     // Try float
-    if let Ok(_) = val.parse::<f64>() {
+    if val.parse::<f64>().is_ok() {
         return val.to_string();
     }
     // NULL
@@ -289,12 +289,8 @@ pub fn run_non_interactive(args: &CliArgs) -> i32 {
                 return 1;
             }
         }
-        // Add trailing newline for non-table formats
-        if args.format != OutputFormat::Table {
-            let _ = writeln!(handle);
-        } else {
-            let _ = writeln!(handle);
-        }
+        // Add trailing newline
+        let _ = writeln!(handle);
     }
 
     0
