@@ -57,7 +57,7 @@ Focus: Establish the shared data formats between Rust and MSL. Load data into GP
   - _Requirements: FR-4_
   - _Design: Component 5_
 
-- [ ] 1.6 Foundation checkpoint
+- [x] 1.6 Foundation checkpoint
   - **Do**: Verify all foundation components work together: types compile, MSL header included, work queue allocates, loader converts data. Run full regression to confirm no breakage.
   - **Done when**: All existing tests pass + all new foundation tests pass
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/gpu-query && cargo test -- --test-threads=1 2>&1 | tail -10`
