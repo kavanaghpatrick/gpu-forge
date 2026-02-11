@@ -17,8 +17,10 @@ use objc2_metal::{
     MTLResourceOptions, MTLSize,
 };
 
-use super::loader::ResidentTable;
+use super::jit::JitCompiler;
+use super::loader::{ColumnInfo, ResidentTable};
 use super::types::{OutputBuffer, QueryParamsSlot};
+use crate::sql::physical_plan::PhysicalPlan;
 
 /// Cache of compiled PSOs for the fused query kernel, keyed by function constant triple.
 ///
@@ -256,6 +258,146 @@ pub fn execute_fused_oneshot(
     cmd_buf.waitUntilCompleted();
 
     // 6. Read back OutputBuffer from GPU memory
+    let result = unsafe {
+        let src = output_buffer.contents().as_ptr() as *const OutputBuffer;
+        std::ptr::read(src)
+    };
+
+    Ok(result)
+}
+
+/// Execute a JIT-compiled fused query kernel via one-shot Metal dispatch.
+///
+/// This function combines JIT compilation with the same dispatch logic as
+/// `execute_fused_oneshot`. It:
+/// 1. Compiles the plan via JIT (cache hit on repeated structures)
+/// 2. Dispatches the JIT PSO with the given parameters
+/// 3. Reads back the output buffer
+///
+/// # Arguments
+/// * `device` - Metal device for buffer allocation
+/// * `command_queue` - Metal command queue for command buffer creation
+/// * `jit_compiler` - JIT compiler instance (with PSO cache)
+/// * `plan` - Physical query plan (used for JIT compilation)
+/// * `schema` - Column schema for JIT source generation
+/// * `params` - Query parameters (filters, aggregates, group_by, row_count)
+/// * `resident_table` - GPU-resident table data
+///
+/// # Returns
+/// The `OutputBuffer` read back from GPU memory after kernel completion.
+pub fn execute_jit_oneshot(
+    device: &ProtocolObject<dyn MTLDevice>,
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    jit_compiler: &mut JitCompiler,
+    plan: &PhysicalPlan,
+    schema: &[ColumnInfo],
+    params: &QueryParamsSlot,
+    resident_table: &ResidentTable,
+) -> Result<OutputBuffer, String> {
+    // 1. Compile via JIT (cache hit on repeated plan structures)
+    let compiled = jit_compiler.compile(plan, schema)?;
+    let pso = &compiled.pso;
+
+    let options = MTLResourceOptions::StorageModeShared;
+
+    // 2. Allocate and populate params Metal buffer (512 bytes)
+    let params_size = std::mem::size_of::<QueryParamsSlot>();
+    let params_buffer = device
+        .newBufferWithLength_options(params_size, options)
+        .ok_or_else(|| "Failed to allocate params Metal buffer".to_string())?;
+
+    unsafe {
+        let dst = params_buffer.contents().as_ptr() as *mut QueryParamsSlot;
+        std::ptr::copy_nonoverlapping(params as *const QueryParamsSlot, dst, 1);
+    }
+
+    // 3. Allocate output Metal buffer (22560 bytes), zero-initialized
+    let output_size = std::mem::size_of::<OutputBuffer>();
+    let output_buffer = device
+        .newBufferWithLength_options(output_size, options)
+        .ok_or_else(|| "Failed to allocate output Metal buffer".to_string())?;
+
+    unsafe {
+        let dst = output_buffer.contents().as_ptr() as *mut u8;
+        std::ptr::write_bytes(dst, 0, output_size);
+    }
+
+    // 3b. Initialize MIN/MAX sentinel values (same as execute_fused_oneshot)
+    unsafe {
+        let out_ptr = output_buffer.contents().as_ptr() as *mut OutputBuffer;
+        let out = &mut *out_ptr;
+        for a in 0..params.agg_count as usize {
+            let agg_func = params.aggs[a].agg_func;
+            let is_min = agg_func == 3; // AGG_FUNC_MIN
+            let is_max = agg_func == 4; // AGG_FUNC_MAX
+            if is_min || is_max {
+                for g in 0..super::types::MAX_GROUPS {
+                    if is_min {
+                        out.agg_results[g][a].value_int = i64::MAX;
+                        out.agg_results[g][a].value_float = f32::MAX;
+                    } else {
+                        out.agg_results[g][a].value_int = i64::MIN;
+                        out.agg_results[g][a].value_float = f32::MIN;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Create command buffer
+    let cmd_buf = command_queue
+        .commandBuffer()
+        .ok_or_else(|| "Failed to create command buffer".to_string())?;
+
+    // 5. Create compute command encoder and configure dispatch
+    {
+        let encoder = cmd_buf
+            .computeCommandEncoder()
+            .ok_or_else(|| "Failed to create compute command encoder".to_string())?;
+
+        encoder.setComputePipelineState(pso);
+
+        // Set buffers matching JIT kernel signature (same as AOT):
+        //   buffer(0) = QueryParamsSlot
+        //   buffer(1) = column data
+        //   buffer(2) = ColumnMeta array
+        //   buffer(3) = OutputBuffer
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(&*params_buffer), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(&*resident_table.data_buffer), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(&*resident_table.column_meta_buffer), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(&*output_buffer), 0, 3);
+        }
+
+        // Calculate dispatch dimensions
+        let row_count = params.row_count as usize;
+        let threads_per_threadgroup = 256usize;
+        let threadgroup_count = if row_count == 0 {
+            1
+        } else {
+            (row_count + threads_per_threadgroup - 1) / threads_per_threadgroup
+        };
+
+        let grid_size = MTLSize {
+            width: threadgroup_count,
+            height: 1,
+            depth: 1,
+        };
+        let tg_size = MTLSize {
+            width: threads_per_threadgroup,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+        encoder.endEncoding();
+    }
+
+    // 6. Commit and wait (one-shot blocking path)
+    cmd_buf.commit();
+    cmd_buf.waitUntilCompleted();
+
+    // 7. Read back OutputBuffer from GPU memory
     let result = unsafe {
         let src = output_buffer.contents().as_ptr() as *const OutputBuffer;
         std::ptr::read(src)

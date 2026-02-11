@@ -1,7 +1,13 @@
 //! JIT Metal shader compiler with plan-structure caching.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_foundation::NSString;
+use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLLibrary};
 
 use crate::gpu::autonomous::loader::ColumnInfo;
 use crate::sql::physical_plan::PhysicalPlan;
@@ -162,10 +168,80 @@ fn extract_plan(plan: &PhysicalPlan) -> ExtractedPlan {
 // JIT Metal source generator
 // ---------------------------------------------------------------------------
 
-/// JIT compiler that generates specialized Metal source from a PhysicalPlan.
-pub struct JitCompiler;
+/// A compiled JIT plan: PSO + metadata.
+pub struct CompiledPlan {
+    pub pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub plan_hash: u64,
+    pub source_len: usize,
+}
+
+/// JIT compiler that generates specialized Metal source from a PhysicalPlan,
+/// compiles it at runtime via `newLibraryWithSource`, and caches PSOs by
+/// plan structure hash.
+pub struct JitCompiler {
+    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    cache: HashMap<u64, CompiledPlan>,
+}
 
 impl JitCompiler {
+    /// Create a new JIT compiler bound to the given Metal device.
+    pub fn new(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Self {
+        Self {
+            device,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Compile a plan into a Metal PSO, returning a cached result on hit.
+    ///
+    /// On cache miss: generates specialized Metal source, compiles it via
+    /// `newLibraryWithSource`, creates a compute pipeline state, and inserts
+    /// into the cache. On cache hit: returns the existing `CompiledPlan`.
+    pub fn compile(
+        &mut self,
+        plan: &PhysicalPlan,
+        schema: &[ColumnInfo],
+    ) -> Result<&CompiledPlan, String> {
+        let hash = plan_structure_hash(plan);
+
+        if self.cache.contains_key(&hash) {
+            return Ok(&self.cache[&hash]);
+        }
+
+        let source = Self::generate_metal_source_for_jit(plan, schema);
+
+        // Compile Metal source at runtime (no include paths needed — header inlined)
+        let ns_source = NSString::from_str(&source);
+        let library = self
+            .device
+            .newLibraryWithSource_options_error(&ns_source, None)
+            .map_err(|e| format!("JIT compile failed: {}", e))?;
+
+        let fn_name = NSString::from_str("fused_query_jit");
+        let func = library
+            .newFunctionWithName(&fn_name)
+            .ok_or("Function 'fused_query_jit' not found in JIT library")?;
+
+        let pso = self
+            .device
+            .newComputePipelineStateWithFunction_error(&func)
+            .map_err(|e| format!("PSO creation failed: {}", e))?;
+
+        let compiled = CompiledPlan {
+            pso,
+            plan_hash: hash,
+            source_len: source.len(),
+        };
+
+        self.cache.insert(hash, compiled);
+        Ok(&self.cache[&hash])
+    }
+
+    /// Number of cached compiled plans.
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
     /// Generate specialized Metal shader source code from a physical plan.
     ///
     /// The generated kernel has the same buffer interface as the AOT fused_query
@@ -173,13 +249,48 @@ impl JitCompiler {
     /// inner logic: exact filter predicates inlined, exact aggregate functions,
     /// and GROUP BY handling baked in.
     ///
-    /// The `schema` parameter maps column names to indices and types.
+    /// Uses `#include "autonomous_types.h"` — suitable for AOT compilation via
+    /// build.rs where `-I shaders/` resolves the include path.
     pub fn generate_metal_source(plan: &PhysicalPlan, schema: &[ColumnInfo]) -> String {
         let extracted = extract_plan(plan);
         let mut src = String::with_capacity(4096);
 
-        // --- Header ---
+        // --- Header (with #include for AOT path) ---
         emit_header(&mut src);
+
+        // --- SIMD helpers (always included for reductions) ---
+        emit_simd_helpers(&mut src);
+
+        // --- Column read helpers ---
+        emit_column_readers(&mut src);
+
+        // --- Device atomic helpers ---
+        emit_atomic_helpers(&mut src);
+
+        // --- Main kernel ---
+        emit_kernel(
+            &mut src,
+            &extracted.filters,
+            &extracted.aggregates,
+            &extracted.group_by,
+            schema,
+        );
+
+        src
+    }
+
+    /// Generate specialized Metal source for JIT runtime compilation.
+    ///
+    /// Unlike `generate_metal_source`, this version inlines the
+    /// `autonomous_types.h` header content directly into the source string,
+    /// because `newLibraryWithSource` does not have access to the build.rs
+    /// `-I shaders/` include path.
+    fn generate_metal_source_for_jit(plan: &PhysicalPlan, schema: &[ColumnInfo]) -> String {
+        let extracted = extract_plan(plan);
+        let mut src = String::with_capacity(8192);
+
+        // --- Header with inlined types (no #include) ---
+        emit_header_for_jit(&mut src);
 
         // --- SIMD helpers (always included for reductions) ---
         emit_simd_helpers(&mut src);
@@ -262,6 +373,122 @@ fn msl_type_for_column(type_const: &str) -> &'static str {
 fn emit_header(src: &mut String) {
     src.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
     src.push_str("#include \"autonomous_types.h\"\n\n");
+    src.push_str("#define THREADGROUP_SIZE 256\n");
+    src.push_str("#define INT64_MAX_VAL  0x7FFFFFFFFFFFFFFF\n");
+    src.push_str("#define INT64_MIN_VAL  0x8000000000000000\n");
+    src.push_str("#define FLOAT_MAX_VAL  3.402823466e+38f\n");
+    src.push_str("#define FLOAT_MIN_VAL  (-3.402823466e+38f)\n\n");
+}
+
+/// Emit header for JIT runtime compilation: inlines the autonomous_types.h
+/// content directly since `newLibraryWithSource` has no include path.
+fn emit_header_for_jit(src: &mut String) {
+    src.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+
+    // Inline autonomous_types.h content (struct definitions + constants)
+    src.push_str("// --- Inlined autonomous_types.h for JIT compilation ---\n\n");
+    src.push_str("#define MAX_GROUPS  64\n");
+    src.push_str("#define MAX_AGGS    5\n");
+    src.push_str("#define MAX_FILTERS 4\n");
+    src.push_str("#define MAX_GROUP_SLOTS 256\n\n");
+    src.push_str("#define COLUMN_TYPE_INT64   0\n");
+    src.push_str("#define COLUMN_TYPE_FLOAT32 1\n");
+    src.push_str("#define COLUMN_TYPE_DICT_U32 2\n\n");
+    src.push_str("#define COMPARE_OP_EQ 0\n");
+    src.push_str("#define COMPARE_OP_NE 1\n");
+    src.push_str("#define COMPARE_OP_LT 2\n");
+    src.push_str("#define COMPARE_OP_LE 3\n");
+    src.push_str("#define COMPARE_OP_GT 4\n");
+    src.push_str("#define COMPARE_OP_GE 5\n\n");
+    src.push_str("#define AGG_FUNC_COUNT 0\n");
+    src.push_str("#define AGG_FUNC_SUM   1\n");
+    src.push_str("#define AGG_FUNC_AVG   2\n");
+    src.push_str("#define AGG_FUNC_MIN   3\n");
+    src.push_str("#define AGG_FUNC_MAX   4\n\n");
+
+    // FilterSpec (48 bytes)
+    src.push_str(
+        "struct FilterSpec {\n\
+         \x20   uint     column_idx;\n\
+         \x20   uint     compare_op;\n\
+         \x20   uint     column_type;\n\
+         \x20   uint     _pad0;\n\
+         \x20   long     value_int;\n\
+         \x20   uint     value_float_bits;\n\
+         \x20   uint     _pad1;\n\
+         \x20   uint     has_null_check;\n\
+         \x20   uint     _pad2[3];\n\
+         };\n\n",
+    );
+
+    // AggSpec (16 bytes)
+    src.push_str(
+        "struct AggSpec {\n\
+         \x20   uint     agg_func;\n\
+         \x20   uint     column_idx;\n\
+         \x20   uint     column_type;\n\
+         \x20   uint     _pad0;\n\
+         };\n\n",
+    );
+
+    // QueryParamsSlot (512 bytes)
+    src.push_str(
+        "struct QueryParamsSlot {\n\
+         \x20   uint       sequence_id;\n\
+         \x20   uint       _pad_seq;\n\
+         \x20   ulong      query_hash;\n\
+         \x20   uint       filter_count;\n\
+         \x20   uint       _pad_fc;\n\
+         \x20   FilterSpec filters[4];\n\
+         \x20   uint       agg_count;\n\
+         \x20   uint       _pad_ac;\n\
+         \x20   AggSpec    aggs[5];\n\
+         \x20   uint       group_by_col;\n\
+         \x20   uint       has_group_by;\n\
+         \x20   uint       row_count;\n\
+         \x20   char       _padding[196];\n\
+         };\n\n",
+    );
+
+    // ColumnMeta (32 bytes)
+    src.push_str(
+        "struct ColumnMeta {\n\
+         \x20   ulong    offset;\n\
+         \x20   uint     column_type;\n\
+         \x20   uint     stride;\n\
+         \x20   ulong    null_offset;\n\
+         \x20   uint     row_count;\n\
+         \x20   uint     _pad;\n\
+         };\n\n",
+    );
+
+    // AggResult (16 bytes)
+    src.push_str(
+        "struct AggResult {\n\
+         \x20   long     value_int;\n\
+         \x20   float    value_float;\n\
+         \x20   uint     count;\n\
+         };\n\n",
+    );
+
+    // OutputBuffer (22560 bytes)
+    src.push_str(
+        "struct OutputBuffer {\n\
+         \x20   uint       ready_flag;\n\
+         \x20   uint       sequence_id;\n\
+         \x20   ulong      latency_ns;\n\
+         \x20   uint       result_row_count;\n\
+         \x20   uint       result_col_count;\n\
+         \x20   uint       error_code;\n\
+         \x20   uint       _pad;\n\
+         \x20   long       group_keys[256];\n\
+         \x20   AggResult  agg_results[256][5];\n\
+         };\n\n",
+    );
+
+    src.push_str("// --- End inlined autonomous_types.h ---\n\n");
+
+    // JIT-specific defines
     src.push_str("#define THREADGROUP_SIZE 256\n");
     src.push_str("#define INT64_MAX_VAL  0x7FFFFFFFFFFFFFFF\n");
     src.push_str("#define INT64_MIN_VAL  0x8000000000000000\n");
@@ -849,7 +1076,7 @@ fn emit_global_reduction(
     src: &mut String,
     aggregates: &[(AggFunc, String)],
     schema: &[ColumnInfo],
-    agg_count: usize,
+    _agg_count: usize,
 ) {
     src.push_str("    // === GLOBAL REDUCTION (device atomics) ===\n");
     src.push_str("    if (lid == 0) {\n");
@@ -864,7 +1091,7 @@ fn emit_global_reduction(
         src.push_str(&format!(
             "            // Agg {a}: {func}\n\
              \x20           {{\n\
-             \x20               uint off = 2080 + (g * {agg_count} + {a}) * 16;\n\
+             \x20               uint off = 2080 + (g * MAX_AGGS + {a}) * 16;\n\
              \x20               device char* base = (device char*)output;\n\
              \x20               device atomic_uint* val_int_lo = (device atomic_uint*)(base + off);\n\
              \x20               device atomic_uint* val_int_hi = (device atomic_uint*)(base + off + 4);\n\
@@ -933,7 +1160,7 @@ fn emit_output_metadata(src: &mut String, has_group_by: bool, agg_count: usize) 
         src.push_str("            uint group_count = 0;\n");
         src.push_str(&format!(
             "            for (uint g = 0; g < MAX_GROUPS; g++) {{\n\
-             \x20               uint off = 2080 + (g * {agg_count} + 0) * 16;\n\
+             \x20               uint off = 2080 + (g * MAX_AGGS + 0) * 16;\n\
              \x20               device char* base = (device char*)output;\n\
              \x20               device atomic_uint* cnt = (device atomic_uint*)(base + off + 12);\n\
              \x20               if (atomic_load_explicit(cnt, memory_order_relaxed) > 0) group_count++;\n\
@@ -1428,6 +1655,169 @@ mod tests {
         assert!(
             !src.contains("kernel void fused_query("),
             "must NOT contain the AOT kernel name 'fused_query(' without _jit"
+        );
+    }
+
+    // ===================================================================
+    // JIT runtime compilation + PSO cache tests
+    // ===================================================================
+
+    use crate::gpu::device::GpuDevice;
+
+    // -----------------------------------------------------------------------
+    // Compile test 1: headline query compiles to valid PSO
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_headline() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        // Headline query: COUNT(*), SUM(amount) WHERE amount > 100 GROUP BY region
+        let left = filter_gt("amount", Value::Int(100), scan("sales"));
+        let right = PhysicalPlan::GpuFilter {
+            compare_op: CompareOp::Lt,
+            column: "amount".into(),
+            value: Value::Int(1000),
+            input: Box::new(scan("sales")),
+        };
+        let compound = compound_and(left, right);
+        let plan = aggregate(
+            vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+            vec!["region"],
+            compound,
+        );
+
+        let result = jit.compile(&plan, &test_schema());
+        assert!(result.is_ok(), "JIT compile failed: {:?}", result.err());
+
+        let compiled = result.unwrap();
+        assert!(compiled.plan_hash != 0, "plan_hash should be non-zero");
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile test 2: cache hit returns same entry (no recompilation)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_cache_hit() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+
+        // First compile
+        let result1 = jit.compile(&plan, &test_schema());
+        assert!(result1.is_ok(), "first compile failed");
+        let hash1 = result1.unwrap().plan_hash;
+
+        // Second compile (same plan structure) — should hit cache
+        let result2 = jit.compile(&plan, &test_schema());
+        assert!(result2.is_ok(), "second compile failed");
+        let hash2 = result2.unwrap().plan_hash;
+
+        assert_eq!(hash1, hash2, "cache hit should return same plan_hash");
+        assert_eq!(jit.cache_len(), 1, "cache should have exactly 1 entry");
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile test 3: cache miss for different plan structure
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_cache_miss() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        // Plan A: COUNT(*)
+        let plan_a = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+
+        // Plan B: COUNT(*) with filter
+        let plan_b = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_gt("amount", Value::Int(100), scan("sales")),
+        );
+
+        let result_a = jit.compile(&plan_a, &test_schema());
+        assert!(result_a.is_ok(), "plan A compile failed");
+
+        let result_b = jit.compile(&plan_b, &test_schema());
+        assert!(result_b.is_ok(), "plan B compile failed");
+
+        assert_eq!(
+            jit.cache_len(),
+            2,
+            "different plan structures should produce separate cache entries"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile test 4: simple COUNT(*) compiles
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_simple_count() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let result = jit.compile(&plan, &test_schema());
+        assert!(
+            result.is_ok(),
+            "simple COUNT(*) JIT compile failed: {:?}",
+            result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile test 5: CompiledPlan.source_len > 0
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_returns_source_len() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        let plan = aggregate(vec![(AggFunc::Count, "*")], vec![], scan("sales"));
+        let compiled = jit.compile(&plan, &test_schema()).expect("compile failed");
+
+        assert!(
+            compiled.source_len > 0,
+            "source_len should be > 0, got {}",
+            compiled.source_len
+        );
+        // JIT source (with inlined header) should be substantial
+        assert!(
+            compiled.source_len > 1000,
+            "source_len should be > 1000 (inlined header + kernel), got {}",
+            compiled.source_len
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Compile test 6: different literals produce cache hit (same structure hash)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compile_different_literals_cache_hit() {
+        let gpu = GpuDevice::new();
+        let mut jit = JitCompiler::new(gpu.device.clone());
+
+        let plan_a = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_gt("amount", Value::Int(500), scan("sales")),
+        );
+        let plan_b = aggregate(
+            vec![(AggFunc::Count, "*")],
+            vec![],
+            filter_gt("amount", Value::Int(300), scan("sales")),
+        );
+
+        jit.compile(&plan_a, &test_schema())
+            .expect("plan A compile failed");
+        jit.compile(&plan_b, &test_schema())
+            .expect("plan B compile failed");
+
+        assert_eq!(
+            jit.cache_len(),
+            1,
+            "same structure with different literals should share PSO (cache hit)"
         );
     }
 }

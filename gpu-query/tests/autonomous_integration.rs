@@ -12,10 +12,13 @@
 //!   Column 1 (region): INT64, values = i%5 for i in 0..N
 //!   Column 2 (float_amount): FLOAT64->f32, values = ((i*7+13)%1000) as f32
 
-use gpu_query::gpu::autonomous::executor::{execute_fused_oneshot, FusedPsoCache};
-use gpu_query::gpu::autonomous::loader::BinaryColumnarLoader;
+use gpu_query::gpu::autonomous::executor::{execute_fused_oneshot, execute_jit_oneshot, FusedPsoCache};
+use gpu_query::gpu::autonomous::jit::JitCompiler;
+use gpu_query::gpu::autonomous::loader::{BinaryColumnarLoader, ColumnInfo};
 use gpu_query::gpu::autonomous::types::{AggSpec, FilterSpec, OutputBuffer, QueryParamsSlot};
 use gpu_query::gpu::device::GpuDevice;
+use gpu_query::sql::physical_plan::PhysicalPlan;
+use gpu_query::sql::types::{AggFunc, CompareOp, LogicalOp, Value};
 use gpu_query::storage::columnar::ColumnarBatch;
 use gpu_query::storage::schema::{ColumnDef, DataType, RuntimeSchema};
 
@@ -1387,4 +1390,657 @@ fn parity_float_sum_100k() {
         expected_sum_large,
         ratio
     );
+}
+
+// ============================================================================
+// JIT Parity Tests: verify JIT-compiled kernel produces identical results
+// to the AOT kernel for all major query patterns.
+// ============================================================================
+
+/// Helper: build a GpuScan plan node.
+fn plan_scan(table: &str) -> PhysicalPlan {
+    PhysicalPlan::GpuScan {
+        table: table.into(),
+        columns: vec!["amount".into(), "region".into()],
+    }
+}
+
+/// Helper: build a GpuFilter node (column > value).
+fn plan_filter_gt(column: &str, val: i64, input: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::GpuFilter {
+        compare_op: CompareOp::Gt,
+        column: column.into(),
+        value: Value::Int(val),
+        input: Box::new(input),
+    }
+}
+
+/// Helper: build a GpuFilter node (column < value).
+fn plan_filter_lt(column: &str, val: i64, input: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::GpuFilter {
+        compare_op: CompareOp::Lt,
+        column: column.into(),
+        value: Value::Int(val),
+        input: Box::new(input),
+    }
+}
+
+/// Helper: build a compound AND filter.
+fn plan_compound_and(left: PhysicalPlan, right: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::GpuCompoundFilter {
+        op: LogicalOp::And,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+/// Helper: build a GpuAggregate node.
+fn plan_aggregate(
+    functions: Vec<(AggFunc, &str)>,
+    group_by: Vec<&str>,
+    input: PhysicalPlan,
+) -> PhysicalPlan {
+    PhysicalPlan::GpuAggregate {
+        functions: functions
+            .into_iter()
+            .map(|(f, c)| (f, c.to_string()))
+            .collect(),
+        group_by: group_by.into_iter().map(|s| s.to_string()).collect(),
+        input: Box::new(input),
+    }
+}
+
+/// JIT schema: maps column names to types for JIT source generation.
+fn jit_schema() -> Vec<ColumnInfo> {
+    vec![
+        ColumnInfo {
+            name: "amount".into(),
+            data_type: DataType::Int64,
+        },
+        ColumnInfo {
+            name: "region".into(),
+            data_type: DataType::Int64,
+        },
+    ]
+}
+
+// ============================================================================
+// JIT Parity 1: COUNT(*) no filter — JIT vs AOT
+// ============================================================================
+#[test]
+fn jit_parity_count_star() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    // AOT path
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 200;
+    params.filter_count = 0;
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 0, 1, false, &resident_table);
+
+    // JIT path
+    let plan = plan_aggregate(vec![(AggFunc::Count, "*")], vec![], plan_scan("test"));
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1, "JIT ready_flag");
+    assert_eq!(jit_result.result_row_count, aot_result.result_row_count, "JIT vs AOT result_row_count");
+    assert_eq!(
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int,
+        "JIT COUNT(*) = {}, AOT COUNT(*) = {}",
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// JIT Parity 2: SUM(amount) no filter — JIT vs AOT
+// ============================================================================
+#[test]
+fn jit_parity_sum() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 201;
+    params.filter_count = 0;
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 0, 1, false, &resident_table);
+
+    let plan = plan_aggregate(vec![(AggFunc::Sum, "amount")], vec![], plan_scan("test"));
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1);
+    assert_eq!(
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int,
+        "JIT SUM = {}, AOT SUM = {}",
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// JIT Parity 3: MIN/MAX(amount) no filter — JIT vs AOT
+// ============================================================================
+#[test]
+fn jit_parity_min_max() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 202;
+    params.filter_count = 0;
+    params.agg_count = 2;
+    params.aggs[0] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 0, 2, false, &resident_table);
+
+    let plan = plan_aggregate(
+        vec![(AggFunc::Min, "amount"), (AggFunc::Max, "amount")],
+        vec![],
+        plan_scan("test"),
+    );
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1);
+    assert_eq!(
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int,
+        "JIT MIN = {}, AOT MIN = {}",
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int
+    );
+    assert_eq!(
+        jit_result.agg_results[0][1].value_int,
+        aot_result.agg_results[0][1].value_int,
+        "JIT MAX = {}, AOT MAX = {}",
+        jit_result.agg_results[0][1].value_int,
+        aot_result.agg_results[0][1].value_int
+    );
+}
+
+// ============================================================================
+// JIT Parity 4: Single filter COUNT(*) WHERE amount > 500 — JIT vs AOT
+// ============================================================================
+#[test]
+fn jit_parity_single_filter() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 203;
+    params.filter_count = 1;
+    params.filters[0] = FilterSpec {
+        column_idx: 0,
+        compare_op: 4, // GT
+        column_type: 0,
+        _pad0: 0,
+        value_int: 500,
+        value_float_bits: 0,
+        _pad1: 0,
+        has_null_check: 0,
+        _pad2: [0; 3],
+    };
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 1, 1, false, &resident_table);
+
+    let plan = plan_aggregate(
+        vec![(AggFunc::Count, "*")],
+        vec![],
+        plan_filter_gt("amount", 500, plan_scan("test")),
+    );
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1);
+    assert_eq!(
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int,
+        "JIT filtered COUNT = {}, AOT filtered COUNT = {}",
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// JIT Parity 5: Compound filter COUNT(*) WHERE amount > 200 AND amount < 800
+// ============================================================================
+#[test]
+fn jit_parity_compound_filter() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 204;
+    params.filter_count = 2;
+    params.filters[0] = FilterSpec {
+        column_idx: 0,
+        compare_op: 4, // GT
+        column_type: 0,
+        _pad0: 0,
+        value_int: 200,
+        value_float_bits: 0,
+        _pad1: 0,
+        has_null_check: 0,
+        _pad2: [0; 3],
+    };
+    params.filters[1] = FilterSpec {
+        column_idx: 0,
+        compare_op: 2, // LT
+        column_type: 0,
+        _pad0: 0,
+        value_int: 800,
+        value_float_bits: 0,
+        _pad1: 0,
+        has_null_check: 0,
+        _pad2: [0; 3],
+    };
+    params.agg_count = 1;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 0;
+    params.group_by_col = 0;
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 2, 1, false, &resident_table);
+
+    let left = plan_filter_gt("amount", 200, plan_scan("test"));
+    let right = plan_filter_lt("amount", 800, plan_scan("test"));
+    let compound = plan_compound_and(left, right);
+    let plan = plan_aggregate(vec![(AggFunc::Count, "*")], vec![], compound);
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1);
+    assert_eq!(
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int,
+        "JIT compound COUNT = {}, AOT compound COUNT = {}",
+        jit_result.agg_results[0][0].value_int,
+        aot_result.agg_results[0][0].value_int
+    );
+}
+
+// ============================================================================
+// JIT Parity 6: GROUP BY region, COUNT(*), SUM(amount) — JIT vs AOT
+// ============================================================================
+#[test]
+fn jit_parity_group_by() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 205;
+    params.filter_count = 0;
+    params.agg_count = 2;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1; // region column
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 0, 2, true, &resident_table);
+
+    let plan = plan_aggregate(
+        vec![(AggFunc::Count, "*"), (AggFunc::Sum, "amount")],
+        vec!["region"],
+        plan_scan("test"),
+    );
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1);
+    assert_eq!(
+        jit_result.result_row_count, aot_result.result_row_count,
+        "JIT group count = {}, AOT group count = {}",
+        jit_result.result_row_count, aot_result.result_row_count
+    );
+
+    for g in 0..5usize {
+        assert_eq!(
+            jit_result.agg_results[g][0].value_int,
+            aot_result.agg_results[g][0].value_int,
+            "Group {}: JIT COUNT = {}, AOT COUNT = {}",
+            g,
+            jit_result.agg_results[g][0].value_int,
+            aot_result.agg_results[g][0].value_int
+        );
+        assert_eq!(
+            jit_result.agg_results[g][1].value_int,
+            aot_result.agg_results[g][1].value_int,
+            "Group {}: JIT SUM = {}, AOT SUM = {}",
+            g,
+            jit_result.agg_results[g][1].value_int,
+            aot_result.agg_results[g][1].value_int
+        );
+        assert_eq!(
+            jit_result.group_keys[g],
+            aot_result.group_keys[g],
+            "Group {}: JIT key = {}, AOT key = {}",
+            g,
+            jit_result.group_keys[g],
+            aot_result.group_keys[g]
+        );
+    }
+}
+
+// ============================================================================
+// JIT Parity 7: Headline query — compound filter + GROUP BY + multi-agg
+//   WHERE amount > 200 AND amount < 800 GROUP BY region
+//   SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount)
+// ============================================================================
+#[test]
+fn jit_parity_headline() {
+    let gpu = GpuDevice::new();
+    let schema = test_schema();
+    let batch = make_test_batch(&gpu.device, &schema, ROW_COUNT);
+
+    let resident_table =
+        BinaryColumnarLoader::load_table(&gpu.device, "test", &schema, &batch, None)
+            .expect("load_table failed");
+
+    let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+
+    let mut params = QueryParamsSlot::default();
+    params.sequence_id = 206;
+    params.filter_count = 2;
+    params.filters[0] = FilterSpec {
+        column_idx: 0,
+        compare_op: 4, // GT
+        column_type: 0,
+        _pad0: 0,
+        value_int: 200,
+        value_float_bits: 0,
+        _pad1: 0,
+        has_null_check: 0,
+        _pad2: [0; 3],
+    };
+    params.filters[1] = FilterSpec {
+        column_idx: 0,
+        compare_op: 2, // LT
+        column_type: 0,
+        _pad0: 0,
+        value_int: 800,
+        value_float_bits: 0,
+        _pad1: 0,
+        has_null_check: 0,
+        _pad2: [0; 3],
+    };
+    params.agg_count = 4;
+    params.aggs[0] = AggSpec {
+        agg_func: 0, // COUNT
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[1] = AggSpec {
+        agg_func: 1, // SUM
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[2] = AggSpec {
+        agg_func: 3, // MIN
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.aggs[3] = AggSpec {
+        agg_func: 4, // MAX
+        column_idx: 0,
+        column_type: 0,
+        _pad0: 0,
+    };
+    params.has_group_by = 1;
+    params.group_by_col = 1; // region column
+    params.row_count = ROW_COUNT as u32;
+
+    let aot_result = run_query(&gpu, &mut cache, &params, 2, 4, true, &resident_table);
+
+    // Build JIT plan
+    let left = plan_filter_gt("amount", 200, plan_scan("test"));
+    let right = plan_filter_lt("amount", 800, plan_scan("test"));
+    let compound = plan_compound_and(left, right);
+    let plan = plan_aggregate(
+        vec![
+            (AggFunc::Count, "*"),
+            (AggFunc::Sum, "amount"),
+            (AggFunc::Min, "amount"),
+            (AggFunc::Max, "amount"),
+        ],
+        vec!["region"],
+        compound,
+    );
+    let mut jit = JitCompiler::new(gpu.device.clone());
+
+    let jit_result = execute_jit_oneshot(
+        &gpu.device,
+        &gpu.command_queue,
+        &mut jit,
+        &plan,
+        &jit_schema(),
+        &params,
+        &resident_table,
+    )
+    .expect("execute_jit_oneshot failed");
+
+    assert_eq!(jit_result.ready_flag, 1);
+    assert_eq!(
+        jit_result.result_row_count, aot_result.result_row_count,
+        "JIT group count = {}, AOT group count = {}",
+        jit_result.result_row_count, aot_result.result_row_count
+    );
+
+    for g in 0..5usize {
+        // Skip empty groups
+        if aot_result.agg_results[g][0].value_int == 0 {
+            continue;
+        }
+
+        assert_eq!(
+            jit_result.agg_results[g][0].value_int,
+            aot_result.agg_results[g][0].value_int,
+            "Headline group {}: JIT COUNT = {}, AOT COUNT = {}",
+            g,
+            jit_result.agg_results[g][0].value_int,
+            aot_result.agg_results[g][0].value_int
+        );
+        assert_eq!(
+            jit_result.agg_results[g][1].value_int,
+            aot_result.agg_results[g][1].value_int,
+            "Headline group {}: JIT SUM = {}, AOT SUM = {}",
+            g,
+            jit_result.agg_results[g][1].value_int,
+            aot_result.agg_results[g][1].value_int
+        );
+        assert_eq!(
+            jit_result.agg_results[g][2].value_int,
+            aot_result.agg_results[g][2].value_int,
+            "Headline group {}: JIT MIN = {}, AOT MIN = {}",
+            g,
+            jit_result.agg_results[g][2].value_int,
+            aot_result.agg_results[g][2].value_int
+        );
+        assert_eq!(
+            jit_result.agg_results[g][3].value_int,
+            aot_result.agg_results[g][3].value_int,
+            "Headline group {}: JIT MAX = {}, AOT MAX = {}",
+            g,
+            jit_result.agg_results[g][3].value_int,
+            aot_result.agg_results[g][3].value_int
+        );
+        assert_eq!(
+            jit_result.group_keys[g],
+            aot_result.group_keys[g],
+            "Headline group {}: JIT key = {}, AOT key = {}",
+            g,
+            jit_result.group_keys[g],
+            aot_result.group_keys[g]
+        );
+    }
 }

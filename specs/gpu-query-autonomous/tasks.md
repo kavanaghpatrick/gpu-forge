@@ -149,7 +149,7 @@ Focus: Generate specialized Metal shader source from query plan, compile at runt
   - _Requirements: FR-6_
   - _Design: Component 4_
 
-- [ ] 3.4 Wire JIT compiler into fused dispatch
+- [x] 3.4 Wire JIT compiler into fused dispatch
   - **Do**: Modify `execute_fused_oneshot` to accept a JIT-compiled PSO instead of the AOT PSO. Add `execute_jit_oneshot(jit_compiler, plan, schema, resident_table) -> OutputBuffer` that: (1) compiles via JIT, (2) dispatches the JIT PSO, (3) reads output. Run parity tests with JIT PSO vs AOT PSO -- results must match.
   - **Files**: `gpu-query/src/gpu/autonomous/executor.rs`, `gpu-query/tests/autonomous_integration.rs`
   - **Done when**: JIT-compiled kernel produces identical results to AOT kernel for all test patterns
