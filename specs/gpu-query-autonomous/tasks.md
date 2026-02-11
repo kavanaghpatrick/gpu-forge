@@ -122,7 +122,7 @@ Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (bef
 
 Focus: Generate specialized Metal shader source from query plan, compile at runtime, cache PSOs.
 
-- [ ] 3.1 Implement plan structure hashing
+- [x] 3.1 Implement plan structure hashing
   - **Do**: Create `src/gpu/autonomous/jit.rs`. Implement `plan_structure_hash(plan: &PhysicalPlan) -> u64` using `DefaultHasher`. Hash captures: plan node types (GpuAggregate, GpuFilter, GpuCompoundFilter, GpuScan), aggregate functions, compare ops, column references, group_by columns. Does NOT hash literal values (thresholds). Add tests: deterministic (same plan -> same hash), structural equality (different literals -> same hash), different structure -> different hash, filter op matters, agg func matters, group_by matters.
   - **Files**: `gpu-query/src/gpu/autonomous/jit.rs`
   - **Done when**: ~8 plan hash unit tests pass
