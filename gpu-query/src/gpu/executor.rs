@@ -8,6 +8,7 @@
 //! (column_filter) -> GpuAggregate (aggregate_count/aggregate_sum_int64) -> result.
 
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -220,6 +221,16 @@ struct ScanResult {
     _delimiter: u8,
 }
 
+/// Wrapper around ScanResult that stores file stats for cache invalidation.
+struct CachedScan {
+    /// The scan result.
+    result: ScanResult,
+    /// File size at the time of caching.
+    file_size: u64,
+    /// File modification time at the time of caching.
+    file_modified: SystemTime,
+}
+
 /// Intermediate result from a filter stage.
 struct FilterResult {
     /// Selection bitmask (1 bit per row).
@@ -254,7 +265,7 @@ impl FilterResult {
 pub struct QueryExecutor {
     device: GpuDevice,
     pso_cache: PsoCache,
-    scan_cache: HashMap<String, ScanResult>,
+    scan_cache: HashMap<String, CachedScan>,
 }
 
 impl QueryExecutor {
@@ -283,7 +294,7 @@ impl QueryExecutor {
             } => {
                 // Walk down to get scan key and optional filter results
                 let (key, filter_result) = self.resolve_input(input, catalog)?;
-                let scan_result = self.scan_cache.get(&key).unwrap();
+                let scan_result = &self.scan_cache.get(&key).unwrap().result;
                 if group_by.is_empty() {
                     self.execute_aggregate(scan_result, filter_result.as_ref(), functions)
                 } else {
@@ -299,7 +310,7 @@ impl QueryExecutor {
             PhysicalPlan::GpuFilter { .. } => {
                 // A filter without aggregate on top: return filtered row count
                 let (key, filter_result) = self.resolve_input(plan, catalog)?;
-                let scan_result = self.scan_cache.get(&key).unwrap();
+                let scan_result = &self.scan_cache.get(&key).unwrap().result;
                 let count = filter_result
                     .as_ref()
                     .map(|f| f.match_count())
@@ -313,7 +324,7 @@ impl QueryExecutor {
 
             PhysicalPlan::GpuScan { table, .. } => {
                 let key = self.ensure_scan_cached(table, catalog)?;
-                let scan_result = self.scan_cache.get(&key).unwrap();
+                let scan_result = &self.scan_cache.get(&key).unwrap().result;
                 let row_count = scan_result.batch.row_count;
                 Ok(QueryResult {
                     columns: vec!["count(*)".to_string()],
@@ -339,7 +350,7 @@ impl QueryExecutor {
             PhysicalPlan::GpuCompoundFilter { .. } => {
                 // A compound filter without aggregate on top: return filtered row count
                 let (key, filter_result) = self.resolve_input(plan, catalog)?;
-                let scan_result = self.scan_cache.get(&key).unwrap();
+                let scan_result = &self.scan_cache.get(&key).unwrap().result;
                 let count = filter_result
                     .as_ref()
                     .map(|f| f.match_count())
@@ -386,9 +397,9 @@ impl QueryExecutor {
 
                 // Temporarily remove scan from cache to avoid borrow conflict
                 // (execute_filter needs &mut self while scan is borrowed from self.scan_cache)
-                let scan = self.scan_cache.remove(&key).unwrap();
-                let filter = self.execute_filter(&scan, compare_op, column, value)?;
-                self.scan_cache.insert(key.clone(), scan);
+                let cached = self.scan_cache.remove(&key).unwrap();
+                let filter = self.execute_filter(&cached.result, compare_op, column, value)?;
+                self.scan_cache.insert(key.clone(), cached);
                 Ok((key, Some(filter)))
             }
 
@@ -426,6 +437,7 @@ impl QueryExecutor {
     }
 
     /// Check if a scan result is cached; if not, execute the scan and cache it.
+    /// On cache hit, validates file size and mtime -- evicts stale entries automatically.
     /// Returns the lowercase cache key for later retrieval via `self.scan_cache.get(&key)`.
     fn ensure_scan_cached(
         &mut self,
@@ -433,9 +445,47 @@ impl QueryExecutor {
         catalog: &[TableEntry],
     ) -> Result<String, String> {
         let key = table.to_ascii_lowercase();
+
+        // On cache hit, validate file stats to detect stale entries
+        if self.scan_cache.contains_key(&key) {
+            let entry = catalog
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(table))
+                .ok_or_else(|| format!("Table '{}' not found in catalog", table))?;
+            let meta = std::fs::metadata(&entry.path)
+                .map_err(|e| format!("Failed to stat '{}': {}", entry.path.display(), e))?;
+            let cached = self.scan_cache.get(&key).unwrap();
+            let current_size = meta.len();
+            let current_mtime = meta
+                .modified()
+                .map_err(|e| format!("Failed to get mtime for '{}': {}", entry.path.display(), e))?;
+            if current_size != cached.file_size || current_mtime != cached.file_modified {
+                // Stale entry -- remove and re-scan below
+                self.scan_cache.remove(&key);
+            }
+        }
+
         if !self.scan_cache.contains_key(&key) {
+            // Look up entry for file stats
+            let entry = catalog
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(table))
+                .ok_or_else(|| format!("Table '{}' not found in catalog", table))?;
+            let meta = std::fs::metadata(&entry.path)
+                .map_err(|e| format!("Failed to stat '{}': {}", entry.path.display(), e))?;
+            let file_size = meta.len();
+            let file_modified = meta
+                .modified()
+                .map_err(|e| format!("Failed to get mtime for '{}': {}", entry.path.display(), e))?;
             let result = self.execute_scan_uncached(table, catalog)?;
-            self.scan_cache.insert(key.clone(), result);
+            self.scan_cache.insert(
+                key.clone(),
+                CachedScan {
+                    result,
+                    file_size,
+                    file_modified,
+                },
+            );
         }
         Ok(key)
     }
@@ -1617,7 +1667,7 @@ impl QueryExecutor {
         catalog: &[TableEntry],
     ) -> Result<QueryResult, String> {
         let (key, filter_result) = self.resolve_input(input, catalog)?;
-        let scan_result = self.scan_cache.get(&key).unwrap();
+        let scan_result = &self.scan_cache.get(&key).unwrap().result;
         let row_count = scan_result.batch.row_count as u32;
 
         // Build selection mask
@@ -1639,12 +1689,12 @@ impl QueryExecutor {
             let col_idx = schema.column_index(&col_def.name).unwrap();
             match col_def.data_type {
                 DataType::Int64 => {
-                    let local_idx = self.int_local_idx(&scan_result, col_idx);
+                    let local_idx = self.int_local_idx(scan_result, col_idx);
                     let vals = unsafe { scan_result.batch.read_int_column(local_idx) };
                     col_data.push(ColumnValues::Int64(vals));
                 }
                 DataType::Float64 => {
-                    let local_idx = self.float_local_idx(&scan_result, col_idx);
+                    let local_idx = self.float_local_idx(scan_result, col_idx);
                     let vals = unsafe { scan_result.batch.read_float_column(local_idx) };
                     col_data.push(ColumnValues::Float64(vals));
                 }
@@ -1660,7 +1710,7 @@ impl QueryExecutor {
                         .batch
                         .dictionaries
                         .get(col_idx)
-                        .and_then(|d| d.as_ref());
+                        .and_then(|d: &Option<crate::storage::dictionary::Dictionary>| d.as_ref());
                     let vals: Vec<String> = dict_codes
                         .iter()
                         .map(|&code| {

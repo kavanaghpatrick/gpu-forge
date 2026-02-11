@@ -39,7 +39,7 @@ Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by addi
   - _Requirements: FR-1, FR-9_
   - _Design: Component 3 (ScanCache), resolve_input Refactor_
 
-- [ ] 1.4 Add file stat validation to scan cache
+- [x] 1.4 Add file stat validation to scan cache
   - **Do**: In `ensure_scan_cached`, before returning a cache hit, stat the file to check `(size, mtime)`. If either differs from when the entry was cached, remove the stale entry and re-scan. Store `(file_size: u64, file_modified: SystemTime)` alongside each `ScanResult` in the cache -- either wrap in a `CachedScan { result: ScanResult, file_size: u64, file_modified: SystemTime }` struct or add the fields to `ScanResult`. Use `std::fs::metadata(&entry.path)` to get current stats.
   - **Files**: `gpu-query/src/gpu/executor.rs`
   - **Done when**: Cache returns miss when file size or mtime changes; re-scans automatically
