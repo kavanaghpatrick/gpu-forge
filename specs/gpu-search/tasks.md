@@ -21,7 +21,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1 through FR-24_
   - _Design: File Structure_
 
-- [ ] 1.2 Create Cargo.toml with all dependencies
+- [x] 1.2 Create Cargo.toml with all dependencies
   - **Do**: Write Cargo.toml with package metadata, all dependencies (objc2-metal 0.3 with feature flags, eframe 0.31, syntect 5, rayon, ignore, dirs, memchr, libc, serde/serde_json, block2, dispatch2, objc2, objc2-foundation), dev-dependencies (tempfile, criterion, proptest), and bench targets (search_throughput, io_latency).
   - **Files**: `gpu-search/Cargo.toml`
   - **Done when**: `cargo check` resolves all dependencies (may fail on missing src, that's ok)
