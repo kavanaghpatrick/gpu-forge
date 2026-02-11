@@ -68,7 +68,7 @@ Focus: Establish the shared data formats between Rust and MSL. Load data into GP
 
 Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (before persistent kernel). Validate correctness.
 
-- [ ] 2.1 Create AOT fused query Metal shader
+- [x] 2.1 Create AOT fused query Metal shader
   - **Do**: Create `shaders/fused_query.metal`. Implement `fused_query` kernel that: (1) reads `QueryParamsSlot` from buffer(0), (2) reads column data from buffer(1) via `ColumnMeta` from buffer(2), (3) evaluates up to 4 filter predicates (AND compound), (4) buckets passing rows into threadgroup-local `GroupAccumulator[64]` hash table, (5) performs simd reductions for COUNT/SUM/MIN/MAX/AVG, (6) merges threadgroup partials to global `OutputBuffer` via device atomics, (7) sets ready_flag. Use function constants for specialization: `FILTER_COUNT`, `AGG_COUNT`, `HAS_GROUP_BY`. Include `autonomous_types.h`. Include helper functions from `aggregate.metal` pattern: `simd_sum_int64`, `simd_min_int64`, `simd_max_int64`.
   - **Files**: `gpu-query/shaders/fused_query.metal`
   - **Done when**: Shader compiles via build.rs without errors
