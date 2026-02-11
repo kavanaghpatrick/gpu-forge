@@ -20,7 +20,7 @@ use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLComputeCommandEncoder, MTLComputePipelineState, MTLDataType, MTLDevice,
-    MTLFunctionConstantValues, MTLLibrary, MTLResourceOptions, MTLSize,
+    MTLFunctionConstantValues, MTLLibrary, MTLResourceOptions, MTLSharedEvent, MTLSize,
 };
 
 use super::jit::JitCompiler;
@@ -466,6 +466,11 @@ struct RedispatchSharedState {
     output_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
     /// Number of rows in the table (for threadgroup calculation).
     row_count: u32,
+    /// MTLSharedEvent for idle/wake signaling. Monotonically increasing signaled value
+    /// tracks state transitions: even values = idle, odd values = active/wake.
+    shared_event: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+    /// Monotonically increasing event counter for shared_event signaling.
+    event_counter: Arc<AtomicU64>,
 }
 
 // SAFETY: All fields are either Arc<Atomic*> (Send+Sync) or Retained<ProtocolObject<dyn MTL*>>
@@ -569,6 +574,9 @@ fn dispatch_slice(shared: Arc<RedispatchSharedState>) {
                 shared_for_handler
                     .state
                     .store(EngineState::Idle as u8, Ordering::Release);
+                // Signal shared event with even value to indicate idle transition
+                let val = shared_for_handler.event_counter.fetch_add(1, Ordering::AcqRel) + 1;
+                shared_for_handler.shared_event.setSignaledValue(val);
                 return;
             }
 
@@ -614,6 +622,7 @@ impl RedispatchChain {
     /// idle after 500ms.
     ///
     /// # Arguments
+    /// * `device` - Metal device for creating the shared event
     /// * `command_queue` - Metal command queue (should be dedicated/separate from other work)
     /// * `pso` - Compiled fused kernel pipeline state
     /// * `params_buffer` - Query params buffer (StorageModeShared, 512 bytes)
@@ -622,6 +631,7 @@ impl RedispatchChain {
     /// * `output_buffer` - Output buffer (StorageModeShared, 22560 bytes)
     /// * `row_count` - Number of rows in the table
     pub fn start(
+        device: &ProtocolObject<dyn MTLDevice>,
         command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
         params_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -635,6 +645,13 @@ impl RedispatchChain {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        // Create MTLSharedEvent for idle/wake signaling
+        let shared_event = device
+            .newSharedEvent()
+            .expect("Failed to create MTLSharedEvent");
+        // Initial signaled value = 1 (odd = active)
+        shared_event.setSignaledValue(1);
+
         let shared = Arc::new(RedispatchSharedState {
             state: Arc::new(AtomicU8::new(EngineState::Active as u8)),
             redispatch_count: Arc::new(AtomicU64::new(0)),
@@ -647,6 +664,8 @@ impl RedispatchChain {
             column_meta_buffer,
             output_buffer,
             row_count,
+            shared_event,
+            event_counter: Arc::new(AtomicU64::new(1)),
         });
 
         // Start the chain
@@ -690,7 +709,8 @@ impl RedispatchChain {
     }
 
     /// Wake the chain from idle state by re-starting dispatch.
-    /// No-op if already active or shutdown.
+    /// Signals the MTLSharedEvent with an odd value (active) and restarts
+    /// the dispatch chain. No-op if already active or shutdown.
     pub fn wake(&self) {
         let prev = self.shared.state.compare_exchange(
             EngineState::Idle as u8,
@@ -699,10 +719,19 @@ impl RedispatchChain {
             Ordering::Acquire,
         );
         if prev.is_ok() {
+            // Signal shared event with odd value to indicate wake/active transition
+            let val = self.shared.event_counter.fetch_add(1, Ordering::AcqRel) + 1;
+            self.shared.shared_event.setSignaledValue(val);
             // Record a query to prevent immediate re-idle
             self.record_query();
             dispatch_slice(self.shared.clone());
         }
+    }
+
+    /// Get the current signaled value of the MTLSharedEvent.
+    /// Even values indicate idle transitions, odd values indicate active/wake.
+    pub fn shared_event_value(&self) -> u64 {
+        self.shared.shared_event.signaledValue()
     }
 }
 
@@ -1011,6 +1040,7 @@ mod tests {
 
         // 5. Start the re-dispatch chain
         let chain = RedispatchChain::start(
+            &gpu.device,
             chain_queue,
             pso,
             params_buffer,
@@ -1084,5 +1114,200 @@ mod tests {
         // 11. Clean shutdown
         chain.shutdown();
         assert_eq!(chain.state(), EngineState::Shutdown);
+    }
+
+    #[test]
+    fn test_idle_wake() {
+        // Test: Start chain -> submit query -> idle timeout -> submit again -> wake -> correct result.
+        // Proves the full idle/wake cycle with MTLSharedEvent signaling.
+        //
+        // Note: The persistent chain continuously re-executes the kernel, so output buffer
+        // accumulates (device atomics add each dispatch). We verify:
+        // 1. One-shot correctness (before chain) -> exact COUNT=1000
+        // 2. Chain state transitions (Active -> Idle -> Active)
+        // 3. MTLSharedEvent signaling (odd=active, even=idle)
+        // 4. Chain restart after wake (re-dispatch count increases)
+        // 5. One-shot correctness (after chain) -> exact COUNT=1000
+        let gpu = GpuDevice::new();
+
+        // 1. Prepare test data: single INT64 column, 1000 rows
+        let schema = make_schema(&[("amount", DataType::Int64)]);
+        let batch = make_test_batch(&gpu.device, &schema, 1000);
+        let resident_table =
+            BinaryColumnarLoader::load_table(&gpu.device, "sales", &schema, &batch, None)
+                .expect("Failed to load test table");
+
+        // 2. Compile PSO for COUNT(*): 0 filters, 1 agg, no group_by
+        let mut cache = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+        let _pso_ref = cache
+            .get_or_compile(0, 1, false)
+            .expect("PSO compilation failed");
+
+        // 3. Verify correctness via one-shot dispatch BEFORE the chain
+        let params = {
+            let mut p = QueryParamsSlot::default();
+            p.sequence_id = 1;
+            p.filter_count = 0;
+            p.agg_count = 1;
+            p.aggs[0] = AggSpec {
+                agg_func: 0,    // COUNT
+                column_idx: 0,
+                column_type: 0, // INT64
+                _pad0: 0,
+            };
+            p.has_group_by = 0;
+            p.group_by_col = 0;
+            p.row_count = 1000;
+            p
+        };
+
+        let pso_ref = cache.get_or_compile(0, 1, false).unwrap();
+        let result_before = execute_fused_oneshot(
+            &gpu.device,
+            &gpu.command_queue,
+            pso_ref,
+            &params,
+            &resident_table,
+        )
+        .expect("One-shot dispatch before chain failed");
+        assert_eq!(
+            result_before.agg_results[0][0].value_int, 1000,
+            "COUNT(*) before chain should be 1000, got {}",
+            result_before.agg_results[0][0].value_int
+        );
+
+        // 4. Get a Retained PSO for the chain
+        let pso = cache.cache.remove(&(0, 1, false)).unwrap();
+
+        // 5. Create a separate command queue for the chain
+        let chain_queue = gpu
+            .device
+            .newCommandQueue()
+            .expect("Failed to create chain command queue");
+
+        // 6. Create buffers with a COUNT(*) query
+        let (params_buffer, output_buffer) =
+            make_redispatch_buffers(&gpu.device, &resident_table);
+
+        // 7. Start the re-dispatch chain
+        let chain = RedispatchChain::start(
+            &gpu.device,
+            chain_queue,
+            pso,
+            params_buffer.clone(),
+            resident_table.data_buffer.clone(),
+            resident_table.column_meta_buffer.clone(),
+            output_buffer.clone(),
+            resident_table.row_count as u32,
+        );
+
+        // Verify initial state: Active, shared event value = 1 (odd = active)
+        assert_eq!(chain.state(), EngineState::Active);
+        let initial_event_val = chain.shared_event_value();
+        assert_eq!(initial_event_val, 1, "Initial shared event value should be 1 (active)");
+
+        // 8. Keep chain alive briefly with a query, let it process
+        chain.record_query();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Verify chain is still active and kernel has been dispatching
+        assert_eq!(chain.state(), EngineState::Active);
+        assert!(chain.redispatch_count() > 0, "Chain should have dispatched at least once");
+
+        // 9. Let the chain go idle: stop recording queries and wait > 500ms
+        std::thread::sleep(std::time::Duration::from_millis(800));
+
+        // Verify chain is now Idle
+        assert_eq!(
+            chain.state(),
+            EngineState::Idle,
+            "Chain should be Idle after 800ms without queries"
+        );
+
+        // Verify shared event was signaled on idle (value increased, even = idle)
+        let idle_event_val = chain.shared_event_value();
+        assert!(
+            idle_event_val > initial_event_val,
+            "Shared event value should increase on idle: initial={}, idle={}",
+            initial_event_val, idle_event_val
+        );
+        assert_eq!(
+            idle_event_val % 2,
+            0,
+            "Idle event value should be even, got {}",
+            idle_event_val
+        );
+
+        let redispatch_before_wake = chain.redispatch_count();
+
+        // 10. Wake from idle
+        chain.wake();
+
+        // Verify shared event was signaled on wake (value increased, odd = active)
+        let wake_event_val = chain.shared_event_value();
+        assert!(
+            wake_event_val > idle_event_val,
+            "Shared event value should increase on wake: idle={}, wake={}",
+            idle_event_val, wake_event_val
+        );
+        assert_eq!(
+            wake_event_val % 2,
+            1,
+            "Wake event value should be odd, got {}",
+            wake_event_val
+        );
+
+        // Verify state is Active again
+        assert_eq!(
+            chain.state(),
+            EngineState::Active,
+            "Chain should be Active after wake"
+        );
+
+        // 11. Let the chain process for a bit after waking
+        chain.record_query();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Verify re-dispatch count increased (chain restarted successfully)
+        let redispatch_after_wake = chain.redispatch_count();
+        assert!(
+            redispatch_after_wake > redispatch_before_wake,
+            "Re-dispatch count should increase after wake: before={}, after={}",
+            redispatch_before_wake, redispatch_after_wake
+        );
+
+        // 12. Verify no GPU errors throughout the idle/wake cycle
+        assert_eq!(
+            chain.error_count(),
+            0,
+            "No GPU errors expected, got {}",
+            chain.error_count()
+        );
+
+        // 13. Clean shutdown
+        chain.shutdown();
+        assert_eq!(chain.state(), EngineState::Shutdown);
+
+        // Give in-flight command buffers a moment to drain
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // 14. Verify correctness via one-shot dispatch AFTER the chain
+        // This re-creates the PSO cache and does a fresh one-shot dispatch to prove
+        // the device/data are still in a good state after the idle/wake cycle.
+        let mut cache2 = FusedPsoCache::new(gpu.device.clone(), gpu.library.clone());
+        let pso_ref2 = cache2.get_or_compile(0, 1, false).expect("PSO compile after chain");
+        let result_after = execute_fused_oneshot(
+            &gpu.device,
+            &gpu.command_queue,
+            pso_ref2,
+            &params,
+            &resident_table,
+        )
+        .expect("One-shot dispatch after chain failed");
+        assert_eq!(
+            result_after.agg_results[0][0].value_int, 1000,
+            "COUNT(*) after idle/wake cycle should be 1000, got {}",
+            result_after.agg_results[0][0].value_int
+        );
     }
 }

@@ -177,7 +177,7 @@ Focus: Prove GPU autonomy. Eliminate per-query command buffer creation. This is 
   - _Requirements: FR-1_
   - _Design: Component 1_
 
-- [ ] 4.2 Implement MTLSharedEvent idle/wake
+- [x] 4.2 Implement MTLSharedEvent idle/wake
   - **Do**: Create MTLSharedEvent on the device. On idle: completion handler skips re-dispatch, sets state=Idle. On new query submission when idle: signal MTLSharedEvent, dispatch new slice, set state=Active. Add test: submit query -> idle timeout -> submit again -> wake from idle -> correct result.
   - **Files**: `gpu-query/src/gpu/autonomous/executor.rs`, `gpu-query/src/gpu/device.rs`
   - **Done when**: Idle/wake cycle works correctly
