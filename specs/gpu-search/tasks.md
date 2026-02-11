@@ -75,7 +75,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1, FR-4_
   - _Design: GPU Device Layer, types.rs_
 
-- [ ] 1.8 Port gpu/pipeline.rs -- PSO cache
+- [x] 1.8 Port gpu/pipeline.rs -- PSO cache
   - **Do**: Port gpu-query `pipeline.rs`. Load `shaders.metallib` from build output via `device.newLibraryWithURL()`. HashMap PSO cache: function name -> `MTLComputePipelineState`. Create PSOs for content_search, turbo_search, batch_search, path_filter kernels.
   - **Files**: `gpu-search/src/gpu/pipeline.rs`, update `gpu-search/src/gpu/mod.rs`
   - **Done when**: PSOs created for all 4 search kernels without error
