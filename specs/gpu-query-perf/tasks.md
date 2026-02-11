@@ -69,7 +69,7 @@ Focus: Eliminate the #1 bottleneck (double CSV scan in compound filters) by addi
 
 Focus: Eliminate per-query Metal device + PSO cache recreation by persisting the executor in TUI AppState.
 
-- [ ] 2.1 Create CatalogCache module
+- [x] 2.1 Create CatalogCache module
   - **Do**: Create new file `gpu-query/src/io/catalog_cache.rs` with `CatalogCache` struct as designed in TECH.md Section 4. Fields: `dir: PathBuf`, `entries: Vec<TableEntry>`, `fingerprints: HashMap<PathBuf, FileFingerprint>`, `dir_modified: Option<SystemTime>`. Methods: `new(dir)`, `get_or_refresh() -> io::Result<&[TableEntry]>`, `is_valid() -> io::Result<bool>`, `refresh() -> io::Result<()>`, `invalidate()`. Add `pub mod catalog_cache;` to `gpu-query/src/io/mod.rs`.
   - **Files**: `gpu-query/src/io/catalog_cache.rs` (create), `gpu-query/src/io/mod.rs` (modify)
   - **Done when**: CatalogCache struct compiles; `get_or_refresh` returns cached entries on unchanged dir
