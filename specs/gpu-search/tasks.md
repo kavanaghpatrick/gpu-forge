@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Project scaffold + core GPU engine + basic content search working end-to-end. Skip tests, accept hardcoded values. Validate the port works and search returns correct results.
 
-- [ ] 1.1 Create project directory structure
+- [x] 1.1 Create project directory structure
   - **Do**: Create `gpu_kernel/gpu-search/` with full directory layout: `src/{gpu,search,io,index,ui}/mod.rs`, `shaders/`, `tests/`, `benches/`. Create empty mod.rs in each module directory.
   - **Files**: `gpu-search/Cargo.toml`, `gpu-search/src/main.rs`, `gpu-search/src/lib.rs`, `gpu-search/src/gpu/mod.rs`, `gpu-search/src/search/mod.rs`, `gpu-search/src/io/mod.rs`, `gpu-search/src/index/mod.rs`, `gpu-search/src/ui/mod.rs`, `gpu-search/shaders/`, `gpu-search/tests/`, `gpu-search/benches/`
   - **Done when**: `ls -R gpu_kernel/gpu-search/src/` shows all module directories with mod.rs files
