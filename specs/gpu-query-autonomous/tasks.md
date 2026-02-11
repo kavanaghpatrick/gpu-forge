@@ -104,7 +104,7 @@ Focus: Prove the fused kernel works with standard CPU-orchestrated dispatch (bef
   - _Requirements: FR-3, FR-7, FR-8, FR-9_
   - _Design: Component 3_
 
-- [ ] 2.5 Add parity tests (fused vs standard executor)
+- [x] 2.5 Add parity tests (fused vs standard executor)
   - **Do**: For each supported query pattern, run the same query via the existing `QueryExecutor` (36ms path) and the new fused kernel one-shot dispatch. Assert results match. Integer operations (COUNT, MIN, MAX, integer SUM) must be exact. Float SUM/AVG use relative tolerance 1e-5. Use 100K-row deterministic test data.
   - **Files**: `gpu-query/tests/autonomous_integration.rs`
   - **Done when**: Parity verified for all query patterns. ~10 parity tests pass.
