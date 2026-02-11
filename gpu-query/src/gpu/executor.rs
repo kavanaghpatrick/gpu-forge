@@ -286,7 +286,6 @@ impl QueryExecutor {
         plan: &PhysicalPlan,
         catalog: &[TableEntry],
     ) -> Result<QueryResult, String> {
-        self.scan_cache.clear();
         match plan {
             PhysicalPlan::GpuAggregate {
                 functions,
@@ -479,6 +478,11 @@ impl QueryExecutor {
                 .modified()
                 .map_err(|e| format!("Failed to get mtime for '{}': {}", entry.path.display(), e))?;
             let result = self.execute_scan_uncached(table, catalog)?;
+            // FIFO eviction: remove an entry when cache is at capacity
+            if self.scan_cache.len() >= 8 {
+                let first_key = self.scan_cache.keys().next().unwrap().clone();
+                self.scan_cache.remove(&first_key);
+            }
             self.scan_cache.insert(
                 key.clone(),
                 CachedScan {

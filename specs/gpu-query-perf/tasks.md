@@ -117,7 +117,7 @@ Focus: Eliminate per-query Metal device + PSO cache recreation by persisting the
 
 Focus: Remove `scan_cache.clear()` from execute() to enable cross-query scan result caching. With file stat validation from 1.4, stale entries are automatically detected.
 
-- [ ] 3.1 Enable cross-query scan cache persistence
+- [x] 3.1 Enable cross-query scan cache persistence
   - **Do**: Remove `self.scan_cache.clear()` from the top of `QueryExecutor::execute()` (added in task 1.5). The file stat validation from task 1.4 already handles invalidation. Add FIFO eviction: if `scan_cache.len() >= 8`, remove the first key from iteration order before inserting new entry. This enables warm-query performance where repeat queries on the same table skip the entire scan pipeline.
   - **Files**: `gpu-query/src/gpu/executor.rs`
   - **Done when**: Second query on same unchanged file hits scan cache; eviction works at 8 entries
