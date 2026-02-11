@@ -93,7 +93,7 @@ Focus: Project scaffold + core GPU engine + basic content search working end-to-
   - _Requirements: FR-1_
   - _Design: Kernel Architecture_
 
-- [ ] 1.10 Port io/mmap.rs -- zero-copy mmap buffers
+- [x] 1.10 Port io/mmap.rs -- zero-copy mmap buffers
   - **Do**: Port `rust-experiment/src/gpu_os/mmap_buffer.rs` (566 lines). Change `Device` -> `ProtocolObject<dyn MTLDevice>`, `device.new_buffer_with_bytes_no_copy()` -> `device.newBufferWithBytesNoCopy_length_options_deallocator()`. Preserve mmap logic (libc::mmap, munmap). Test: mmap a file, create Metal buffer, read contents back.
   - **Files**: `gpu-search/src/io/mmap.rs`, update `gpu-search/src/io/mod.rs`
   - **Done when**: File mmapped into Metal buffer, contents readable
