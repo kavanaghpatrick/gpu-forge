@@ -48,7 +48,7 @@ Focus: Establish the shared data formats between Rust and MSL. Load data into GP
   - _Requirements: FR-2_
   - _Design: Component 2_
 
-- [ ] 1.5 Implement binary columnar data loader
+- [x] 1.5 Implement binary columnar data loader
   - **Do**: Create `src/gpu/autonomous/loader.rs`. Implement `BinaryColumnarLoader` with method `load_table(device, table_name, schema, batch, progress_tx) -> Result<ResidentTable, String>`. Convert `ColumnarBatch` columns to contiguous Metal buffers: INT64 as `i64[]`, FLOAT64 as `f32[]` (downcast), VARCHAR as `u32[]` (dictionary codes). Allocate page-aligned (16KB) Metal buffers with StorageModeShared. Build `ColumnMeta` array. Store result in `ResidentTable { data_buffer, column_metas, column_meta_buffer, row_count, schema, dictionaries }`. Report progress via channel.
   - **Files**: `gpu-query/src/gpu/autonomous/loader.rs`
   - **Done when**: Loads 1K-row test data into Metal buffers, round-trips correctly. ~14 tests.
