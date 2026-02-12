@@ -501,13 +501,13 @@ Benchmarks, regression detection, CI pipeline, documentation.
 
 ## Phase 5: PR Lifecycle
 
-- [ ] 5.1 Create PR and verify CI
+- [x] 5.1 Create PR and verify CI
   - **Do**: Push branch, create PR with gh CLI. Description: GPU-accelerated filesystem search tool, ~8K line port from rust-experiment, egui UI, 55-80 GB/s throughput.
   - **Verify**: `gh pr checks --watch` all green
   - **Done when**: PR ready for review, CI passing
   - **Commit**: N/A (PR creation)
 
-- [ ] 5.2 Verification Final (VF)
+- [x] 5.2 Verification Final (VF)
   - **Do**: Verify all acceptance criteria met: search-as-you-type <5ms cached, 55-80 GB/s throughput, GPU-CPU consistency, .gitignore filtering, keyboard navigation, syntax highlighting, dark theme.
   - **Done when**: All NFRs and FRs verified
   - **Verify**: Run full test suite + benchmarks + manual demo
