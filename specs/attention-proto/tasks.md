@@ -75,7 +75,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-18, AC-8.5_
   - _Design: Shared Infrastructure_
 
-- [ ] 1.8 Define AttentionParams #[repr(C)] type
+- [x] 1.8 Define AttentionParams #[repr(C)] type
   - **Do**: Create types.rs with AttentionParams struct matching shaders/types.h, add offset_of! layout assertions, include all fields for 8 prototypes
   - **Files**: `attention-proto/src/types.rs`, `attention-proto/shaders/types.h`
   - **Done when**: Layout assertions pass, 64-byte struct with explicit padding
