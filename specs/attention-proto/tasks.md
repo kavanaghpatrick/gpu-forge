@@ -487,7 +487,7 @@ Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
   - **Commit**: `test(all): verify no Metal memory leaks`
   - _Requirements: NFR-11_
 
-- [ ] 6.5 Synthesize findings into architecture recommendations
+- [x] 6.5 Synthesize findings into architecture recommendations
   - **Do**: Write synthesis document analyzing all findings, identifying: (1) optimal tile sizes per D, (2) recommended dispatch strategy (constants vs stitching), (3) PagedAttention viability, (4) linear attention crossover point, (5) variant overhead summary, (6) ecosystem tool recommendations (CubeCL, Burn)
   - **Files**: `attention-proto/SYNTHESIS.md`
   - **Done when**: Document complete, addresses all 8 prototypes
