@@ -104,7 +104,7 @@ Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention k
   - _Requirements: FR-15, AC-1.3_
   - _Design: Proto 1_
 
-- [ ] 2.2 Write basic flash_attention.metal kernel
+- [x] 2.2 Write basic flash_attention.metal kernel
   - **Do**: Implement kernel with function constants HEAD_DIM, BLOCK_R, BLOCK_C. Threadgroup memory for Q_tile, K_chunk. Online softmax with running max/sum. simdgroup_matrix for matmul. Start with simplest tile (16x64, D=64)
   - **Files**: `attention-proto/shaders/flash_attention.metal`
   - **Done when**: Kernel compiles with xcrun metal -std=metal3.1
