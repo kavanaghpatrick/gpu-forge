@@ -367,7 +367,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
 
 Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
 
-- [ ] 3.1 GPU-CPU dual verification tests
+- [x] 3.1 GPU-CPU dual verification tests
   - **Do**: Test every GPU search against CPU reference (memchr/manual). Matrix: literal single/multiple/overlapping, case insensitive, Unicode UTF-8 multibyte, binary NUL detection, boundary crossing (match spans buffer boundary), empty files, large files (>100MB).
   - **Files**: `gpu-search/tests/test_gpu_cpu_consistency.rs`
   - **Done when**: All GPU results match CPU reference across full test matrix
