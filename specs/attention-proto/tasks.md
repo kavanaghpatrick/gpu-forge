@@ -356,7 +356,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: AC-5.1, AC-5.2, NFR-17_
   - _Design: Proto 7 Host Code_
 
-- [ ] 4.20 Implement variant overhead benchmark
+- [x] 4.20 Implement variant overhead benchmark
   - **Do**: Measure per-variant microseconds: standalone (RoPE only, ALiBi only, GQA only) and fused into Proto 1 base attention. N=2048, D=128, heads=32. GQA group sizes 1/2/4/8.
   - **Files**: `attention-proto/benches/variant_overhead.rs`
   - **Done when**: Benchmark reports µs overhead per variant, % of base attention time
