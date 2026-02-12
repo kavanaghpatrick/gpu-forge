@@ -39,7 +39,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14, AC-8.1_
   - _Design: Shared Infrastructure_
 
-- [ ] 1.4 Implement PsoCache with function constants
+- [x] 1.4 Implement PsoCache with function constants
   - **Do**: Adapt gpu-query/src/gpu/pipeline.rs, serialize function constant values to PsoKey, implement get_or_compile, add binary archive support (save/load)
   - **Files**: `attention-proto/src/pipeline.rs`
   - **Done when**: PsoCache::get_or_compile returns cached or fresh-compiled PSO

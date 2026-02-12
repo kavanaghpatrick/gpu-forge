@@ -12,7 +12,7 @@
 
 // Shared infrastructure (uncomment as modules are implemented)
 pub mod device;
-// pub mod pipeline;
+pub mod pipeline;
 // pub mod encode;
 // pub mod timing;
 // pub mod types;
