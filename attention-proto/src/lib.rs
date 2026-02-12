@@ -30,5 +30,5 @@ pub mod proto7_variants;
 #[cfg(feature = "cubecl")]
 pub mod proto5_cubecl;
 
-// #[cfg(feature = "burn-ext")]
-// pub mod proto8_burn;
+#[cfg(feature = "burn-ext")]
+pub mod proto8_burn;

@@ -416,7 +416,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
 
 ### Proto 8: Burn Extension Trait
 
-- [ ] 5.5 Define AttentionBackend trait (feature-gated)
+- [x] 5.5 Define AttentionBackend trait (feature-gated)
   - **Do**: Behind `burn-ext` feature, define `trait AttentionBackend: Backend` with flash_attention method. Use newtype wrapper `MetalAttentionBackend(CubeCL<MetalRuntime>)` to avoid orphan rule.
   - **Files**: `attention-proto/src/proto8_burn.rs` (feature-gated)
   - **Done when**: Trait compiles, newtype pattern compiles

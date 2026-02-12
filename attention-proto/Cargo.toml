@@ -8,7 +8,7 @@ description = "8 GPU kernel prototypes for trait Attention<Q,K,V> on Apple Silic
 default = []
 gpu-counters = []
 cubecl = ["dep:cubecl", "dep:cubecl-cpp"]
-burn-ext = []
+burn-ext = ["dep:burn"]
 
 [dependencies]
 objc2 = "0.6"
@@ -22,6 +22,9 @@ rand = "0.8"
 # CubeCL ecosystem (optional, feature-gated)
 cubecl = { version = "0.9", features = ["wgpu", "wgpu-msl"], optional = true }
 cubecl-cpp = { version = "0.9", features = ["metal"], optional = true }
+
+# Burn deep learning framework (optional, feature-gated)
+burn = { version = "0.20", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
