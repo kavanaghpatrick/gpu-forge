@@ -434,7 +434,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
   - _Requirements: AC-7.3_
   - _Design: Proto 8_
 
-- [ ] 5.7 Implement Burn extension trait test and benchmark
+- [x] 5.7 Implement Burn extension trait test and benchmark
   - **Do**: Test: verify trait method dispatches correctly. Benchmark: measure dispatch overhead (Burn API → Metal kernel) vs direct Proto 1.
   - **Files**: `attention-proto/tests/integration.rs`, `attention-proto/benches/burn_extension.rs` (feature-gated)
   - **Done when**: Test passes, benchmark reports overhead 1-5 µs

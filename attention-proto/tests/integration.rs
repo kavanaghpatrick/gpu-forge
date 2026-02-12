@@ -306,6 +306,97 @@ mod proto6 {
     }
 }
 
+#[cfg(feature = "burn-ext")]
+mod proto8 {
+    use super::*;
+
+    use attention_proto::proto8_burn::metal_flash_attention_bridge;
+    use burn::backend::NdArray;
+    use burn::tensor::{Tensor, TensorData};
+
+    /// Correctness test: Burn bridge dispatches Proto 1 flash attention correctly.
+    ///
+    /// Creates Burn tensors via NdArray backend, calls the bridge function, and
+    /// verifies the output matches the direct Proto 1 GPU result and the CPU FP64
+    /// reference within tolerance.
+    ///
+    /// N=64, D=64 (small for quick test execution).
+    #[test]
+    fn test_trait_dispatches() {
+        let seq_len = 64;
+        let head_dim = 64;
+        let n_elements = seq_len * head_dim;
+
+        // Generate deterministic random data
+        let q_raw = random_f32(n_elements, 42);
+        let k_raw = random_f32(n_elements, 137);
+        let v_raw = random_f32(n_elements, 999);
+
+        // Create Burn tensors [1, seq_len, head_dim] (batch=1 as required by bridge)
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let q_tensor: Tensor<NdArray, 3> =
+            Tensor::from_data(TensorData::new(q_raw.clone(), [1, seq_len, head_dim]), &device);
+        let k_tensor: Tensor<NdArray, 3> =
+            Tensor::from_data(TensorData::new(k_raw.clone(), [1, seq_len, head_dim]), &device);
+        let v_tensor: Tensor<NdArray, 3> =
+            Tensor::from_data(TensorData::new(v_raw.clone(), [1, seq_len, head_dim]), &device);
+
+        // Call the bridge function (Burn tensor -> Metal GPU -> Burn tensor)
+        let output_tensor = metal_flash_attention_bridge::<NdArray>(
+            q_tensor, k_tensor, v_tensor, None,
+        );
+
+        // Extract output data
+        let output_dims = output_tensor.dims();
+        assert_eq!(output_dims, [1, seq_len, head_dim], "Output shape mismatch");
+
+        let output_data = output_tensor.into_data();
+        let bridge_result: Vec<f32> = output_data
+            .to_vec::<f32>()
+            .expect("Failed to extract f32 from bridge output");
+
+        assert_eq!(bridge_result.len(), n_elements);
+
+        // Verify no NaN or Inf
+        for (i, &val) in bridge_result.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "Bridge output[{i}] is not finite: {val}"
+            );
+        }
+
+        // Compare bridge output vs direct Proto 1 GPU result
+        let gpu = attention_proto::device::GpuDevice::shared();
+        let direct_result = run_flash_attention(gpu, &q_raw, &k_raw, &v_raw, seq_len, head_dim);
+
+        // Bridge and direct should produce identical results (same kernel, same data)
+        assert_allclose(
+            &bridge_result,
+            &direct_result,
+            1e-6,
+            1e-6,
+            "bridge vs direct Proto 1 N=64 D=64",
+        );
+
+        // Also compare vs CPU FP64 reference for absolute correctness
+        // Wider tolerance at N=64: FP32 tiled online softmax diverges more from
+        // FP64 naive softmax at small sequence lengths due to fewer averaging terms
+        let cpu_result = cpu_attention_f64(&q_raw, &k_raw, &v_raw, seq_len, head_dim);
+        assert_allclose(
+            &bridge_result,
+            &cpu_result,
+            2e-2,
+            5e-2,
+            "bridge vs CPU FP64 N=64 D=64",
+        );
+
+        eprintln!(
+            "[Proto 8] Bridge test passed: N={seq_len} D={head_dim}, \
+             output matches direct Proto 1 and CPU reference"
+        );
+    }
+}
+
 mod proto7 {
     use super::*;
 

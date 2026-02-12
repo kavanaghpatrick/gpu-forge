@@ -8,7 +8,7 @@ description = "8 GPU kernel prototypes for trait Attention<Q,K,V> on Apple Silic
 default = []
 gpu-counters = []
 cubecl = ["dep:cubecl", "dep:cubecl-cpp"]
-burn-ext = ["dep:burn"]
+burn-ext = ["dep:burn", "burn/ndarray"]
 
 [dependencies]
 objc2 = "0.6"
