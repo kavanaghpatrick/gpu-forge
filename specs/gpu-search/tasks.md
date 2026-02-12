@@ -259,7 +259,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-9, FR-18_
   - _Design: Search Engine, ranking.rs, channel.rs_
 
-- [ ] 2.12 Implement ui/app.rs -- egui application
+- [x] 2.12 Implement ui/app.rs -- egui application
   - **Do**: GpuSearchApp struct implementing eframe::App. State: search_input, file_matches, content_matches, selected_index, search_tx/result_rx channels, debounce_timer. `eframe::run_native()` with window config: 720px wide, dynamic height, centered, decorated=false for floating panel.
   - **Files**: `gpu-search/src/ui/app.rs`, update `gpu-search/src/ui/mod.rs`, update `gpu-search/src/main.rs`
   - **Done when**: Binary launches and shows empty search window
