@@ -219,7 +219,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-6, AC-3.1_
   - _Design: Proto 3 MSL Design (Phase 1)_
 
-- [ ] 4.5 Implement paged_reduce.metal (phase 2 kernel)
+- [x] 4.5 Implement paged_reduce.metal (phase 2 kernel)
   - **Do**: Kernel combines partial outputs from all partitions using log-sum-exp reduction trick, produces final O
   - **Files**: `attention-proto/shaders/paged_reduce.metal`
   - **Done when**: Phase 2 kernel compiles
