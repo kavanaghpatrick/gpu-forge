@@ -27,8 +27,8 @@ pub mod proto6_fla;
 pub mod proto7_variants;
 
 // Feature-gated prototype modules
-// #[cfg(feature = "cubecl")]
-// pub mod proto5_cubecl;
+#[cfg(feature = "cubecl")]
+pub mod proto5_cubecl;
 
 // #[cfg(feature = "burn-ext")]
 // pub mod proto8_burn;

@@ -379,7 +379,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
 
 ### Proto 5: CubeCL MSL Quality
 
-- [ ] 5.1 Implement CubeCL matmul kernel (feature-gated)
+- [x] 5.1 Implement CubeCL matmul kernel (feature-gated)
   - **Do**: Behind `cubecl` feature, write simplified attention matmul in CubeCL #[cube] syntax, compile via Metal backend, extract generated MSL source
   - **Files**: `attention-proto/src/proto5_cubecl.rs` (feature-gated)
   - **Done when**: CubeCL kernel compiles, MSL source extracted
