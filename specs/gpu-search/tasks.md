@@ -322,7 +322,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-14, FR-20, FR-21_
   - _Design: UI, status_bar.rs, filters.rs_
 
-- [ ] 2.19 Wire GPU engine -> orchestrator -> UI
+- [x] 2.19 Wire GPU engine -> orchestrator -> UI
   - **Do**: Connect subsystems: GpuSearchApp creates SearchOrchestrator with GPU device. Orchestrator spawns background thread with own MTLCommandQueue. UI sends SearchRequest via crossbeam channel. Orchestrator sends SearchUpdate back. UI polls with try_recv in update() loop. Add `crossbeam-channel = "0.5"` to Cargo.toml.
   - **Files**: `gpu-search/src/main.rs`, `gpu-search/src/ui/app.rs`, `gpu-search/Cargo.toml`
   - **Done when**: Type query, see GPU-powered results in UI
@@ -340,7 +340,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-17_
   - _Design: UI, actions.rs_
 
-- [ ] 2.21 Implement search cancellation
+- [x] 2.21 Implement search cancellation
   - **Do**: AtomicBool cancellation flag per search. GPU kernel checks flag between chunks. New keystroke sets flag and starts fresh search. Track generation ID to discard stale results.
   - **Files**: `gpu-search/src/search/cancel.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: Rapid sequential searches, only latest results returned
