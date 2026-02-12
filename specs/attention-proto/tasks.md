@@ -495,7 +495,7 @@ Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
   - **Commit**: `docs(synthesis): add architecture recommendations from prototype findings`
   - _Requirements: Success Metrics (stretch goal: design-breaking constraint)_
 
-- [ ] 6.6 Ingest findings into GPU Forge KB
+- [x] 6.6 Ingest findings into GPU Forge KB
   - **Do**: Run kb add for each finding in findings.jsonl, verify KB count increases from 1,124 to 1,164+ (assuming 40 findings)
   - **Files**: findings.jsonl → GPU Forge KB
   - **Done when**: All findings ingested, KB query returns new attention-proto findings
