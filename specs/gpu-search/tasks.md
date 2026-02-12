@@ -357,7 +357,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - **Commit**: `feat(gpu-search): implement comprehensive error handling`
   - _Design: Error Handling_
 
-- [ ] 2.23 Feature Complete Checkpoint
+- [x] 2.23 Feature Complete Checkpoint
   - **Do**: Full app working: floating panel, search-as-you-type, GPU content search, filename search, syntax highlighting, keyboard navigation, .gitignore filtering, status bar.
   - **Done when**: Feature can be demonstrated end-to-end
   - **Verify**: Manual test of full workflow: launch -> type query -> navigate results -> open file -> dismiss
