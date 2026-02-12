@@ -182,7 +182,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
 
 ### Proto 2: Function Stitching
 
-- [ ] 4.1 Implement flash_attention_stitched.metal
+- [x] 4.1 Implement flash_attention_stitched.metal
   - **Do**: Create variant of Proto 1 kernel with function constant STITCH_MODE (0=monolithic, 1=inline, 2=function_table). Factor score compute, softmax, accumulation into separate functions with different linkage.
   - **Files**: `attention-proto/shaders/flash_attention_stitched.metal`
   - **Done when**: Kernel compiles for all 3 STITCH_MODE values
