@@ -241,7 +241,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-12_
   - _Design: Search Engine, ignore.rs_
 
-- [ ] 2.10 Implement binary file detection
+- [x] 2.10 Implement binary file detection
   - **Do**: NUL byte heuristic: read first 8KB, skip if NUL found. Skip known binary extensions (.exe, .o, .dylib, .metallib, images, audio, video). Configurable `include_binary` flag.
   - **Files**: `gpu-search/src/search/binary.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: Binary files skipped, text files searched
