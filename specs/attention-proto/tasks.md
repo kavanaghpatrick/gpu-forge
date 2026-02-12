@@ -397,7 +397,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
   - _Requirements: AC-6.2_
   - _Design: Proto 5 Analysis_
 
-- [ ] 5.3 Implement CubeCL comparison benchmark
+- [x] 5.3 Implement CubeCL comparison benchmark
   - **Do**: Side-by-side benchmark: CubeCL-generated kernel vs Proto 1 hand-written. Same N/D/tile. Report TFLOPS ratio.
   - **Files**: `attention-proto/benches/cubecl_comparison.rs` (feature-gated)
   - **Done when**: Benchmark runs, reports TFLOPS ratio (expected 30-60% slower for CubeCL)
