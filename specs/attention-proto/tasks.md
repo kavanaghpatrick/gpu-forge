@@ -200,7 +200,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: AC-2.1_
   - _Design: Proto 2_
 
-- [ ] 4.3 Generate KB findings for Proto 2
+- [x] 4.3 Generate KB findings for Proto 2
   - **Do**: Emit 3+ findings: inline overhead (expected <1%), function_table overhead (expected 5-15%), break-even point, recommendation for trait dispatch
   - **Files**: Update findings.jsonl
   - **Done when**: At least 3 findings emitted
