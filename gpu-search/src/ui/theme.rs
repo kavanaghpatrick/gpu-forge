@@ -66,8 +66,10 @@ const LINK_BLUE: Color32 = Color32::from_rgb(0x7A, 0xA2, 0xF7);
 /// Call this once during app setup (e.g., in `eframe::App::setup` or at the
 /// start of the first `update` frame).
 pub fn apply_theme(ctx: &egui::Context) {
-    let mut style = Style::default();
-    style.visuals = tokyo_night_visuals();
+    let style = Style {
+        visuals: tokyo_night_visuals(),
+        ..Default::default()
+    };
     ctx.set_style(style);
 }
 

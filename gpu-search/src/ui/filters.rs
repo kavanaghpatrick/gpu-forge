@@ -52,17 +52,10 @@ impl SearchFilter {
 ///
 /// Renders dismissible pills and provides methods to apply filters
 /// to a SearchRequest before GPU dispatch.
+#[derive(Default)]
 pub struct FilterBar {
     /// Currently active filters.
     pub filters: Vec<SearchFilter>,
-}
-
-impl Default for FilterBar {
-    fn default() -> Self {
-        Self {
-            filters: Vec::new(),
-        }
-    }
 }
 
 impl FilterBar {

@@ -122,7 +122,7 @@ impl GitignoreFilter {
     /// Recursively collect .gitignore files from subdirectories.
     fn collect_nested_gitignores(
         dir: &Path,
-        root: &Path,
+        _root: &Path,
         builder: &mut GitignoreBuilder,
     ) {
         let entries = match std::fs::read_dir(dir) {
@@ -148,7 +148,7 @@ impl GitignoreFilter {
                 }
 
                 // Recurse
-                Self::collect_nested_gitignores(&path, root, builder);
+                Self::collect_nested_gitignores(&path, _root, builder);
             }
         }
     }

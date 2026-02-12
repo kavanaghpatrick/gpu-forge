@@ -208,16 +208,6 @@ impl Default for FilesystemScanner {
 }
 
 // ============================================================================
-// Helper: extract path string from GpuPathEntry
-// ============================================================================
-
-/// Extract the path string from a GpuPathEntry.
-fn entry_path_str(entry: &GpuPathEntry) -> &str {
-    let len = entry.path_len as usize;
-    std::str::from_utf8(&entry.path[..len]).unwrap_or("")
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
@@ -227,6 +217,12 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    /// Extract the path string from a GpuPathEntry (test helper).
+    fn entry_path_str(entry: &GpuPathEntry) -> &str {
+        let len = entry.path_len as usize;
+        std::str::from_utf8(&entry.path[..len]).unwrap_or("")
+    }
 
     /// Create a test directory with known structure.
     fn make_test_dir() -> TempDir {

@@ -158,6 +158,7 @@ impl IndexHeader {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_bytes(&self) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
         buf[0..4].copy_from_slice(&self.magic.to_le_bytes());

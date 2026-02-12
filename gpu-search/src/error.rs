@@ -140,10 +140,7 @@ impl GpuSearchError {
 
     /// Whether this error should be logged (vs silently handled).
     pub fn should_log(&self) -> bool {
-        match self {
-            GpuSearchError::SearchCancelled => false,
-            _ => true,
-        }
+        !matches!(self, GpuSearchError::SearchCancelled)
     }
 
     /// Whether this error is fatal (no recovery possible).

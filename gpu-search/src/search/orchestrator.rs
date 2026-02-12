@@ -289,6 +289,7 @@ fn walk_directory(root: &Path) -> Vec<PathBuf> {
 ///
 /// Returns `(line_number, line_content, context_before, context_after, match_col_in_line)`.
 /// Returns `None` if the file cannot be read or offset is out of bounds.
+#[allow(clippy::type_complexity)]
 fn resolve_match(
     path: &Path,
     byte_offset: usize,

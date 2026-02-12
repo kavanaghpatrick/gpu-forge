@@ -80,7 +80,7 @@ fn is_word_boundary_match(text: &str, start: usize, len: usize) -> bool {
 // ============================================================================
 
 /// Rank filename matches by path length (shorter first), then alphabetically.
-pub fn rank_file_matches(matches: &mut Vec<FileMatch>) {
+pub fn rank_file_matches(matches: &mut [FileMatch]) {
     matches.sort_by(|a, b| {
         let len_a = a.path.to_string_lossy().len();
         let len_b = b.path.to_string_lossy().len();
@@ -92,7 +92,7 @@ pub fn rank_file_matches(matches: &mut Vec<FileMatch>) {
 ///
 /// Uses the match_range and line_content to determine if the match is on a word
 /// boundary. Ties broken by path depth (shallower = better).
-pub fn rank_content_matches(matches: &mut Vec<ContentMatch>) {
+pub fn rank_content_matches(matches: &mut [ContentMatch]) {
     matches.sort_by(|a, b| {
         let a_exact = is_word_boundary_match(
             &a.line_content,

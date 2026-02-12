@@ -186,7 +186,7 @@ impl GpuBatchLoader {
             .queue
             .device()
             .newBufferWithLength_options(total_bytes as usize, MTLResourceOptions::StorageModeShared)
-            .ok_or_else(|| "Failed to allocate mega-buffer")
+            .ok_or("Failed to allocate mega-buffer")
             .ok()?;
 
         // Phase 3: Create command buffers in batches of BATCH_SIZE and queue all loads
@@ -242,7 +242,7 @@ impl GpuBatchLoader {
             self.queue
                 .device()
                 .newBufferWithBytes_length_options(desc_ptr, desc_bytes, MTLResourceOptions::StorageModeShared)
-                .ok_or_else(|| "Failed to allocate descriptors buffer")
+                .ok_or("Failed to allocate descriptors buffer")
                 .ok()?
         };
 

@@ -28,21 +28,13 @@ const SELECTED_BG_ALPHA: u8 = 40;
 ///
 /// Manages selection state and provides virtual-scrolled rendering of
 /// file matches and content matches with query highlighting.
+#[derive(Default)]
 pub struct ResultsList {
     /// Index of the currently selected item in the combined list
     /// (file matches first, then content matches).
     pub selected_index: usize,
     /// When true, the scroll area will auto-scroll to bring the selected item into view.
     pub scroll_to_selected: bool,
-}
-
-impl Default for ResultsList {
-    fn default() -> Self {
-        Self {
-            selected_index: 0,
-            scroll_to_selected: false,
-        }
-    }
 }
 
 impl ResultsList {
@@ -416,55 +408,51 @@ fn render_highlighted_text(
 
     // Find all case-insensitive matches
     let mut search_from = 0;
-    loop {
-        if let Some(start) = text_lower[search_from..].find(&query_lower) {
-            let abs_start = search_from + start;
-            let abs_end = abs_start + query.len();
+    while let Some(start) = text_lower[search_from..].find(&query_lower) {
+        let abs_start = search_from + start;
+        let abs_end = abs_start + query.len();
 
-            // Render text before match in normal color
-            if abs_start > last_end {
-                let before = &text[last_end..abs_start];
-                painter.text(
-                    pos + Vec2::new(x_offset, 0.0),
-                    egui::Align2::LEFT_TOP,
-                    before,
-                    font_id.clone(),
-                    normal_color,
-                );
-                x_offset += before.len() as f32 * char_width;
-            }
-
-            // Render match range with highlight background + accent text
-            let matched = &text[abs_start..abs_end];
-            let match_width = matched.len() as f32 * char_width;
-            let match_rect = egui::Rect::from_min_size(
-                pos + Vec2::new(x_offset, -1.0),
-                Vec2::new(match_width, font_size + 2.0),
-            );
-            painter.rect_filled(
-                match_rect,
-                2.0,
-                Color32::from_rgba_premultiplied(
-                    highlight_color.r(),
-                    highlight_color.g(),
-                    highlight_color.b(),
-                    50,
-                ),
-            );
+        // Render text before match in normal color
+        if abs_start > last_end {
+            let before = &text[last_end..abs_start];
             painter.text(
                 pos + Vec2::new(x_offset, 0.0),
                 egui::Align2::LEFT_TOP,
-                matched,
+                before,
                 font_id.clone(),
-                highlight_color,
+                normal_color,
             );
-            x_offset += match_width;
-
-            last_end = abs_end;
-            search_from = abs_end;
-        } else {
-            break;
+            x_offset += before.len() as f32 * char_width;
         }
+
+        // Render match range with highlight background + accent text
+        let matched = &text[abs_start..abs_end];
+        let match_width = matched.len() as f32 * char_width;
+        let match_rect = egui::Rect::from_min_size(
+            pos + Vec2::new(x_offset, -1.0),
+            Vec2::new(match_width, font_size + 2.0),
+        );
+        painter.rect_filled(
+            match_rect,
+            2.0,
+            Color32::from_rgba_premultiplied(
+                highlight_color.r(),
+                highlight_color.g(),
+                highlight_color.b(),
+                50,
+            ),
+        );
+        painter.text(
+            pos + Vec2::new(x_offset, 0.0),
+            egui::Align2::LEFT_TOP,
+            matched,
+            font_id.clone(),
+            highlight_color,
+        );
+        x_offset += match_width;
+
+        last_end = abs_end;
+        search_from = abs_end;
     }
 
     // Render remaining text after last match
