@@ -381,8 +381,8 @@ mod tests {
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
 
-        // Compile a PSO for the _stub kernel (exists in our stub metallib)
-        let key = PsoKey::simple("_stub");
+        // Compile a PSO for apply_rope kernel (exists in shaders.metallib)
+        let key = PsoKey::simple("apply_rope");
         let pso = cache.get_or_compile(&key);
 
         // Verify we got a valid PSO
@@ -395,7 +395,7 @@ mod tests {
 
         // Different key should compile a new PSO
         // (same function, but distinct key — tests cache discrimination)
-        let key2 = PsoKey::simple("_stub");
+        let key2 = PsoKey::simple("apply_rope");
         let _pso3 = cache.get_or_compile(&key2);
         // Same key content => still 1 entry
         assert_eq!(
@@ -457,7 +457,7 @@ mod tests {
         let gpu = GpuDevice::shared();
         let mut cache = PsoCache::new(gpu.library.clone());
 
-        let key = PsoKey::simple("_stub");
+        let key = PsoKey::simple("apply_rope");
         let _ = cache.get_or_compile(&key);
         assert_eq!(cache.len(), 1);
 

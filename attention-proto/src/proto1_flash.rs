@@ -60,7 +60,8 @@ pub fn run_flash_attention(
     let pso_key = PsoKey::simple("flash_attention")
         .with_uint(0, head_dim as u32)
         .with_uint(1, block_r)
-        .with_uint(2, block_c);
+        .with_uint(2, block_c)
+        .with_bool(4, false); // ALIBI_ENABLED = false for standard flash attention
 
     let mut cache = PsoCache::new(device.library.clone());
     let pso = cache.get_or_compile(&pso_key);

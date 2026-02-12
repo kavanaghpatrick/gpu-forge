@@ -455,7 +455,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
 
 Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
 
-- [ ] 6.1 Run full correctness test suite
+- [x] 6.1 Run full correctness test suite
   - **Do**: Run all integration tests with Metal Shader Validation enabled, serial execution (--test-threads=1)
   - **Files**: All tests
   - **Done when**: All tests pass

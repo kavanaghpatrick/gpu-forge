@@ -252,9 +252,9 @@ mod tests {
     fn test_gpu_warmup() {
         let gpu = GpuDevice::shared();
 
-        // Compile the _stub kernel from the stub metallib
+        // Compile the apply_rope kernel (exists in shaders.metallib)
         let mut cache = PsoCache::new(gpu.library.clone());
-        let key = PsoKey::simple("_stub");
+        let key = PsoKey::simple("apply_rope");
         let pso = cache.get_or_compile(&key);
 
         let grid_size = MTLSize {
@@ -268,23 +268,24 @@ mod tests {
             depth: 1,
         };
 
-        // _stub kernel takes no buffers — dispatch with empty buffer list
+        // apply_rope kernel takes buffers but we dispatch with grid=1 and empty buffers
+        // The kernel won't access memory with zero-extent grid
         gpu_warmup(&gpu.command_queue, pso, &[], grid_size, tg_size);
 
         // Also test benchmark_kernel_gpu_time returns a valid duration
         let gpu_time =
             benchmark_kernel_gpu_time(&gpu.command_queue, pso, &[], grid_size, tg_size);
 
-        // GPU time should be non-negative (could be very small for stub kernel)
+        // GPU time should be non-negative (could be very small for trivial dispatch)
         assert!(
             gpu_time >= 0.0,
             "GPU time should be non-negative, got: {}",
             gpu_time
         );
-        // Sanity: should be less than 1 second for a trivial stub
+        // Sanity: should be less than 1 second for a trivial dispatch
         assert!(
             gpu_time < 1.0,
-            "GPU time unreasonably large for stub kernel: {}",
+            "GPU time unreasonably large for trivial dispatch: {}",
             gpu_time
         );
     }

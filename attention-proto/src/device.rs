@@ -165,7 +165,7 @@ mod tests {
         let _ = &gpu.command_queue;
 
         // Verify library loaded
-        // The stub metallib should have at least the _stub function
+        // The metallib should contain the compiled shader functions
         let _ = &gpu.library;
 
         // Verify singleton returns same instance
