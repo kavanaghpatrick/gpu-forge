@@ -393,7 +393,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
   - _Requirements: FR-12, FR-13_
   - _Design: Test Strategy_
 
-- [ ] 3.4 Search orchestrator integration tests
+- [x] 3.4 Search orchestrator integration tests
   - **Do**: Full pipeline tests: search for pattern in test directory with various filter combinations. Test progressive delivery (Wave 1 before Wave 2). Test cancellation. Test empty results. Test error recovery.
   - **Files**: `gpu-search/tests/test_orchestrator_integration.rs`
   - **Done when**: All orchestrator paths tested with real GPU
@@ -402,7 +402,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
   - _Requirements: FR-8, FR-9, FR-15_
   - _Design: Search Engine_
 
-- [ ] 3.5 Index tests
+- [x] 3.5 Index tests
   - **Do**: Test filesystem scanner (correct entry count, paths match), index persistence (save/load cycle), incremental updates (create/delete file reflected), GPU buffer loading (<10ms for 100K entries).
   - **Files**: `gpu-search/tests/test_index.rs`
   - **Done when**: Index lifecycle fully tested
