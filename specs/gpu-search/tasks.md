@@ -232,7 +232,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-8, FR-9, FR-15_
   - _Design: Search Engine, orchestrator.rs_
 
-- [ ] 2.9 Implement .gitignore filtering
+- [x] 2.9 Implement .gitignore filtering
   - **Do**: Use `ignore` crate (ripgrep's). Parse .gitignore at each directory level, support globs, negation, directory markers. Apply before GPU search. Add `ignore = "0.4"` to Cargo.toml.
   - **Files**: `gpu-search/src/search/ignore.rs`, update `gpu-search/src/search/mod.rs`, `gpu-search/Cargo.toml`
   - **Done when**: Files matching .gitignore excluded from results
