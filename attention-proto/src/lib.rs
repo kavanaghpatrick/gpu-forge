@@ -14,7 +14,7 @@
 pub mod device;
 pub mod pipeline;
 pub mod encode;
-// pub mod timing;
+pub mod timing;
 // pub mod types;
 // pub mod kb;
 

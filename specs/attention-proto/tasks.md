@@ -57,7 +57,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14, AC-8.3_
   - _Design: Shared Infrastructure_
 
-- [ ] 1.6 Implement GPU timing infrastructure
+- [x] 1.6 Implement GPU timing infrastructure
   - **Do**: Create benchmark_kernel_gpu_time (GPUStartTime/GPUEndTime), gpu_warmup (4 dispatches), optional MTLCounterSampleBuffer behind gpu-counters feature
   - **Files**: `attention-proto/src/timing.rs`
   - **Done when**: benchmark_kernel_gpu_time returns f64 seconds, warmup completes without error
