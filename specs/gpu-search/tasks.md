@@ -250,7 +250,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-13_
   - _Design: Search Engine, binary.rs_
 
-- [ ] 2.11 Implement result ranking and progressive delivery
+- [x] 2.11 Implement result ranking and progressive delivery
   - **Do**: Rank: filename matches by path length (shorter = more relevant), content matches by exact word > partial match > path depth. Cap at 10K results. Progressive delivery via channels: Wave 1 (FileMatches), Wave 2 (ContentMatches), Complete (stats).
   - **Files**: `gpu-search/src/search/ranking.rs`, `gpu-search/src/search/channel.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: Results ranked by relevance, filename matches arrive before content matches
