@@ -1,0 +1,13 @@
+{
+  "source": "plan",
+  "name": "gpu-search-overhaul",
+  "basePath": "./specs/gpu-search-overhaul",
+  "phase": "execution",
+  "taskIndex": 0,
+  "totalTasks": 28,
+  "taskIteration": 1,
+  "maxTaskIterations": 5,
+  "globalIteration": 1,
+  "maxGlobalIterations": 100,
+  "commitSpec": true
+}
