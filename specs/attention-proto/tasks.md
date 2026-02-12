@@ -48,7 +48,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14, AC-8.2_
   - _Design: Shared Infrastructure_
 
-- [ ] 1.5 Implement compute encoder helpers
+- [x] 1.5 Implement compute encoder helpers
   - **Do**: Adapt gpu-query/src/gpu/encode.rs, add alloc_buffer, alloc_buffer_with_data, dispatch_1d, dispatch_2d (new, needed for attention), read_buffer, read_buffer_slice
   - **Files**: `attention-proto/src/encode.rs`
   - **Done when**: All helper functions compile, type-safe buffer allocation and dispatch
