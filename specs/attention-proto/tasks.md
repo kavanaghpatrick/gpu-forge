@@ -301,7 +301,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: AC-4.2, NFR-4, NFR-17_
   - _Design: Proto 6 Host Code_
 
-- [ ] 4.14 Implement linear attention benchmark
+- [x] 4.14 Implement linear attention benchmark
   - **Do**: Benchmark seq lengths 1K/4K/16K/64K (long context), chunk sizes 32/64/128/256, D=64/128. Compare TFLOPS vs Proto 1 softmax attention. Report crossover point.
   - **Files**: `attention-proto/benches/linear_attention.rs`
   - **Done when**: Benchmark runs, identifies crossover seq_len where linear becomes faster
