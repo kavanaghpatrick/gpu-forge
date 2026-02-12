@@ -479,7 +479,7 @@ Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
   - **Commit**: `test(kb): validate KB findings quality and count`
   - _Requirements: Success Metrics (40-60 findings)_
 
-- [ ] 6.4 Memory leak stress test
+- [x] 6.4 Memory leak stress test
   - **Do**: Run leak detection test for each prototype (1000 iterations), verify currentAllocatedSize growth < 1%
   - **Files**: `attention-proto/tests/integration.rs`
   - **Done when**: Leak tests pass for all prototypes

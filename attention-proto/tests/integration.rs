@@ -11,6 +11,7 @@ use attention_proto::proto7_variants::{
     cpu_attention_alibi_f64, cpu_attention_no_alibi_f64, cpu_gqa_remap, cpu_rope,
     run_flash_attention_with_alibi, run_gqa_remap_gpu, run_rope_gpu,
 };
+use objc2_metal::MTLDevice;
 
 /// Generate deterministic pseudo-random f32 values using a simple LCG.
 fn random_f32(len: usize, seed: u64) -> Vec<f32> {
@@ -586,4 +587,138 @@ mod proto7 {
             }
         }
     }
+}
+
+/// Memory leak stress test: run each prototype many times and verify
+/// currentAllocatedSize growth is < 1%.
+///
+/// Uses MTLDevice::currentAllocatedSize to track Metal heap allocations.
+/// Retained<> wrappers (Rust RAII) should release buffers when dropped,
+/// so repeated invocations should not accumulate significant memory.
+///
+/// Iterations:
+/// - Proto 1 (flash), Proto 3 (paged), Proto 6 (linear): 100 iterations (GPU-heavy)
+/// - Proto 7 (RoPE, GQA): 1000 iterations (lightweight kernels)
+///
+/// Slow test — skipped by default, run with: `cargo test --release -- --ignored`
+#[test]
+#[ignore]
+fn test_no_metal_memory_leak() {
+    let device = GpuDevice::shared();
+    let seq_len = 64;
+    let head_dim = 64;
+
+    // Generate test data once
+    let q = random_f32(seq_len * head_dim, 42);
+    let k = random_f32(seq_len * head_dim, 137);
+    let v = random_f32(seq_len * head_dim, 999);
+
+    // Helper: measure allocation growth over N iterations of a closure.
+    // Returns (initial_bytes, final_bytes, growth_pct).
+    let measure_growth =
+        |name: &str, iterations: usize, mut f: Box<dyn FnMut()>| -> (usize, usize, f64) {
+            // Warm up: run once to populate PsoCache and trigger one-time allocations
+            f();
+
+            let initial = device.device.currentAllocatedSize();
+
+            for _ in 0..iterations {
+                f();
+            }
+
+            let final_size = device.device.currentAllocatedSize();
+            let growth_pct = if initial == 0 {
+                0.0
+            } else {
+                ((final_size as f64 - initial as f64) / initial as f64) * 100.0
+            };
+
+            eprintln!(
+                "[leak] {name}: {iterations} iters, initial={:.1}KB, final={:.1}KB, \
+                 growth={growth_pct:+.2}%",
+                initial as f64 / 1024.0,
+                final_size as f64 / 1024.0,
+            );
+
+            (initial, final_size, growth_pct)
+        };
+
+    // --- Proto 1: Flash Attention (100 iterations) ---
+    let (q1, k1, v1) = (q.clone(), k.clone(), v.clone());
+    let (_init, _fin, growth) = measure_growth(
+        "Proto 1 (flash_attention)",
+        100,
+        Box::new(move || {
+            let _ = run_flash_attention(device, &q1, &k1, &v1, seq_len, head_dim);
+        }),
+    );
+    assert!(
+        growth < 1.0,
+        "Proto 1 memory growth {growth:+.2}% exceeds 1% threshold"
+    );
+
+    // --- Proto 3: Paged Attention (100 iterations) ---
+    let page_size = 16;
+    let num_partitions = 1;
+    let q3 = q.clone();
+    let cache = create_paged_kv_cache(&k, &v, seq_len, head_dim, page_size);
+    let (_init, _fin, growth) = measure_growth(
+        "Proto 3 (paged_attention)",
+        100,
+        Box::new(move || {
+            let _ = run_paged_attention(device, &q3, &cache, seq_len, num_partitions);
+        }),
+    );
+    assert!(
+        growth < 1.0,
+        "Proto 3 memory growth {growth:+.2}% exceeds 1% threshold"
+    );
+
+    // --- Proto 6: Linear Attention (100 iterations) ---
+    let chunk_size = 32;
+    let (q6, k6, v6) = (q.clone(), k.clone(), v.clone());
+    let (_init, _fin, growth) = measure_growth(
+        "Proto 6 (linear_attention)",
+        100,
+        Box::new(move || {
+            let _ = run_linear_attention(device, &q6, &k6, &v6, seq_len, head_dim, chunk_size);
+        }),
+    );
+    assert!(
+        growth < 1.0,
+        "Proto 6 memory growth {growth:+.2}% exceeds 1% threshold"
+    );
+
+    // --- Proto 7: RoPE (1000 iterations, lightweight) ---
+    let (q7r, k7r) = (q.clone(), k.clone());
+    let (_init, _fin, growth) = measure_growth(
+        "Proto 7 (rope)",
+        1000,
+        Box::new(move || {
+            let _ = run_rope_gpu(device, &q7r, &k7r, seq_len, head_dim);
+        }),
+    );
+    assert!(
+        growth < 1.0,
+        "Proto 7 RoPE memory growth {growth:+.2}% exceeds 1% threshold"
+    );
+
+    // --- Proto 7: GQA Remap (1000 iterations, lightweight) ---
+    let num_heads = 8;
+    let num_kv_heads = 2;
+    let k_gqa = random_f32(num_kv_heads * seq_len * head_dim, 42);
+    let (_init, _fin, growth) = measure_growth(
+        "Proto 7 (gqa_remap)",
+        1000,
+        Box::new(move || {
+            let _ =
+                run_gqa_remap_gpu(device, &k_gqa, seq_len, head_dim, num_heads, num_kv_heads);
+        }),
+    );
+    assert!(
+        growth < 1.0,
+        "Proto 7 GQA memory growth {growth:+.2}% exceeds 1% threshold"
+    );
+
+    eprintln!("[leak] All prototypes passed: allocation growth < 1%");
 }
