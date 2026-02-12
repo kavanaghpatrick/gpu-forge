@@ -139,7 +139,7 @@ Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention k
   - **Commit**: `docs(proto1): add KB findings for Flash Attention tile sizes`
   - _Requirements: AC-1.4, AC-1.5_
 
-- [ ] 2.6 Proto 1 checkpoint
+- [x] 2.6 Proto 1 checkpoint
   - **Do**: Verify Proto 1 complete: correctness test passes, benchmark runs, findings generated
   - **Done when**: All Proto 1 tasks done, baseline TFLOPS established
   - **Verify**: `MTL_SHADER_VALIDATION=1 cargo test --release -- proto1 --test-threads=1 && cargo bench --bench flash_attention`
