@@ -150,7 +150,7 @@ Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention k
 
 Focus: Measure compilation overhead. Must run early to inform Proto 2 (stitching).
 
-- [ ] 3.1 Implement PSO compilation benchmark
+- [x] 3.1 Implement PSO compilation benchmark
   - **Do**: Benchmark cold compilation of N variants (N=1/10/50/100/500) with different function constant values. Measure time from MTLFunctionConstantValues to compiled PSO. Use Proto 1 kernel.
   - **Files**: `attention-proto/benches/constant_overhead.rs`
   - **Done when**: Benchmark measures compilation time per variant count
