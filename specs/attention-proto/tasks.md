@@ -425,7 +425,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
   - _Requirements: FR-13, AC-7.1, AC-7.2_
   - _Design: Proto 8_
 
-- [ ] 5.6 Implement AttentionBackend for MetalAttentionBackend
+- [x] 5.6 Implement AttentionBackend for MetalAttentionBackend
   - **Do**: Implement flash_attention method by calling Proto 1 kernel via FFI, convert Burn tensors to Metal buffers, dispatch, wrap output back into Burn tensor
   - **Files**: `attention-proto/src/proto8_burn.rs`
   - **Done when**: Implementation compiles, can dispatch Proto 1 kernel
