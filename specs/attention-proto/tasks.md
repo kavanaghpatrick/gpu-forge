@@ -503,7 +503,7 @@ Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
   - **Commit**: `docs(kb): ingest all prototype findings into GPU Forge`
   - _Requirements: FR-18, Success Metrics_
 
-- [ ] 6.7 Create PR with all prototypes and findings
+- [x] 6.7 Create PR with all prototypes and findings
   - **Do**: Push branch attention-proto-impl, create PR with gh CLI, description includes: (1) summary of 8 prototypes, (2) KB findings count, (3) key recommendations, (4) link to SYNTHESIS.md
   - **Files**: All attention-proto files
   - **Done when**: PR created, CI passes (if self-hosted M4 runner available)
