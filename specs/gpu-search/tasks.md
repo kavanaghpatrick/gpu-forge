@@ -214,7 +214,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-5_
   - _Design: GPU Device Layer, work_queue.rs_
 
-- [ ] 2.7 Implement SearchExecutor with re-dispatch chain
+- [x] 2.7 Implement SearchExecutor with re-dispatch chain
   - **Do**: Build SearchExecutor following gpu-query executor.rs. Completion-handler re-dispatch chain for persistent search. MTLSharedEvent for idle/wake. Separate MTLCommandQueue for search compute.
   - **Files**: `gpu-search/src/gpu/executor.rs`, update `gpu-search/src/gpu/mod.rs`
   - **Done when**: Start, submit search, get results, idle, wake all work
