@@ -113,7 +113,7 @@ Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention k
   - _Requirements: FR-1, AC-1.1_
   - _Design: Proto 1 MSL Design_
 
-- [ ] 2.3 Implement proto1_flash host code and correctness test
+- [x] 2.3 Implement proto1_flash host code and correctness test
   - **Do**: Allocate Q/K/V buffers, upload data, compile PSO with function constants, dispatch 2D (ceil(N/Br), heads), read back, assert_allclose vs CPU reference (atol=5e-3, rtol=1e-2 for FP16)
   - **Files**: `attention-proto/src/proto1_flash.rs`, `attention-proto/tests/integration.rs`
   - **Done when**: Correctness test passes for N=256, D=64, single head
