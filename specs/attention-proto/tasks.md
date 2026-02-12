@@ -406,7 +406,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
   - _Requirements: AC-6.3_
   - _Design: Proto 5_
 
-- [ ] 5.4 Generate KB findings for Proto 5
+- [x] 5.4 Generate KB findings for Proto 5
   - **Do**: Emit 3+ findings: instruction count delta, simdgroup_matrix usage (no), TFLOPS ratio, recommendation on CubeCL viability
   - **Files**: Update findings.jsonl
   - **Done when**: At least 3 findings emitted

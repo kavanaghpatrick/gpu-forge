@@ -351,53 +351,147 @@ pub fn cpu_matmul_qkt(q: &[f32], k: &[f32], m: usize, n: usize, d: usize) -> Vec
 pub fn emit_proto5_findings() {
     use crate::kb::{emit_finding, KbFinding};
 
-    let finding = KbFinding {
+    // Finding 1: AIR instruction count delta — CubeCL generates 4.3x more assembly
+    emit_finding(&KbFinding {
         domain: "cubecl-ecosystem".to_string(),
-        title: "CubeCL 0.9 compiles and runs matmul kernel on M4 via wgpu Metal backend"
+        title: "proto5: CubeCL-generated MSL produces 4.3x fewer AIR instructions than hand-written FlashAttention kernel"
             .to_string(),
-        content: "CubeCL 0.9.0 with cubecl-wgpu (msl feature) successfully compiles a naive \
-                  Q*K^T matmul kernel written in #[cube] syntax and dispatches it on Apple M4 \
-                  via the wgpu Metal backend. The kernel uses scalar tensors with 2D grid dispatch. \
-                  CubeCL's MslCompiler (CppCompiler<MslDialect>) generates MSL source internally \
-                  through the AutoCompiler pipeline. The cubecl-metal crate does not exist as a \
-                  standalone package; Metal support is exclusively through cubecl-wgpu with the \
-                  wgpu-msl feature flag. Dependency footprint: ~350 additional crates including \
-                  wgpu, naga, ash, and the full cubecl stack."
+        content: "Assembly comparison via xcrun metal -S -std=metal3.1 -O2: hand-written Proto 1 \
+                  flash_attention.metal compiles to 528 AIR lines (383 code lines) while a CubeCL-equivalent \
+                  naive matmul compiles to 122 AIR lines (50 code lines). The hand-written kernel is ~7.7x \
+                  more code reflecting algorithmic complexity: full FlashAttention-2 with tiled matmul, \
+                  online softmax, fused O accumulation, simdgroup_matrix cooperative ops, threadgroup memory \
+                  tiling, and function constant specialization. CubeCL produces a simple scalar fmul+fadd \
+                  loop with no GPU-specific optimizations. The instruction ratio reflects capability gap, \
+                  not codegen inefficiency — CubeCL's MSL codegen is architecturally sound but the #[cube] \
+                  API abstraction prevents expressing GPU-specific patterns."
             .to_string(),
         tags: vec![
             "proto5".to_string(),
             "cubecl".to_string(),
-            "metal".to_string(),
-            "wgpu".to_string(),
+            "air-assembly".to_string(),
+            "instruction-count".to_string(),
+            "msl-quality".to_string(),
+        ],
+        confidence: 0.95,
+        source: "attention-proto/proto5_cubecl analysis (xcrun metal -S, hand-written 528 vs CubeCL 122 AIR lines)"
+            .to_string(),
+    });
+
+    // Finding 2: No simdgroup_matrix access through CubeCL user API
+    emit_finding(&KbFinding {
+        domain: "cubecl-ecosystem".to_string(),
+        title: "proto5: CubeCL has internal simdgroup_matrix (WMMA) support but it is inaccessible through user #[cube] kernels"
+            .to_string(),
+        content: "CubeCL's cubecl-cpp MslDialect implements DialectWmmaCompiler with full simdgroup_float8x8 \
+                  codegen: make_filled_simdgroup_matrix, simdgroup_load, simdgroup_multiply_accumulate, \
+                  simdgroup_store. MetalArchitecture::is_wmma_capable() returns true. However, this WMMA \
+                  path is only accessible through CubeCL's internal cubecl-linalg matmul algorithms, not \
+                  user-facing #[cube] Array<f32> kernels. User kernels produce scalar code with 0 \
+                  simdgroup_matrix ops, 0 threadgroup memory accesses, and 0 function constants. The \
+                  hand-written Proto 1 kernel uses 9 simdgroup_matrix intrinsics, 24 threadgroup accesses, \
+                  4 function constants, and 7 barriers — none of which can be expressed in #[cube] syntax. \
+                  For trait Attention<Q,K,V>, simdgroup_matrix is essential for competitive throughput."
+            .to_string(),
+        tags: vec![
+            "proto5".to_string(),
+            "cubecl".to_string(),
+            "simdgroup-matrix".to_string(),
+            "wmma".to_string(),
+            "limitation".to_string(),
+        ],
+        confidence: 0.95,
+        source: "attention-proto/proto5_cubecl analysis (CubeCL source inspection + AIR assembly diff)"
+            .to_string(),
+    });
+
+    // Finding 3: TFLOPS ratio — CubeCL achieves 58-70% of hand-written throughput
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto5: CubeCL scalar kernel achieves 58-70% of hand-written MSL throughput on M4"
+            .to_string(),
+        content: "Side-by-side benchmark (criterion, 20 samples, D=64) comparing CubeCL naive Q*K^T \
+                  matmul vs hand-written Proto 1 full flash attention, each measured against their own \
+                  FLOP count (2*N^2*D for matmul, 4*N^2*D for full attention): \
+                  N=256: CubeCL 0.017 TFLOPS vs hand-written 0.024 TFLOPS (ratio 0.70x). \
+                  N=512: CubeCL 0.035 vs 0.061 TFLOPS (ratio 0.58x). \
+                  N=1024: CubeCL 0.063 vs 0.103 TFLOPS (ratio 0.61x). \
+                  The 30-42% throughput gap is caused by: (1) no simdgroup_matrix cooperative matmul, \
+                  (2) no threadgroup memory tiling (no data reuse), (3) wgpu abstraction overhead, \
+                  (4) scalar per-thread computation vs cooperative 32-thread simdgroup ops. \
+                  Wall-clock CubeCL is faster (0.71-0.86x of hand-written time) because it computes \
+                  only Q*K^T (~1/4 of full attention FLOPs)."
+            .to_string(),
+        tags: vec![
+            "proto5".to_string(),
+            "cubecl".to_string(),
+            "tflops".to_string(),
+            "benchmark".to_string(),
+            "gpu-perf".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.9,
+        source: "attention-proto/cubecl_comparison benchmark (criterion, 20 samples, D=64, N=256/512/1024)"
+            .to_string(),
+    });
+
+    // Finding 4: CubeCL viability recommendation for attention kernels
+    emit_finding(&KbFinding {
+        domain: "cubecl-ecosystem".to_string(),
+        title: "proto5: CubeCL not viable for high-performance attention kernels — hand-written MSL required"
+            .to_string(),
+        content: "CubeCL 0.9 evaluation for trait Attention<Q,K,V> on Apple M4 concludes hand-written \
+                  MSL is the only viable path for competitive performance. Three blocking limitations: \
+                  (1) No simdgroup_matrix access through #[cube] user API — internal WMMA support exists \
+                  but is inaccessible, resulting in scalar kernels with 0 cooperative matrix ops. \
+                  (2) No function constant support through wgpu — all parameters are runtime buffer values, \
+                  preventing compile-time specialization and dead-code elimination (Proto 4 proved function \
+                  constants have 0% runtime overhead vs 39% for runtime dispatch). \
+                  (3) No threadgroup memory control — CubeCL's dynamic shared memory uses untyped uchar[] \
+                  with reinterpret_cast, losing compiler optimization opportunities vs static typed arrays. \
+                  CubeCL is viable for simple, non-performance-critical compute kernels (correctness validated \
+                  at 2.4e-7 max diff vs FP64 reference). For attention: hand-written MSL with simdgroup_matrix, \
+                  function constants, and explicit tiling delivers 1.5-1.7x better throughput."
+            .to_string(),
+        tags: vec![
+            "proto5".to_string(),
+            "cubecl".to_string(),
+            "recommendation".to_string(),
+            "attention".to_string(),
+            "viability".to_string(),
+        ],
+        confidence: 0.95,
+        source: "attention-proto/proto5_cubecl (synthesis of assembly analysis, benchmark, and API inspection)"
+            .to_string(),
+    });
+
+    // Finding 5: CubeCL dependency cost — ~350 additional crates
+    emit_finding(&KbFinding {
+        domain: "cubecl-ecosystem".to_string(),
+        title: "proto5: CubeCL adds ~350 crate dependencies via wgpu stack — heavyweight for Metal-only targets"
+            .to_string(),
+        content: "CubeCL 0.9 Metal support requires cubecl = { features = [\"wgpu\", \"wgpu-msl\"] } + \
+                  cubecl-cpp = { features = [\"metal\"] }, pulling in ~350 additional crates including wgpu, \
+                  naga (shader translator), ash (Vulkan bindings unused on macOS), and the full cubecl stack \
+                  (cubecl-core, cubecl-runtime, cubecl-linalg, cubecl-cpp, cubecl-wgpu). No standalone \
+                  cubecl-metal crate exists — Metal support is exclusively through wgpu. For a Metal-only \
+                  target like M4 Apple Silicon, the wgpu/naga/ash dependencies are dead weight. Compare: \
+                  direct objc2-metal approach uses ~20 crates (objc2, objc2-metal, objc2-foundation, block2). \
+                  The ~17x dependency multiplier increases compile times, binary size, and supply chain attack \
+                  surface. Recommendation: use CubeCL only if cross-platform GPU support is required; for \
+                  Apple Silicon exclusive targets, direct objc2-metal is strongly preferred."
+            .to_string(),
+        tags: vec![
+            "proto5".to_string(),
+            "cubecl".to_string(),
+            "dependencies".to_string(),
+            "build-cost".to_string(),
             "ecosystem".to_string(),
         ],
         confidence: 0.9,
-        source: "attention-proto/proto5_cubecl".to_string(),
-    };
-    emit_finding(&finding);
-
-    let finding2 = KbFinding {
-        domain: "cubecl-ecosystem".to_string(),
-        title: "CubeCL Metal backend requires wgpu abstraction layer — no direct Metal API access"
+        source: "attention-proto/Cargo.lock analysis (cubecl feature-gated dependency count)"
             .to_string(),
-        content: "CubeCL's Metal support goes through cubecl-wgpu -> wgpu -> Metal, adding an \
-                  abstraction layer. There is no cubecl-metal crate for direct Metal API access. \
-                  This means CubeCL cannot use Metal-specific features like simdgroup_matrix, \
-                  function constants, or threadgroup memory control that our hand-written Proto 1 \
-                  kernel uses. The wgpu layer translates to MSL via cubecl-cpp but abstracts away \
-                  hardware-specific optimizations. For attention kernels requiring simdgroup_matrix \
-                  (MFA-style tiled matmul), hand-written MSL remains necessary."
-            .to_string(),
-        tags: vec![
-            "proto5".to_string(),
-            "cubecl".to_string(),
-            "metal".to_string(),
-            "limitation".to_string(),
-        ],
-        confidence: 0.85,
-        source: "attention-proto/proto5_cubecl".to_string(),
-    };
-    emit_finding(&finding2);
+    });
 }
 
 // ---------------------------------------------------------------------------
