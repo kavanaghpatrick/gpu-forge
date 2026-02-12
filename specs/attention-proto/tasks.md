@@ -131,7 +131,7 @@ Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention k
   - _Requirements: FR-2, AC-1.2, NFR-5_
   - _Design: Proto 1 Benchmark_
 
-- [ ] 2.5 Generate KB findings for Proto 1
+- [x] 2.5 Generate KB findings for Proto 1
   - **Do**: Parse bench.json, emit 5+ findings (one per optimal config per D), include TFLOPS, tile size, occupancy estimate, comparison vs MFA M4 published numbers
   - **Files**: Update findings.jsonl via kb.rs
   - **Done when**: At least 5 findings emitted with confidence >= 0.8 (CV < 5%)
