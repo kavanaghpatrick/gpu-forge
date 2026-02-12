@@ -11,7 +11,7 @@
 //! 8. Burn Extension Trait — AttentionBackend supertrait viability
 
 // Shared infrastructure (uncomment as modules are implemented)
-// pub mod device;
+pub mod device;
 // pub mod pipeline;
 // pub mod encode;
 // pub mod timing;

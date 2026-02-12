@@ -30,7 +30,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14_
   - _Design: Build System_
 
-- [ ] 1.3 Implement GpuDevice singleton
+- [x] 1.3 Implement GpuDevice singleton
   - **Do**: Adapt gpu-query/src/gpu/device.rs, use OnceLock for thread-safe singleton, find_metallib() searches OUT_DIR and target/debug, implement Drop for cleanup
   - **Files**: `attention-proto/src/device.rs`
   - **Done when**: GpuDevice::shared() returns MTLDevice + MTLCommandQueue + MTLLibrary
