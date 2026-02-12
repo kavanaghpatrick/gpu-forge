@@ -460,7 +460,7 @@ Benchmarks, regression detection, CI pipeline, documentation.
   - _Requirements: NFR-1, NFR-3_
   - _Design: Test Strategy_
 
-- [ ] 4.4 Implement ripgrep comparison benchmark
+- [x] 4.4 Implement ripgrep comparison benchmark
   - **Do**: Side-by-side Criterion benchmark against ripgrep on same corpus (~100MB). Target: gpu-search 4-7x faster.
   - **Files**: `gpu-search/benches/search_throughput.rs` (additional group)
   - **Done when**: gpu-search consistently faster than ripgrep

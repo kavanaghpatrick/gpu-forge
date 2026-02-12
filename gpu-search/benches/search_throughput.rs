@@ -90,5 +90,108 @@ fn bench_search_throughput(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_search_throughput);
+/// Ripgrep comparison benchmark.
+///
+/// Generates a ~100MB synthetic corpus as a temp file, then benchmarks:
+/// 1. gpu-search raw content search (in-memory, GPU compute)
+/// 2. ripgrep (rg) via subprocess on the same file (disk I/O + CPU SIMD)
+///
+/// NOTE: This is NOT an apples-to-apples comparison:
+/// - gpu-search operates on in-memory data (no disk I/O)
+/// - ripgrep reads from disk (though OS page cache likely warm after first run)
+/// - gpu-search uses Metal GPU compute kernels
+/// - ripgrep uses CPU SIMD (AVX2/NEON) with mmap
+///
+/// The comparison shows the raw throughput advantage of GPU parallelism
+/// over highly-optimized CPU search. Target: gpu-search 4-7x faster.
+fn bench_vs_ripgrep(c: &mut Criterion) {
+    use std::io::Write;
+    use std::process::Command;
+
+    const CORPUS_SIZE: usize = 100 * 1024 * 1024; // 100MB
+    let pattern = b"SEARCHME";
+    let pattern_str = "SEARCHME";
+
+    // Check if rg is available
+    let rg_available = Command::new("rg")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    // Generate corpus
+    let data = generate_synthetic_data(CORPUS_SIZE);
+
+    // Write corpus to temp file for ripgrep
+    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let corpus_path = tmp_dir.path().join("corpus.txt");
+    {
+        let mut f = std::fs::File::create(&corpus_path).expect("create corpus file");
+        f.write_all(&data).expect("write corpus");
+        f.flush().expect("flush corpus");
+    }
+
+    // Warm the OS page cache by reading once
+    if rg_available {
+        let _ = Command::new("rg")
+            .arg("--count")
+            .arg(pattern_str)
+            .arg(&corpus_path)
+            .output();
+    }
+
+    let mut group = c.benchmark_group("vs_ripgrep");
+    group.sample_size(20);
+    group.throughput(criterion::Throughput::Bytes(CORPUS_SIZE as u64));
+
+    // GPU search benchmark
+    {
+        let gpu = GpuDevice::new();
+        let pso_cache = PsoCache::new(&gpu.device);
+        // 100MB = 25600 chunks -> max_files >= 2560
+        let max_files = (CORPUS_SIZE / 4096 / 10).max(100) + 100;
+
+        let options = SearchOptions {
+            case_sensitive: true,
+            max_results: 10000,
+            mode: SearchMode::Turbo,
+        };
+
+        group.bench_function("gpu_search_100MB", |b| {
+            let mut engine = ContentSearchEngine::new(&gpu.device, &pso_cache, max_files);
+            b.iter(|| {
+                engine.reset();
+                engine.load_content(&data, 0);
+                let results = engine.search(pattern, &options);
+                results.len()
+            });
+        });
+    }
+
+    // Ripgrep benchmark (only if rg is available)
+    if rg_available {
+        let corpus_path_str = corpus_path.to_str().unwrap().to_string();
+        group.bench_function("ripgrep_100MB", |b| {
+            b.iter(|| {
+                let output = Command::new("rg")
+                    .arg("--count")
+                    .arg("--no-filename")
+                    .arg(pattern_str)
+                    .arg(&corpus_path_str)
+                    .output()
+                    .expect("rg failed");
+                // Parse match count to prevent optimization
+                let count_str = String::from_utf8_lossy(&output.stdout);
+                count_str.trim().parse::<u64>().unwrap_or(0)
+            });
+        });
+    } else {
+        eprintln!("NOTE: rg (ripgrep) not available -- skipping ripgrep benchmark");
+        eprintln!("      Install with: brew install ripgrep");
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_search_throughput, bench_vs_ripgrep);
 criterion_main!(benches);
