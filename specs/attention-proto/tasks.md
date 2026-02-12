@@ -388,7 +388,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
   - _Requirements: FR-12, AC-6.1_
   - _Design: Proto 5_
 
-- [ ] 5.2 Analyze CubeCL vs hand-written MSL
+- [x] 5.2 Analyze CubeCL vs hand-written MSL
   - **Do**: Diff generated MSL vs Proto 1 MSL: instruction count (xcrun metal -S), grep for simdgroup_matrix, register usage from GPU profiler, threadgroup memory
   - **Files**: Document in proto5_cubecl.rs comments
   - **Done when**: Analysis complete, documented

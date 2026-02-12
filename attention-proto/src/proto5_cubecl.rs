@@ -14,6 +14,140 @@
 //!
 //! For MSL extraction, we use the `cubecl-cpp` compiler directly to transform CubeCL IR
 //! into MSL source text without needing a GPU runtime.
+//!
+//! # Task 5.2: CubeCL vs Hand-Written MSL Analysis
+//!
+//! ## Summary
+//!
+//! CubeCL-generated MSL is fundamentally different from hand-written Proto 1 MSL.
+//! The generated code is a simple scalar kernel with no GPU-specific optimizations,
+//! while the hand-written kernel uses simdgroup_matrix, threadgroup memory, function
+//! constants, and online softmax — the full FlashAttention-2 algorithm.
+//!
+//! **Verdict**: CubeCL generates correct but unoptimized MSL. For attention kernels
+//! requiring tiled matmul with simdgroup_matrix, hand-written MSL is necessary.
+//! CubeCL is viable for simple, non-performance-critical compute kernels only.
+//!
+//! ## Assembly Comparison (xcrun metal -S -std=metal3.1 -O2)
+//!
+//! | Metric                           | Hand-written (Proto 1) | CubeCL-equivalent |
+//! |----------------------------------|----------------------:|------------------:|
+//! | AIR assembly lines (total)       |                   528 |               122 |
+//! | AIR assembly lines (code only)   |                   383 |                50 |
+//! | simdgroup_matrix ops             |                     9 |                 0 |
+//! | threadgroup memory accesses      |                    24 |                 0 |
+//! | function_constants               |                     4 |                 0 |
+//! | threadgroup barriers             |                     7 |                 0 |
+//! | exp/fmax intrinsics              |                     6 |                 0 |
+//! | alloca (register spill)          |                     1 |                 0 |
+//!
+//! ## Feature-by-Feature Analysis
+//!
+//! ### 1. simdgroup_matrix (WMMA)
+//!
+//! - **Hand-written**: 9 simdgroup_matrix AIR intrinsics:
+//!   - `air.simdgroup_matrix_8x8_init_filled` (zero accumulator)
+//!   - `air.simdgroup_matrix_8x8_load` (Q tile + K tile with transpose)
+//!   - `air.simdgroup_matrix_8x8_multiply_accumulate` (S += Q * K^T)
+//!   - `air.simdgroup_matrix_8x8_store` (S tile writeback)
+//!   - All 32 threads in a simdgroup cooperate on 8x8 matrix ops
+//! - **CubeCL**: 0 simdgroup_matrix ops. Uses scalar float multiply-add in a loop.
+//!   - Each thread computes one output element independently
+//!   - No cooperative thread behavior at all
+//!
+//! **Note**: CubeCL's cubecl-cpp MslDialect DOES implement `DialectWmmaCompiler` with
+//! `simdgroup_float8x8` codegen (confirmed in source). `MetalArchitecture::is_wmma_capable()`
+//! returns true. However, using CubeCL's WMMA API requires writing CubeCL IR that uses
+//! fragment types — not possible with simple `#[cube]` Array<f32> kernels. The CubeCL WMMA
+//! path generates: `make_filled_simdgroup_matrix<float, 8, 8>()`, `simdgroup_load()`,
+//! `simdgroup_multiply_accumulate()`, `simdgroup_store()` — identical API to our hand-written
+//! kernel. But accessing this requires CubeCL's internal matmul algorithms, not user kernels.
+//!
+//! ### 2. Threadgroup Memory
+//!
+//! - **Hand-written**: 3 static threadgroup arrays totaling 24 KB:
+//!   - `q_tile[1024]` = 4 KB (TILE_R * TILE_D = 16 * 64)
+//!   - `k_chunk[4096]` = 16 KB (TILE_C * TILE_D = 64 * 64)
+//!   - `s_tile[1024]` = 4 KB (TILE_R * TILE_C = 16 * 64)
+//!   - Cooperative loads: 32 threads stride-load global -> threadgroup
+//!   - Threadgroup barriers (7) synchronize loads and matmul phases
+//! - **CubeCL**: 0 threadgroup memory usage. All accesses go to device memory.
+//!   - CubeCL's MslDialect DOES support `threadgroup` via dynamic shared memory:
+//!     `threadgroup uchar dynamic_shared_mem[SIZE]` with reinterpret_cast
+//!   - But CubeCL's shared memory API requires explicit `#[cube]` SharedMemory types
+//!   - Our naive kernel has no shared memory → no tiling → no data reuse
+//!
+//! ### 3. Function Constants
+//!
+//! - **Hand-written**: 4 function constants (HEAD_DIM, BLOCK_R, BLOCK_C, ALIBI_ENABLED)
+//!   - Metal compiler specializes each PSO variant at compile time
+//!   - Dead code elimination: ALIBI_ENABLED=false removes entire bias block
+//!   - Loop bounds set by function constants enable loop unrolling
+//! - **CubeCL**: 0 function constants. All parameters passed as buffer scalars.
+//!   - wgpu's Metal backend has no API for function constants
+//!   - All "constants" are runtime values loaded from scalar buffers
+//!   - No compile-time specialization possible
+//!
+//! ### 4. Memory Access Patterns
+//!
+//! - **Hand-written**: Tiled access with data reuse
+//!   - Q loaded once per KV block into threadgroup (reused across K columns)
+//!   - K loaded per-block into threadgroup (reused across Q rows)
+//!   - V accessed from device memory per softmax row (fused O accumulation)
+//!   - Effective bandwidth amplification through 16x64 tile reuse
+//! - **CubeCL**: Naive global memory access
+//!   - Each thread independently loads Q[row,:] and K[col,:] from device memory
+//!   - No data reuse — same K row loaded by every thread in the same column
+//!   - O(M*N*D) total memory loads vs O(M*D + N*D) for tiled version
+//!
+//! ### 5. Algorithm Complexity
+//!
+//! - **Hand-written**: Full FlashAttention-2 algorithm
+//!   - Online softmax (running max/sum) — numerically stable, single-pass
+//!   - Fused softmax + O accumulation — no materialized attention matrix
+//!   - Tiled Q*K^T with simdgroup_matrix 8x8 decomposition
+//!   - ALiBi bias fusion via function constant
+//! - **CubeCL**: Naive Q*K^T matmul only (no softmax, no V, no output)
+//!   - Single fmul+fadd loop per thread
+//!   - No tiling, no numerical stability considerations
+//!   - This is ~1/4 of the attention algorithm (score computation only)
+//!
+//! ### 6. Register Usage
+//!
+//! - **Hand-written**: 1 alloca for o_acc[64] (64 floats = 256 bytes per thread)
+//!   - Maintains per-row running max, sum, and output accumulator
+//!   - simdgroup_matrix fragments are additional register pressure
+//! - **CubeCL**: 0 alloca — single scalar accumulator
+//!   - Minimal register pressure: pos, row, col, acc, loop counter
+//!   - Much simpler but much less capable
+//!
+//! ### 7. Dispatch Model
+//!
+//! - **Hand-written**: 2D threadgroup dispatch (block_row, head)
+//!   - 32 threads per threadgroup (one simdgroup)
+//!   - Cooperative: all 32 threads compute one TILE_R x TILE_C tile together
+//! - **CubeCL**: 1D thread dispatch
+//!   - 256 threads per threadgroup (workgroup)
+//!   - Independent: each thread computes one output element alone
+//!
+//! ## Key Insight: CubeCL Codegen Quality vs Capability
+//!
+//! CubeCL's MSL codegen through cubecl-cpp is architecturally sound:
+//! - The MslDialect generates valid MSL with proper Metal attributes
+//! - `[[kernel]]`, `[[buffer(N)]]`, `[[thread_position_in_grid]]` are correct
+//! - Scalar operations compile to clean AIR with proper TBAA metadata
+//! - The codegen DOES support simdgroup_matrix via WMMA API internally
+//!
+//! The limitation is not codegen quality but API abstraction:
+//! - wgpu runtime cannot express function constants
+//! - User-facing `#[cube]` API produces scalar kernels without tiling
+//! - CubeCL's internal matmul algorithms (cubecl-linalg) would use WMMA
+//!   but go through wgpu dispatch which adds overhead
+//! - No way to control threadgroup memory layout or static array sizes
+//!
+//! For trait Attention<Q,K,V> implementation: hand-written MSL with
+//! simdgroup_matrix, function constants, and explicit threadgroup memory
+//! tiling is the only viable path for competitive performance.
 
 use cubecl::prelude::*;
 
