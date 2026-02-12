@@ -376,7 +376,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
   - _Requirements: NFR-11_
   - _Design: Test Strategy_
 
-- [ ] 3.2 GPU memory safety tests
+- [x] 3.2 GPU memory safety tests
   - **Do**: Test with Metal validation enabled. OOB reads (non-aligned file sizes), buffer overrun (more matches than slots), atomic race conditions, watchdog timeout on large single dispatch.
   - **Files**: `gpu-search/tests/test_gpu_memory.rs`
   - **Done when**: Zero Metal validation errors with `MTL_SHADER_VALIDATION=1`
@@ -384,7 +384,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
   - **Commit**: `test(gpu-search): add GPU memory safety tests`
   - _Design: Test Strategy_
 
-- [ ] 3.3 Filesystem edge case tests
+- [x] 3.3 Filesystem edge case tests
   - **Do**: Test matrix from QA.md: empty files, single-byte, >4GB, NUL-only, broken/circular symlinks, permission denied, Unicode filenames (CJK, emoji, mixed NFC/NFD), .gitignore patterns, hidden directories, deeply nested dirs (100+).
   - **Files**: `gpu-search/tests/test_filesystem_edge_cases.rs`
   - **Done when**: All edge cases handled gracefully (skip or process correctly, no crash)
