@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Establish project scaffolding, build system, shared Metal host code. All prototypes depend on this.
 
-- [ ] 1.1 Create project structure and Cargo manifest
+- [x] 1.1 Create project structure and Cargo manifest
   - **Do**: Create `attention-proto/` directory, Cargo.toml with workspace member, features (cubecl, burn-ext, gpu-counters), dev-dependencies (criterion)
   - **Files**: `attention-proto/Cargo.toml`, `attention-proto/src/lib.rs`
   - **Done when**: `cargo check` passes, all features resolve

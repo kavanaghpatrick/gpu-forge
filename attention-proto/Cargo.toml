@@ -1,0 +1,57 @@
+[package]
+name = "attention-proto"
+version = "0.1.0"
+edition = "2021"
+description = "8 GPU kernel prototypes for trait Attention<Q,K,V> on Apple Silicon Metal"
+
+[features]
+default = []
+gpu-counters = []
+cubecl = []
+burn-ext = []
+
+[dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+block2 = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "flash_attention"
+harness = false
+
+[[bench]]
+name = "function_stitch"
+harness = false
+
+[[bench]]
+name = "paged_attention"
+harness = false
+
+[[bench]]
+name = "constant_overhead"
+harness = false
+
+[[bench]]
+name = "cubecl_comparison"
+harness = false
+required-features = ["cubecl"]
+
+[[bench]]
+name = "linear_attention"
+harness = false
+
+[[bench]]
+name = "variant_overhead"
+harness = false
+
+[[bench]]
+name = "burn_extension"
+harness = false
+required-features = ["burn-ext"]
