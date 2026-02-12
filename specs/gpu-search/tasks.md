@@ -304,7 +304,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-11_
   - _Design: UI, keybinds.rs_
 
-- [ ] 2.17 Implement ui/highlight.rs -- syntax highlighting
+- [x] 2.17 Implement ui/highlight.rs -- syntax highlighting
   - **Do**: syntect integration with custom Tokyo Night theme (4-5 syntax colors). Query match highlight: bold + amber background overriding syntax colors. Cache per-file parse state. Only highlight visible context lines.
   - **Files**: `gpu-search/src/ui/highlight.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: Rust code correctly highlighted with Tokyo Night colors, query matches in amber

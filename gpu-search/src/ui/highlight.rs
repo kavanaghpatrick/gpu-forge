@@ -212,15 +212,6 @@ fn build_tokyo_night_theme() -> Theme {
                     font_style: None,
                 },
             },
-            // Punctuation / operators: default fg
-            ThemeItem {
-                scope: parse_scope("punctuation"),
-                style: StyleModifier {
-                    foreground: Some(FG_DEFAULT),
-                    background: None,
-                    font_style: None,
-                },
-            },
         ],
     }
 }
