@@ -420,7 +420,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
   - _Requirements: NFR-11_
   - _Design: Test Strategy_
 
-- [ ] 3.7 Stress tests
+- [x] 3.7 Stress tests
   - **Do**: Memory leak (10K searches, <1% GPU allocation growth), watchdog survival (60s continuous, zero errors), sustained UI responsiveness (p99 <16ms during large search), concurrent filesystem changes (no crash).
   - **Files**: `gpu-search/tests/test_stress.rs`
   - **Done when**: All stress tests pass (run with `--ignored --test-threads=1`)
