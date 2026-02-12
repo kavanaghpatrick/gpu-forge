@@ -265,7 +265,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
 
 ### Proto 6: FLA Linear Attention
 
-- [ ] 4.10 Implement CPU linear attention reference (FP64)
+- [x] 4.10 Implement CPU linear attention reference (FP64)
   - **Do**: In proto6_fla.rs, implement cpu_linear_attention_f64: chunk-based recurrence, H = sum(K^T * V) over chunks, O = Q * H. FP64 accumulation.
   - **Files**: `attention-proto/src/proto6_fla.rs`
   - **Done when**: CPU reference produces correct output for small inputs
