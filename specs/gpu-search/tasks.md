@@ -442,7 +442,7 @@ Benchmarks, regression detection, CI pipeline, documentation.
   - _Requirements: NFR-2_
   - _Design: Test Strategy_
 
-- [ ] 4.2 Implement I/O latency benchmark
+- [x] 4.2 Implement I/O latency benchmark
   - **Do**: Criterion benchmark: MTLIOCommandQueue batch loading at 100, 1K, 10K files. Compare against sequential CPU reads. Target: 10K files <30ms.
   - **Files**: `gpu-search/benches/io_latency.rs`
   - **Done when**: MTLIOCommandQueue consistently faster than CPU reads
@@ -451,7 +451,7 @@ Benchmarks, regression detection, CI pipeline, documentation.
   - _Requirements: NFR-4_
   - _Design: Test Strategy_
 
-- [ ] 4.3 Implement end-to-end search latency benchmark
+- [x] 4.3 Implement end-to-end search latency benchmark
   - **Do**: Criterion benchmark: full pipeline SearchRequest -> results. Cached incremental <5ms p50, cold first search <200ms, index load <10ms.
   - **Files**: `gpu-search/benches/search_latency.rs`
   - **Done when**: Cached search latency <5ms p50
