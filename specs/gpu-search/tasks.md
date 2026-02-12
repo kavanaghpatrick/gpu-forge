@@ -411,7 +411,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
   - _Requirements: FR-4, FR-22, NFR-5_
   - _Design: Filesystem Index_
 
-- [ ] 3.6 Property-based tests with proptest
+- [x] 3.6 Property-based tests with proptest
   - **Do**: GPU matches CPU for arbitrary pattern/content pairs. Properties: count match, positions monotonic, no false positives, no false negatives, idempotent.
   - **Files**: `gpu-search/tests/test_proptest.rs`
   - **Done when**: 10,000 proptest iterations pass
