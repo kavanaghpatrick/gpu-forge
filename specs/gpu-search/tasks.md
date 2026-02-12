@@ -433,7 +433,7 @@ Unit tests, integration tests, GPU kernel correctness, filesystem edge cases.
 
 Benchmarks, regression detection, CI pipeline, documentation.
 
-- [ ] 4.1 Implement search throughput benchmark
+- [x] 4.1 Implement search throughput benchmark
   - **Do**: Criterion benchmark: raw GPU content search at 1MB, 10MB, 100MB synthetic data. Report GB/s. Target: 55-80 GB/s. Sample size 20.
   - **Files**: `gpu-search/benches/search_throughput.rs`
   - **Done when**: `cargo bench -- search_throughput` reports GB/s within expected range
@@ -469,7 +469,7 @@ Benchmarks, regression detection, CI pipeline, documentation.
   - _Requirements: NFR-2_
   - _Design: Test Strategy_
 
-- [ ] 4.5 Implement regression detection script
+- [x] 4.5 Implement regression detection script
   - **Do**: Python script: parse Criterion JSON, compare against baseline, fail on >10% regression. `check_bench_regression.py bench.json --threshold 10`.
   - **Files**: `gpu-search/scripts/check_bench_regression.py`
   - **Done when**: Script detects >10% regression in mock data
