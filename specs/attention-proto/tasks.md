@@ -191,7 +191,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-3, AC-2.1_
   - _Design: Proto 2_
 
-- [ ] 4.2 Implement function stitching benchmark
+- [x] 4.2 Implement function stitching benchmark
   - **Do**: Compile 3 PSOs (STITCH_MODE 0/1/2), run identical workload (N=2048, D=128), measure GPU time, compare. 100 iterations each for statistical significance.
   - **Files**: `attention-proto/benches/function_stitch.rs`
   - **Done when**: Benchmark reports ns/call overhead for stitching vs monolithic
