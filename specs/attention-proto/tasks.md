@@ -274,7 +274,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-15_
   - _Design: Proto 6_
 
-- [ ] 4.11 Implement linear_attention.metal (chunk_h kernel)
+- [x] 4.11 Implement linear_attention.metal (chunk_h kernel)
   - **Do**: Kernel computes H_chunk = K_chunk^T * V_chunk (D×D outer product) using simdgroup_matrix. One threadgroup per chunk.
   - **Files**: `attention-proto/shaders/linear_attention.metal`
   - **Done when**: chunk_h kernel compiles
