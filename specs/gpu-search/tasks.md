@@ -268,7 +268,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-7_
   - _Design: UI, app.rs_
 
-- [ ] 2.13 Implement ui/theme.rs -- Tokyo Night dark theme
+- [x] 2.13 Implement ui/theme.rs -- Tokyo Night dark theme
   - **Do**: Define color constants: BG_BASE (#1A1B26), BG_SURFACE (#24263A), TEXT_PRIMARY (#C0CAF5), TEXT_MUTED (#565F89), ACCENT (#E0AF68), ERROR (#F7768E), SUCCESS (#9ECE6A), BORDER (#3B3E52). Apply to egui Visuals (window bg, widget bg, text colors, selection).
   - **Files**: `gpu-search/src/ui/theme.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: Theme applied, no pure black/white, WCAG 2.1 AA contrast
