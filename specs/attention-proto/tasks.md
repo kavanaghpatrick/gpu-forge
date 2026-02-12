@@ -122,7 +122,7 @@ Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention k
   - _Requirements: AC-1.3, NFR-3, NFR-17_
   - _Design: Proto 1 Host Code_
 
-- [ ] 2.4 Implement tile size sweep benchmark
+- [x] 2.4 Implement tile size sweep benchmark
   - **Do**: Criterion benchmark group for D × N × tile_config. Configurations: Br in {16,32,64}, Bc in {64,128}, D in {64,128}. Compute TFLOPS = (4*N²*D / time) / 1e12. GPU warmup before measurement.
   - **Files**: `attention-proto/benches/flash_attention.rs`
   - **Done when**: Benchmark runs, produces TFLOPS numbers, CV < 10%
