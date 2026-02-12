@@ -320,7 +320,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
 
 ### Proto 7: RoPE/ALiBi/GQA Variants
 
-- [ ] 4.16 Implement rope.metal kernel
+- [x] 4.16 Implement rope.metal kernel
   - **Do**: Standalone kernel applying rotary embeddings to Q and K tensors. Each thread handles one (token, dim_pair). Sincos lookup, rotation matrix.
   - **Files**: `attention-proto/shaders/rope.metal`
   - **Done when**: RoPE kernel compiles
@@ -329,7 +329,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-10_
   - _Design: Proto 7 MSL Design (RoPE)_
 
-- [ ] 4.17 Implement alibi.metal (fused into Proto 1)
+- [x] 4.17 Implement alibi.metal (fused into Proto 1)
   - **Do**: Modify Proto 1 kernel to add ALiBi bias: bias = -slope * abs(pos_q - pos_k) to score. Function constant ALIBI_ENABLED.
   - **Files**: `attention-proto/shaders/flash_attention.metal` (add ALiBi variant)
   - **Done when**: ALiBi variant compiles
@@ -338,7 +338,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-10_
   - _Design: Proto 7 MSL Design (ALiBi)_
 
-- [ ] 4.18 Implement gqa_remap.metal kernel
+- [x] 4.18 Implement gqa_remap.metal kernel
   - **Do**: Index remapping kernel or inline remapping in attention kernel. kv_head = q_head / group_size. Measure buffer rebinding overhead.
   - **Files**: `attention-proto/shaders/gqa_remap.metal`
   - **Done when**: GQA kernel compiles
