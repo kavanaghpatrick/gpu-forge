@@ -120,4 +120,127 @@ mod proto3 {
             "paged_attention N=64 D=64 pages=16 parts=1",
         );
     }
+
+    /// Threadgroup memory budget test for PagedAttention V2.
+    ///
+    /// Verifies threadgroup memory usage at varying page sizes (8/16/32/64/128 tokens)
+    /// against the 32KB Metal threadgroup memory limit.
+    ///
+    /// Threadgroup memory layout per page_size (BLOCK_R=16, head_dim=64):
+    ///   Q_tile  = BLOCK_R * head_dim * 4 bytes  (query tile, fixed)
+    ///   K_page  = page_size * head_dim * 4 bytes (key page)
+    ///   V_page  = page_size * head_dim * 4 bytes (value page)
+    ///   S_buf   = BLOCK_R * page_size * 4 bytes  (score buffer)
+    ///   Total   = Q_tile + K_page + V_page + S_buf
+    ///
+    /// Expected results for D=64:
+    ///   page_size=8:   Q(4KB) + K(2KB) + V(2KB) + S(0.5KB) =  8.5KB  <= 32KB
+    ///   page_size=16:  Q(4KB) + K(4KB) + V(4KB) + S(1KB)   = 13.0KB  <= 32KB
+    ///   page_size=32:  Q(4KB) + K(8KB) + V(8KB) + S(2KB)   = 22.0KB  <= 32KB
+    ///   page_size=64:  Q(4KB) + K(16KB) + V(16KB) + S(4KB) = 40.0KB  > 32KB!
+    ///   page_size=128: Q(4KB) + K(32KB) + V(32KB) + S(8KB) = 76.0KB  > 32KB!
+    #[test]
+    fn test_threadgroup_budget() {
+        const BLOCK_R: usize = 16;
+        const HEAD_DIM: usize = 64;
+        const MAX_THREADGROUP_MEMORY: usize = 32 * 1024; // 32KB
+
+        let page_sizes: &[usize] = &[8, 16, 32, 64, 128];
+
+        println!();
+        println!("PagedAttention V2 Threadgroup Memory Budget (BLOCK_R={BLOCK_R}, D={HEAD_DIM})");
+        println!("{:-<72}", "");
+        println!(
+            "{:>10} {:>8} {:>8} {:>8} {:>8} {:>10} {:>6}",
+            "page_size", "Q_tile", "K_page", "V_page", "S_buf", "Total", "Fits?"
+        );
+        println!("{:-<72}", "");
+
+        let mut exceeds_32kb = Vec::new();
+
+        for &page_size in page_sizes {
+            let q_tile = BLOCK_R * HEAD_DIM * 4;
+            let k_page = page_size * HEAD_DIM * 4;
+            let v_page = page_size * HEAD_DIM * 4;
+            let s_buf = BLOCK_R * page_size * 4;
+            let total = q_tile + k_page + v_page + s_buf;
+
+            let fits = total <= MAX_THREADGROUP_MEMORY;
+            let fits_str = if fits { "YES" } else { "NO" };
+
+            println!(
+                "{:>10} {:>7.1}KB {:>7.1}KB {:>7.1}KB {:>7.1}KB {:>9.1}KB {:>6}",
+                page_size,
+                q_tile as f64 / 1024.0,
+                k_page as f64 / 1024.0,
+                v_page as f64 / 1024.0,
+                s_buf as f64 / 1024.0,
+                total as f64 / 1024.0,
+                fits_str,
+            );
+
+            if !fits {
+                exceeds_32kb.push((page_size, total));
+            }
+        }
+
+        println!("{:-<72}", "");
+
+        // Document which page sizes exceed 32KB
+        if !exceeds_32kb.is_empty() {
+            println!("Page sizes exceeding 32KB threadgroup limit:");
+            for (ps, total) in &exceeds_32kb {
+                println!(
+                    "  page_size={ps}: {:.1}KB ({:.1}KB over limit)",
+                    *total as f64 / 1024.0,
+                    (*total as f64 - MAX_THREADGROUP_MEMORY as f64) / 1024.0,
+                );
+            }
+        }
+
+        // Assert: our chosen config (page_size=16) fits within 32KB
+        let chosen_page_size = 16;
+        let chosen_total = BLOCK_R * HEAD_DIM * 4
+            + chosen_page_size * HEAD_DIM * 4
+            + chosen_page_size * HEAD_DIM * 4
+            + BLOCK_R * chosen_page_size * 4;
+        assert!(
+            chosen_total <= MAX_THREADGROUP_MEMORY,
+            "Chosen config page_size={chosen_page_size} uses {}KB, exceeds 32KB limit!",
+            chosen_total as f64 / 1024.0,
+        );
+        println!(
+            "\nChosen config (page_size={chosen_page_size}): {:.1}KB -- WITHIN 32KB budget",
+            chosen_total as f64 / 1024.0,
+        );
+
+        // Assert: page_size=32 also fits (max viable page size for D=64)
+        let ps32_total = BLOCK_R * HEAD_DIM * 4
+            + 32 * HEAD_DIM * 4
+            + 32 * HEAD_DIM * 4
+            + BLOCK_R * 32 * 4;
+        assert!(
+            ps32_total <= MAX_THREADGROUP_MEMORY,
+            "page_size=32 uses {}KB, exceeds 32KB limit!",
+            ps32_total as f64 / 1024.0,
+        );
+
+        // Assert: page_size=64 does NOT fit (documents the boundary)
+        let ps64_total = BLOCK_R * HEAD_DIM * 4
+            + 64 * HEAD_DIM * 4
+            + 64 * HEAD_DIM * 4
+            + BLOCK_R * 64 * 4;
+        assert!(
+            ps64_total > MAX_THREADGROUP_MEMORY,
+            "Expected page_size=64 to exceed 32KB but it uses only {}KB",
+            ps64_total as f64 / 1024.0,
+        );
+
+        // Verify exact byte counts match expectations
+        assert_eq!(chosen_total, 13 * 1024, "page_size=16 should be exactly 13KB");
+        assert_eq!(ps32_total, 22 * 1024, "page_size=32 should be exactly 22KB");
+
+        println!("\nMax viable page_size for D={HEAD_DIM} within 32KB: 32 tokens");
+        println!("page_size >= 64 requires either smaller BLOCK_R or reduced D");
+    }
 }

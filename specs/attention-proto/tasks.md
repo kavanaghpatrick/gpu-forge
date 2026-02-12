@@ -237,7 +237,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: AC-3.2, NFR-17_
   - _Design: Proto 3 Host Code_
 
-- [ ] 4.7 Implement threadgroup memory budget test
+- [x] 4.7 Implement threadgroup memory budget test
   - **Do**: Test varying block sizes (8/16/32/64/128 tokens), measure threadgroup memory usage (page_size * D * 4 bytes * 2 pages + Q_tile), verify <= 32KB
   - **Files**: `attention-proto/tests/integration.rs`
   - **Done when**: Test documents memory usage at each block size, fails if exceeds 32KB
