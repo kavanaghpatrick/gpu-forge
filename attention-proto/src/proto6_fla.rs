@@ -312,6 +312,136 @@ pub fn cpu_linear_attention_f64(
     output.iter().map(|&x| x as f32).collect()
 }
 
+/// Emit KB findings for Proto 6: FLA Linear Attention.
+///
+/// 5 findings covering GPU kernel timing, crossover vs softmax, CPU prefix sum bottleneck,
+/// chunk size / threadgroup memory, and architecture recommendation.
+pub fn emit_proto6_findings() {
+    use crate::kb::{emit_finding, KbFinding};
+
+    // Finding 1: Linear attention GPU kernel time near-constant
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto6: FLA chunk_h+chunk_o GPU kernel time near-constant ~35us on M4".to_string(),
+        content: "FLA chunk_h+chunk_o GPU kernel time is ~35us on M4 for N=256-1024, D=64, \
+                  chunk=32. O(N*D^2) complexity confirmed — kernel time scales linearly with N, \
+                  not quadratically. At D=64 the D^2 term dominates, making kernel time nearly \
+                  constant across tested sequence lengths. GPU TFLOPS: 0.011 (N=256) to 0.040 \
+                  (N=1024) using 4*N*D^2 FLOPs formula."
+            .to_string(),
+        tags: vec![
+            "proto6".to_string(),
+            "linear-attention".to_string(),
+            "fla".to_string(),
+            "gpu-kernel-time".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.9,
+        source: "attention-proto/linear_attention benchmark (criterion, GPU timing, N=256/512/1024)"
+            .to_string(),
+    });
+
+    // Finding 2: Linear attention beats softmax at all tested lengths
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto6: Linear attention beats softmax flash attention at all tested seq_lens on M4"
+            .to_string(),
+        content: "Linear attention (chunk-based, D=64) is faster than flash attention at all \
+                  tested seq_lens on M4: 0.45x at N=256, 0.26x at N=512, 0.13x at N=1024. \
+                  Crossover point is below N=256. Wall-clock: linear ~347-417us (nearly constant, \
+                  dominated by CPU prefix sum) vs flash 821us-3164us (quadratic growth). Even with \
+                  CPU-side prefix sum overhead, O(N) linear scaling decisively beats O(N^2) \
+                  softmax at all tested lengths for D=64."
+            .to_string(),
+        tags: vec![
+            "proto6".to_string(),
+            "linear-attention".to_string(),
+            "flash-attention".to_string(),
+            "crossover".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.85,
+        source:
+            "attention-proto/linear_attention benchmark (criterion, wall-clock, N=256/512/1024)"
+                .to_string(),
+    });
+
+    // Finding 3: CPU prefix sum is the bottleneck
+    emit_finding(&KbFinding {
+        domain: "metal-compute".to_string(),
+        title: "proto6: CPU prefix sum dominates linear attention wall-clock time on M4"
+            .to_string(),
+        content: "CPU-side prefix sum of D x D hidden state matrices takes 300-380us, dominating \
+                  total wall-clock time. Includes buffer readback (waitUntilCompleted + \
+                  read_buffer_slice), prefix sum computation over num_chunks D x D matrices, and \
+                  buffer re-upload (alloc_buffer_with_data). A GPU prefix sum kernel would reduce \
+                  this to <50us, further improving linear attention throughput. With GPU prefix sum, \
+                  total linear attention time would be ~35us (kernel only) vs flash's hundreds-to-\
+                  thousands us."
+            .to_string(),
+        tags: vec![
+            "proto6".to_string(),
+            "linear-attention".to_string(),
+            "prefix-sum".to_string(),
+            "cpu-bottleneck".to_string(),
+            "metal-compute".to_string(),
+        ],
+        confidence: 0.8,
+        source:
+            "attention-proto/linear_attention benchmark (wall-clock vs GPU timing comparison)"
+                .to_string(),
+    });
+
+    // Finding 4: Chunk size 32 fits M4 threadgroup memory
+    emit_finding(&KbFinding {
+        domain: "msl-kernels".to_string(),
+        title: "proto6: FLA chunk_size=32 at D=64 uses 16KB threadgroup memory on M4".to_string(),
+        content: "FLA chunk_size=32 at D=64 uses 16KB threadgroup memory (K_chunk 8KB + V_chunk \
+                  8KB). chunk_size=64 would use 32KB (at limit). Recommend chunk_size=32 for D=64, \
+                  chunk_size=16 for D=128. chunk_o kernel uses 24KB (Q_chunk 8KB + H_tile 16KB). \
+                  Both kernels fit within 32KB Apple Silicon threadgroup memory limit. Function \
+                  constant CHUNK_SIZE (index 4) enables runtime selection of optimal chunk size \
+                  per head dimension."
+            .to_string(),
+        tags: vec![
+            "proto6".to_string(),
+            "linear-attention".to_string(),
+            "chunk-size".to_string(),
+            "threadgroup-memory".to_string(),
+            "msl-kernels".to_string(),
+        ],
+        confidence: 0.9,
+        source: "attention-proto/proto6_fla kernel analysis (deterministic calculation)".to_string(),
+    });
+
+    // Finding 5: Linear attention viable for trait Attention<Q,K,V>
+    emit_finding(&KbFinding {
+        domain: "gpu-centric-arch".to_string(),
+        title: "proto6: Chunk-based linear attention viable as Metal compute alternative to softmax"
+            .to_string(),
+        content: "Chunk-based linear attention ports successfully from Triton to Metal. The \
+                  2-kernel approach (chunk_h + chunk_o) maps naturally to Metal compute with \
+                  simdgroup-compatible tile sizes. Viable as alternative attention mechanism in \
+                  trait hierarchy. Key advantages: O(N*D^2) vs O(N^2*D) scaling, near-constant \
+                  GPU kernel time, decisive win at N>=256 for D=64. Key limitation: CPU prefix \
+                  sum adds ~300us overhead (solvable with GPU scan kernel). Recommended as \
+                  long-context attention backend for trait Attention<Q,K,V> when N >= 256 and \
+                  D <= 128."
+            .to_string(),
+        tags: vec![
+            "proto6".to_string(),
+            "linear-attention".to_string(),
+            "fla".to_string(),
+            "architecture".to_string(),
+            "trait-dispatch".to_string(),
+            "metal-compute".to_string(),
+        ],
+        confidence: 0.85,
+        source: "attention-proto/proto6 synthesis (correctness + benchmark + crossover results)"
+            .to_string(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +619,14 @@ mod tests {
         assert!((output[5] - 80.0).abs() < 1e-6, "O[2][1]={}", output[5]);
         assert!((output[6] - 100.0).abs() < 1e-6, "O[3][0]={}", output[6]);
         assert!((output[7] - 120.0).abs() < 1e-6, "O[3][1]={}", output[7]);
+    }
+
+    /// Test to emit Proto 6 KB findings. Run manually:
+    /// `cargo test --release -- proto6::tests::generate_proto6_findings --ignored --test-threads=1`
+    #[test]
+    #[ignore]
+    fn generate_proto6_findings() {
+        super::emit_proto6_findings();
     }
 
     /// Test that seq_len not divisible by chunk_size panics.

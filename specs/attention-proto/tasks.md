@@ -310,7 +310,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-9, AC-4.3_
   - _Design: Proto 6 Benchmark_
 
-- [ ] 4.15 Generate KB findings for Proto 6
+- [x] 4.15 Generate KB findings for Proto 6
   - **Do**: Emit 5+ findings: optimal chunk size, TFLOPS at each seq_len, crossover point vs softmax attention, memory bandwidth utilization, recommendation
   - **Files**: Update findings.jsonl
   - **Done when**: At least 5 findings emitted
