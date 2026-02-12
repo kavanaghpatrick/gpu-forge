@@ -28,6 +28,12 @@ constant uint HEAD_DIM [[function_constant(0)]];
 constant uint BLOCK_R  [[function_constant(1)]];
 constant uint BLOCK_C  [[function_constant(2)]];
 
+// ALiBi (Attention with Linear Biases) function constant.
+// When enabled, adds position-dependent linear bias to attention scores:
+//   bias = -slope * abs(pos_q - pos_k)
+// where slope = 1 / 2^((head_idx + 1) * 8 / num_heads)
+constant bool ALIBI_ENABLED [[function_constant(4)]];
+
 kernel void flash_attention(
     device const float* Q       [[buffer(0)]],      // [num_heads, seq_len, head_dim]
     device const float* K       [[buffer(1)]],      // [num_heads, seq_len, head_dim]
@@ -175,10 +181,23 @@ kernel void flash_attention(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // -- Scale scores by 1/sqrt(D) -----------------------------------
+        // -- Scale scores by 1/sqrt(D) + optional ALiBi bias ---------------
         for (uint idx = tid_in_tg; idx < TILE_R * TILE_C; idx += num_threads) {
+            uint row = idx / TILE_C;
             uint col = idx % TILE_C;
-            s_tile[idx] = (col < k_count) ? (s_tile[idx] * params.scale) : -INFINITY;
+            if (col < k_count) {
+                float score = s_tile[idx] * params.scale;
+                // ALiBi: add position-dependent linear bias
+                if (ALIBI_ENABLED) {
+                    float slope = 1.0 / pow(2.0, float(head + 1) * 8.0 / float(params.num_heads));
+                    uint q_pos = q_start + row;
+                    uint k_pos = k_start + col;
+                    score += -slope * abs(float(q_pos) - float(k_pos));
+                }
+                s_tile[idx] = score;
+            } else {
+                s_tile[idx] = -INFINITY;
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
