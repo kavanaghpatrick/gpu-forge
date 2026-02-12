@@ -5,6 +5,7 @@
 
 use attention_proto::device::GpuDevice;
 use attention_proto::proto1_flash::{assert_allclose, cpu_attention_f64, run_flash_attention};
+use attention_proto::proto3_paged::{create_paged_kv_cache, run_paged_attention};
 
 /// Generate deterministic pseudo-random f32 values using a simple LCG.
 fn random_f32(len: usize, seed: u64) -> Vec<f32> {
@@ -62,5 +63,61 @@ mod proto1 {
         // - Online softmax vs naive softmax numerical differences
         // - Tiled computation reordering
         assert_allclose(&gpu_result, &cpu_result, 5e-3, 1e-2, "flash_attention N=256 D=64");
+    }
+}
+
+mod proto3 {
+    use super::*;
+
+    /// Correctness test: paged attention vs CPU FP64 reference.
+    ///
+    /// N=64, D=64, page_size=16, num_partitions=1 (simplest case — no reduce needed
+    /// but reduce kernel still runs with 1 partition for code coverage).
+    ///
+    /// Tolerances: atol=1e-3, rtol=1e-2 (FP32 online softmax with paging overhead).
+    /// Paged attention uses scalar dot products (not simdgroup_matrix) so may have
+    /// slightly different rounding from Proto 1.
+    #[test]
+    fn test_paged_correctness() {
+        let device = GpuDevice::shared();
+        let seq_len = 64;
+        let head_dim = 64;
+        let page_size = 16;
+        let num_partitions = 1;
+
+        // Generate deterministic random Q, K, V
+        let q = random_f32(seq_len * head_dim, 42);
+        let k = random_f32(seq_len * head_dim, 137);
+        let v = random_f32(seq_len * head_dim, 999);
+
+        // Build paged KV cache (fragmented physical page order)
+        let cache = create_paged_kv_cache(&k, &v, seq_len, head_dim, page_size);
+
+        // Run paged attention on GPU
+        let gpu_result = run_paged_attention(device, &q, &cache, seq_len, num_partitions);
+
+        // Run CPU FP64 reference (contiguous, no paging)
+        let cpu_result = cpu_attention_f64(&q, &k, &v, seq_len, head_dim);
+
+        // Verify dimensions
+        assert_eq!(gpu_result.len(), seq_len * head_dim);
+        assert_eq!(cpu_result.len(), seq_len * head_dim);
+
+        // Verify no NaN or Inf in GPU output
+        for (i, &val) in gpu_result.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "GPU output[{i}] is not finite: {val}"
+            );
+        }
+
+        // Compare GPU paged attention vs CPU reference
+        assert_allclose(
+            &gpu_result,
+            &cpu_result,
+            1e-3,
+            1e-2,
+            "paged_attention N=64 D=64 pages=16 parts=1",
+        );
     }
 }

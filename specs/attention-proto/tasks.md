@@ -228,7 +228,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-6, AC-3.1_
   - _Design: Proto 3 MSL Design (Phase 2)_
 
-- [ ] 4.6 Implement proto3_paged host code and correctness test
+- [x] 4.6 Implement proto3_paged host code and correctness test
   - **Do**: Allocate page pool, construct fragmented page_table, two-pass dispatch (partition then reduce), validate bit-exact vs Proto 1 contiguous attention
   - **Files**: `attention-proto/src/proto3_paged.rs`, `attention-proto/tests/integration.rs`
   - **Done when**: Correctness test passes (atol=0, rtol=0 for bit-exact)
