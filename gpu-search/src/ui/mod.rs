@@ -1,5 +1,6 @@
 // UI module
 
+pub mod actions;
 pub mod app;
 pub mod filters;
 pub mod highlight;

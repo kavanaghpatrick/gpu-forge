@@ -331,7 +331,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-1 through FR-11_
   - _Design: Data Flow_
 
-- [ ] 2.20 Implement open-in-editor action
+- [x] 2.20 Implement open-in-editor action
   - **Do**: Enter opens file via `open <path>`. Cmd+Enter opens in $EDITOR at line. Support VS Code (`code --goto file:line`), Vim (`nvim +line file`), Sublime (`subl file:line`). Detect editor from $VISUAL, $EDITOR, or PATH. Default `open`.
   - **Files**: `gpu-search/src/ui/actions.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: Correct editor command generated for each editor type
