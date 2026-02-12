@@ -277,7 +277,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-19, NFR-10_
   - _Design: UI, theme.rs_
 
-- [ ] 2.14 Implement ui/search_bar.rs -- search input with debounce
+- [x] 2.14 Implement ui/search_bar.rs -- search input with debounce
   - **Do**: Single-line `egui::TextEdit` with placeholder "Search files and content...". 30ms debounce timer: start on keystroke, fire search when timer expires. Cancel in-flight on new input. Search icon left, filter toggle right. Min query: 1 char filename, 2 chars content.
   - **Files**: `gpu-search/src/ui/search_bar.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: Typing triggers search after 30ms debounce
@@ -286,7 +286,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-8, AC-1.2_
   - _Design: UI, search_bar.rs_
 
-- [ ] 2.15 Implement ui/results_list.rs -- scrollable results
+- [x] 2.15 Implement ui/results_list.rs -- scrollable results
   - **Do**: Two sections: FILENAME MATCHES (N) with path + highlighted match, CONTENT MATCHES (N) with file:line header + 3 context lines. Selected item: background highlight + left accent border. Virtual scroll via egui ScrollArea + show_rows() for 10K+ results.
   - **Files**: `gpu-search/src/ui/results_list.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: Results display with mock data, virtual scroll handles 10K items
