@@ -223,7 +223,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-6, NFR-9_
   - _Design: GPU Device Layer, executor.rs_
 
-- [ ] 2.8 Implement search orchestrator
+- [x] 2.8 Implement search orchestrator
   - **Do**: Top-level SearchOrchestrator coordinating full pipeline: accept SearchRequest from channel, apply .gitignore + binary + filetype filters, dispatch GPU path filter, queue files for batch I/O, dispatch content search, collect results into SearchResponse, send back via channel.
   - **Files**: `gpu-search/src/search/orchestrator.rs`, update `gpu-search/src/search/mod.rs`
   - **Done when**: Orchestrator returns correct results for test directory search
