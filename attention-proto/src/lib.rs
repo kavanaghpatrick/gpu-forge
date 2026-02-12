@@ -22,7 +22,7 @@ pub mod kb;
 pub mod proto1_flash;
 // pub mod proto2_stitch;
 // pub mod proto3_paged;
-// pub mod proto4_constants;
+pub mod proto4_constants;
 // pub mod proto6_fla;
 // pub mod proto7_variants;
 

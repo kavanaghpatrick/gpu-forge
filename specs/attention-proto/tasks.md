@@ -168,7 +168,7 @@ Focus: Measure compilation overhead. Must run early to inform Proto 2 (stitching
   - _Requirements: FR-5, AC-2.3_
   - _Design: Proto 4_
 
-- [ ] 3.3 Generate KB findings for Proto 4
+- [x] 3.3 Generate KB findings for Proto 4
   - **Do**: Emit 3+ findings: ms/variant cold compile, archive build time for 72 variants, archive load speedup factor, recommendation (use constants if < 50ms/variant, else pre-compile)
   - **Files**: Update findings.jsonl
   - **Done when**: At least 3 findings emitted
