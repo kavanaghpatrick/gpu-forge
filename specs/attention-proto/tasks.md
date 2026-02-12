@@ -84,7 +84,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14_
   - _Design: Shared Infrastructure, types.h_
 
-- [ ] 1.9 Foundation checkpoint
+- [x] 1.9 Foundation checkpoint
   - **Do**: Verify all shared infrastructure compiles, tests pass, ready for prototype implementation
   - **Done when**: `cargo test --lib` passes, no clippy warnings
   - **Verify**: `cargo clippy -- -D warnings && cargo test --lib`
