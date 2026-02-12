@@ -16,7 +16,7 @@ pub mod pipeline;
 pub mod encode;
 pub mod timing;
 // pub mod types;
-// pub mod kb;
+pub mod kb;
 
 // Prototype modules (uncomment as implemented)
 // pub mod proto1_flash;

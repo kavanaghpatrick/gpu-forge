@@ -66,7 +66,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14, AC-8.4, NFR-6, NFR-7_
   - _Design: Shared Infrastructure_
 
-- [ ] 1.7 Implement KB finding output
+- [x] 1.7 Implement KB finding output
   - **Do**: Define KbFinding struct (domain, title, content, tags, confidence, source), emit_finding writes JSON-lines to findings.jsonl
   - **Files**: `attention-proto/src/kb.rs`
   - **Done when**: emit_finding appends valid JSON to findings.jsonl
