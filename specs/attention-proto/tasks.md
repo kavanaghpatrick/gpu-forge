@@ -347,7 +347,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-10_
   - _Design: Proto 7 MSL Design (GQA)_
 
-- [ ] 4.19 Implement proto7_variants host code and correctness tests
+- [x] 4.19 Implement proto7_variants host code and correctness tests
   - **Do**: For each variant (RoPE, ALiBi, GQA), implement CPU reference, run GPU kernel, validate vs reference (atol=1e-4, rtol=1e-3)
   - **Files**: `attention-proto/src/proto7_variants.rs`, `attention-proto/tests/integration.rs`
   - **Done when**: Correctness tests pass for all 3 variants

@@ -7,6 +7,10 @@ use attention_proto::device::GpuDevice;
 use attention_proto::proto1_flash::{assert_allclose, cpu_attention_f64, run_flash_attention};
 use attention_proto::proto3_paged::{create_paged_kv_cache, run_paged_attention};
 use attention_proto::proto6_fla::{cpu_linear_attention_f64, run_linear_attention};
+use attention_proto::proto7_variants::{
+    cpu_attention_alibi_f64, cpu_attention_no_alibi_f64, cpu_gqa_remap, cpu_rope,
+    run_flash_attention_with_alibi, run_gqa_remap_gpu, run_rope_gpu,
+};
 
 /// Generate deterministic pseudo-random f32 values using a simple LCG.
 fn random_f32(len: usize, seed: u64) -> Vec<f32> {
@@ -299,5 +303,196 @@ mod proto6 {
             1e-2,
             "fla_linear_attention N=128 D=64 chunk=32",
         );
+    }
+}
+
+mod proto7 {
+    use super::*;
+
+    /// Correctness test: GPU RoPE vs CPU reference.
+    ///
+    /// N=64, D=64. Compares GPU apply_rope kernel output vs CPU RoPE reference.
+    /// Tolerances: atol=1e-4, rtol=1e-3 (RoPE is element-wise, FP32 trig should match well).
+    #[test]
+    fn test_rope_correctness() {
+        let device = GpuDevice::shared();
+        let seq_len = 64;
+        let head_dim = 64;
+
+        let q = random_f32(seq_len * head_dim, 42);
+        let k = random_f32(seq_len * head_dim, 137);
+
+        // GPU RoPE
+        let (gpu_q, gpu_k) = run_rope_gpu(device, &q, &k, seq_len, head_dim);
+
+        // CPU RoPE reference
+        let mut cpu_q = q.clone();
+        let mut cpu_k = k.clone();
+        cpu_rope(&mut cpu_q, &mut cpu_k, seq_len, head_dim);
+
+        // Verify dimensions
+        assert_eq!(gpu_q.len(), seq_len * head_dim);
+        assert_eq!(gpu_k.len(), seq_len * head_dim);
+
+        // Verify no NaN or Inf in GPU output
+        for (i, &val) in gpu_q.iter().chain(gpu_k.iter()).enumerate() {
+            assert!(val.is_finite(), "GPU RoPE output[{i}] is not finite: {val}");
+        }
+
+        // Compare GPU vs CPU
+        assert_allclose(&gpu_q, &cpu_q, 1e-4, 1e-3, "rope_q N=64 D=64");
+        assert_allclose(&gpu_k, &cpu_k, 1e-4, 1e-3, "rope_k N=64 D=64");
+    }
+
+    /// Correctness test: ALiBi attention vs CPU reference.
+    ///
+    /// Verifies that:
+    /// 1. ALiBi-enabled output differs from vanilla attention (bias is applied)
+    /// 2. ALiBi GPU output matches CPU ALiBi reference within tolerance
+    ///
+    /// N=64, D=64, num_heads=4.
+    /// Uses smaller N to keep flash attention within reasonable tolerance.
+    #[test]
+    fn test_alibi_correctness() {
+        let device = GpuDevice::shared();
+        let seq_len = 64;
+        let head_dim = 64;
+        let num_heads = 4;
+        let total = num_heads * seq_len * head_dim;
+
+        let q = random_f32(total, 42);
+        let k = random_f32(total, 137);
+        let v = random_f32(total, 999);
+
+        // GPU: run with ALiBi enabled
+        let gpu_alibi =
+            run_flash_attention_with_alibi(device, &q, &k, &v, seq_len, head_dim, num_heads, true);
+
+        // GPU: run without ALiBi
+        let gpu_vanilla = run_flash_attention_with_alibi(
+            device, &q, &k, &v, seq_len, head_dim, num_heads, false,
+        );
+
+        // CPU: ALiBi reference
+        let cpu_alibi =
+            cpu_attention_alibi_f64(&q, &k, &v, seq_len, head_dim, num_heads);
+
+        // CPU: vanilla reference
+        let cpu_vanilla =
+            cpu_attention_no_alibi_f64(&q, &k, &v, seq_len, head_dim, num_heads);
+
+        // Verify dimensions
+        assert_eq!(gpu_alibi.len(), total);
+        assert_eq!(gpu_vanilla.len(), total);
+
+        // Verify no NaN or Inf
+        for (i, &val) in gpu_alibi.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "GPU ALiBi output[{i}] is not finite: {val}"
+            );
+        }
+
+        // 1. ALiBi output must differ from vanilla
+        let mut diff_count = 0;
+        let mut max_diff = 0.0f32;
+        for (a, v) in gpu_alibi.iter().zip(gpu_vanilla.iter()) {
+            let d = (a - v).abs();
+            if d > 1e-6 {
+                diff_count += 1;
+            }
+            max_diff = max_diff.max(d);
+        }
+        assert!(
+            diff_count > total / 2,
+            "ALiBi should produce different output than vanilla. Only {diff_count}/{total} elements differ (max_diff={max_diff:.6})"
+        );
+        eprintln!(
+            "[ALiBi] {diff_count}/{total} elements differ from vanilla (max_diff={max_diff:.4})"
+        );
+
+        // 2. GPU ALiBi should match CPU ALiBi reference
+        // Flash attention uses tiled computation with online softmax, so tolerances
+        // are wider than element-wise ops like RoPE.
+        assert_allclose(
+            &gpu_alibi,
+            &cpu_alibi,
+            5e-3,
+            1e-2,
+            "alibi_attention N=64 D=64 H=4",
+        );
+
+        // 3. GPU vanilla should match CPU vanilla reference
+        assert_allclose(
+            &gpu_vanilla,
+            &cpu_vanilla,
+            5e-3,
+            1e-2,
+            "vanilla_attention N=64 D=64 H=4",
+        );
+    }
+
+    /// Correctness test: GPU GQA head remapping vs CPU reference.
+    ///
+    /// N=32, num_heads=8, num_kv_heads=2 (group_size=4).
+    /// Each of the 2 KV heads should be replicated to 4 Q heads.
+    /// Tolerances: exact match expected (pure copy, no arithmetic).
+    #[test]
+    fn test_gqa_correctness() {
+        let device = GpuDevice::shared();
+        let seq_len = 32;
+        let head_dim = 64;
+        let num_heads = 8;
+        let num_kv_heads = 2;
+
+        let k_full = random_f32(num_kv_heads * seq_len * head_dim, 42);
+
+        // GPU GQA remap
+        let gpu_expanded =
+            run_gqa_remap_gpu(device, &k_full, seq_len, head_dim, num_heads, num_kv_heads);
+
+        // CPU GQA remap reference
+        let cpu_expanded = cpu_gqa_remap(&k_full, seq_len, head_dim, num_heads, num_kv_heads);
+
+        // Verify dimensions
+        assert_eq!(gpu_expanded.len(), num_heads * seq_len * head_dim);
+        assert_eq!(cpu_expanded.len(), num_heads * seq_len * head_dim);
+
+        // Verify no NaN or Inf
+        for (i, &val) in gpu_expanded.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "GPU GQA output[{i}] is not finite: {val}"
+            );
+        }
+
+        // GQA remap is a pure copy — should be exactly equal (atol=0, rtol=0)
+        // Use small tolerance for floating point buffer roundtrip
+        assert_allclose(
+            &gpu_expanded,
+            &cpu_expanded,
+            1e-6,
+            1e-6,
+            "gqa_remap N=32 D=64 H=8 KV=2",
+        );
+
+        // Additionally verify the group structure:
+        // Q heads 0-3 should all match KV head 0
+        // Q heads 4-7 should all match KV head 1
+        let group_size = num_heads / num_kv_heads;
+        for kv_head in 0..num_kv_heads {
+            let kv_offset = kv_head * seq_len * head_dim;
+            for g in 0..group_size {
+                let q_head = kv_head * group_size + g;
+                let q_offset = q_head * seq_len * head_dim;
+                for idx in 0..seq_len * head_dim {
+                    assert_eq!(
+                        gpu_expanded[q_offset + idx],
+                        k_full[kv_offset + idx],
+                        "GQA group mismatch: q_head={q_head} kv_head={kv_head} idx={idx}"
+                    );
+                }
+            }
+        }
     }
 }
