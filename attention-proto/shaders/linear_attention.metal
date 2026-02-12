@@ -40,20 +40,13 @@ kernel void chunk_h(
     device float*       H_out   [[buffer(2)]],      // [num_chunks, head_dim, head_dim]
     constant AttentionParams& params [[buffer(3)]],
     uint tg_id  [[threadgroup_position_in_grid]],    // chunk index
-    uint tid    [[thread_index_in_threadgroup]]
+    uint tid    [[thread_index_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]]
 ) {
     const uint D  = HEAD_DIM;
     const uint C  = CHUNK_SIZE;
     const uint chunk_start = tg_id * C;
-
-    // Thread maps to one (i, j) element of the D x D delta_H matrix.
-    // tid ranges from 0 to D*D - 1 (e.g., 0..4095 for D=64).
-    const uint i = tid / D;  // row in delta_H
-    const uint j = tid % D;  // col in delta_H
-
-    // Guard: if D*D < threadgroup size, extra threads exit early.
-    // Also guard if this thread's (i,j) is out of bounds for non-square or smaller D.
-    if (i >= D || j >= D) return;
+    const uint total_elements = D * D;  // elements in delta_H matrix
 
     // Threadgroup memory for K_chunk and V_chunk.
     // Loaded cooperatively by all threads in the threadgroup.
@@ -63,7 +56,6 @@ kernel void chunk_h(
     // Cooperative load of K_chunk and V_chunk into threadgroup memory.
     // Total elements to load: CHUNK_SIZE * HEAD_DIM per array.
     // Each thread loads multiple elements (stride by threadgroup size).
-    const uint tg_size = D * D;  // total threads in threadgroup
     const uint load_count = C * D;
 
     for (uint idx = tid; idx < load_count; idx += tg_size) {
@@ -84,17 +76,24 @@ kernel void chunk_h(
     // Barrier: ensure all threads have finished loading before computing.
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Compute delta_H[i][j] = sum_{t=0}^{C-1} K_chunk[t][i] * V_chunk[t][j]
-    // This is a dot product over the chunk dimension.
-    float acc = 0.0f;
-    for (uint t = 0; t < C; t++) {
-        acc += K_chunk[t * TILE_D + i] * V_chunk[t * TILE_D + j];
-    }
-
-    // Write result to global memory.
-    // H_out layout: [num_chunks, D, D], row-major.
+    // Each thread handles multiple (i,j) elements of the D x D delta_H matrix.
+    // When D*D > tg_size (e.g., 64*64=4096 > 1024), each thread loops.
     const uint chunk_offset = tg_id * D * D;
-    H_out[chunk_offset + i * D + j] = acc;
+
+    for (uint elem = tid; elem < total_elements; elem += tg_size) {
+        const uint i = elem / D;  // row in delta_H
+        const uint j = elem % D;  // col in delta_H
+
+        // Compute delta_H[i][j] = sum_{t=0}^{C-1} K_chunk[t][i] * V_chunk[t][j]
+        float acc = 0.0f;
+        for (uint t = 0; t < C; t++) {
+            acc += K_chunk[t * TILE_D + i] * V_chunk[t * TILE_D + j];
+        }
+
+        // Write result to global memory.
+        // H_out layout: [num_chunks, D, D], row-major.
+        H_out[chunk_offset + i * D + j] = acc;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,22 +123,13 @@ kernel void chunk_o(
     device float*       O            [[buffer(2)]],  // [seq_len, head_dim]
     constant AttentionParams& params [[buffer(3)]],
     uint tg_id  [[threadgroup_position_in_grid]],    // chunk index
-    uint tid    [[thread_index_in_threadgroup]]
+    uint tid    [[thread_index_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]]
 ) {
     const uint D  = HEAD_DIM;
     const uint C  = CHUNK_SIZE;
     const uint chunk_start = tg_id * C;
-
-    // Thread maps to one (t, d) element of the C × D output.
-    // tid ranges from 0 to C*D - 1 (e.g., 0..2047 for C=32, D=64).
-    const uint t = tid / D;  // token index within chunk
-    const uint d = tid % D;  // dimension index
-
-    // Guard: extra threads beyond C*D exit early.
-    if (t >= C || d >= D) return;
-
-    // Also guard: if this token is past seq_len, skip it.
-    if (chunk_start + t >= params.seq_len) return;
+    const uint total_elements = C * D;  // output elements per chunk
 
     // Threadgroup memory for Q_chunk and H_cumulative.
     threadgroup float Q_chunk[TILE_C * TILE_D];  // [CHUNK_SIZE, HEAD_DIM]
@@ -147,8 +137,6 @@ kernel void chunk_o(
 
     // Cooperative load of Q_chunk into threadgroup memory.
     // Total elements: C * D. Each thread loads multiple elements strided by tg_size.
-    const uint tg_size = C * D;  // total threads in threadgroup
-
     for (uint idx = tid; idx < C * D; idx += tg_size) {
         uint row = idx / D;
         uint col = idx % D;
@@ -172,14 +160,23 @@ kernel void chunk_o(
     // Barrier: ensure all threads have finished loading before computing.
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Compute O[t][d] = sum_{i=0}^{D-1} Q_chunk[t][i] * H_tile[i][d]
-    // This is a dot product over the head dimension.
-    float acc = 0.0f;
-    for (uint i = 0; i < D; i++) {
-        acc += Q_chunk[t * TILE_D + i] * H_tile[i * TILE_D + d];
-    }
+    // Each thread handles multiple (t,d) output elements.
+    // When C*D > tg_size (e.g., 32*64=2048 > 1024), each thread loops.
+    for (uint elem = tid; elem < total_elements; elem += tg_size) {
+        const uint t = elem / D;  // token index within chunk
+        const uint d = elem % D;  // dimension index
 
-    // Write result to global memory.
-    const uint global_out = (chunk_start + t) * D + d;
-    O[global_out] = acc;
+        // Guard: if this token is past seq_len, skip it.
+        if (chunk_start + t >= params.seq_len) continue;
+
+        // Compute O[t][d] = sum_{i=0}^{D-1} Q_chunk[t][i] * H_tile[i][d]
+        float acc = 0.0f;
+        for (uint i = 0; i < D; i++) {
+            acc += Q_chunk[t * TILE_D + i] * H_tile[i * TILE_D + d];
+        }
+
+        // Write result to global memory.
+        const uint global_out = (chunk_start + t) * D + d;
+        O[global_out] = acc;
+    }
 }

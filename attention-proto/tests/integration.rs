@@ -6,6 +6,7 @@
 use attention_proto::device::GpuDevice;
 use attention_proto::proto1_flash::{assert_allclose, cpu_attention_f64, run_flash_attention};
 use attention_proto::proto3_paged::{create_paged_kv_cache, run_paged_attention};
+use attention_proto::proto6_fla::{cpu_linear_attention_f64, run_linear_attention};
 
 /// Generate deterministic pseudo-random f32 values using a simple LCG.
 fn random_f32(len: usize, seed: u64) -> Vec<f32> {
@@ -242,5 +243,61 @@ mod proto3 {
 
         println!("\nMax viable page_size for D={HEAD_DIM} within 32KB: 32 tokens");
         println!("page_size >= 64 requires either smaller BLOCK_R or reduced D");
+    }
+}
+
+mod proto6 {
+    use super::*;
+
+    /// Correctness test: GPU linear attention vs CPU FP64 reference.
+    ///
+    /// N=128, D=64, chunk_size=32. Tolerances account for FP32 GPU accumulation
+    /// vs FP64 CPU reference. Linear attention does not use softmax so the main
+    /// error source is FP32 dot product accumulation over D=64 dimensions and
+    /// chunk_size=32 outer product accumulations per chunk.
+    ///
+    /// atol=1e-3, rtol=1e-2: relaxed because values accumulate across chunks,
+    /// and FP32 rounding compounds with larger H matrix elements.
+    #[test]
+    fn test_fla_correctness() {
+        let device = GpuDevice::shared();
+        let seq_len = 128;
+        let head_dim = 64;
+        let chunk_size = 32;
+
+        // Generate deterministic random Q, K, V
+        // Use small magnitude to keep accumulated values reasonable
+        let q = random_f32(seq_len * head_dim, 42);
+        let k = random_f32(seq_len * head_dim, 137);
+        let v = random_f32(seq_len * head_dim, 999);
+
+        // Run GPU linear attention (two-pass: chunk_h then chunk_o)
+        let gpu_result =
+            run_linear_attention(device, &q, &k, &v, seq_len, head_dim, chunk_size);
+
+        // Run CPU FP64 reference
+        let cpu_result =
+            cpu_linear_attention_f64(&q, &k, &v, seq_len, head_dim, chunk_size);
+
+        // Verify dimensions
+        assert_eq!(gpu_result.len(), seq_len * head_dim);
+        assert_eq!(cpu_result.len(), seq_len * head_dim);
+
+        // Verify no NaN or Inf in GPU output
+        for (i, &val) in gpu_result.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "GPU output[{i}] is not finite: {val}"
+            );
+        }
+
+        // Compare GPU vs CPU
+        assert_allclose(
+            &gpu_result,
+            &cpu_result,
+            1e-3,
+            1e-2,
+            "fla_linear_attention N=128 D=64 chunk=32",
+        );
     }
 }

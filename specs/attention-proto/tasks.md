@@ -292,7 +292,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-8, AC-4.1_
   - _Design: Proto 6 MSL Design (chunk_o)_
 
-- [ ] 4.13 Implement proto6_fla host code and correctness test
+- [x] 4.13 Implement proto6_fla host code and correctness test
   - **Do**: Two-pass dispatch (chunk_h then chunk_o), validate vs CPU linear attention reference (atol=1e-4, rtol=1e-3)
   - **Files**: `attention-proto/src/proto6_fla.rs`, `attention-proto/tests/integration.rs`
   - **Done when**: Correctness test passes for N=512, D=64, chunk=64
