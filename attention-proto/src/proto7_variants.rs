@@ -484,6 +484,152 @@ pub fn run_gqa_remap_gpu(
     unsafe { read_buffer_slice(&k_expanded_buf, num_heads * seq_len * head_dim) }
 }
 
+// ---------------------------------------------------------------------------
+// KB Findings
+// ---------------------------------------------------------------------------
+
+/// Emit KB findings for Proto 7 (RoPE, ALiBi, GQA variant overhead).
+///
+/// Findings based on empirical benchmarks on M4 (32 heads, N=2048, D=64):
+/// - Base flash attention: ~204ms GPU time
+/// - RoPE standalone: ~9.7us (negligible)
+/// - ALiBi fused: ~201ms (within noise, zero overhead via function constant)
+/// - GQA remap: ~73-184us depending on group_size
+pub fn emit_proto7_findings() {
+    use crate::kb::{emit_finding, KbFinding};
+
+    // Finding 1: RoPE standalone overhead is negligible
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto7: RoPE standalone kernel overhead ~10us per head on M4 — negligible vs attention"
+            .to_string(),
+        content: "RoPE apply_rope kernel takes ~9.7us for one head at N=2048, D=64 on M4. \
+                  For 32-head attention taking ~204ms total GPU time, RoPE adds <0.01% overhead \
+                  per head (~0.3ms total for all heads). RoPE uses a 2D grid (seq_len, D/2) with \
+                  cos/sin rotation per (token, dim_pair). Expected 2-5% overhead confirmed to be \
+                  well below 1%. Can be applied as a pre-processing step before attention without \
+                  measurable impact on end-to-end latency."
+            .to_string(),
+        tags: vec![
+            "proto7".to_string(),
+            "rope".to_string(),
+            "rotary-position-embedding".to_string(),
+            "gpu-perf".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.9,
+        source: "attention-proto/variant_overhead benchmark (criterion, GPU timing, 32 heads, N=2048, D=64)"
+            .to_string(),
+    });
+
+    // Finding 2: ALiBi fused via function constant has zero overhead
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto7: ALiBi fused into flash attention via function constant adds zero measurable overhead on M4"
+            .to_string(),
+        content: "ALiBi bias fused into flash_attention.metal via ALIBI_ENABLED function_constant(4) \
+                  takes ~201ms vs base ~204ms for 32 heads at N=2048, D=64 — within noise (-2.3%). \
+                  Metal compiler dead-code eliminates the ALiBi branch when ALIBI_ENABLED=false, so \
+                  the disabled path has zero cost. When enabled, the ALiBi math (one multiply + one \
+                  add per score element: bias = -slope * |pos_q - pos_k|) is negligible relative to \
+                  simdgroup_matrix attention compute. Confirms <1% overhead target. Function constant \
+                  specialization is the correct strategy for optional attention biases."
+            .to_string(),
+        tags: vec![
+            "proto7".to_string(),
+            "alibi".to_string(),
+            "function-constant".to_string(),
+            "zero-overhead".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.92,
+        source: "attention-proto/variant_overhead benchmark (criterion, GPU timing, 32 heads, N=2048, D=64)"
+            .to_string(),
+    });
+
+    // Finding 3: GQA remap overhead is negligible
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto7: GQA head remap kernel overhead <0.1% of attention compute on M4".to_string(),
+        content: "GQA gqa_remap kernel expands KV heads to Q head count via pure memory copy. \
+                  Measured on M4 at N=2048, D=64, 32 Q heads: group_size=1 (32 KV heads, full copy) \
+                  ~184us = 0.1%, group_size=2 (16 KV heads) ~112us, group_size=4 (8 KV heads) ~80us, \
+                  group_size=8 (4 KV heads) ~73us. All well below 1% of base flash attention ~204ms. \
+                  Cost scales with output size (num_heads * seq_len * head_dim elements), not input \
+                  KV head count. Exact match (atol=1e-6) with CPU reference — pure copy has no \
+                  numerical error. GQA remap can be applied as a pre-processing step with negligible \
+                  overhead."
+            .to_string(),
+        tags: vec![
+            "proto7".to_string(),
+            "gqa".to_string(),
+            "grouped-query-attention".to_string(),
+            "head-remap".to_string(),
+            "gpu-perf".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.9,
+        source: "attention-proto/variant_overhead benchmark (criterion, GPU timing, group_size=1/2/4/8)"
+            .to_string(),
+    });
+
+    // Finding 4: All variants can be function-constant-specialized
+    emit_finding(&KbFinding {
+        domain: "metal-compute".to_string(),
+        title: "proto7: All attention variants (RoPE, ALiBi, GQA) amenable to function constant specialization on M4"
+            .to_string(),
+        content: "All three Proto 7 attention variants work with Metal function constants for \
+                  zero-overhead dispatch. ALiBi: ALIBI_ENABLED bool function_constant(4) enables \
+                  compiler dead-code elimination — confirmed zero overhead when disabled and \
+                  negligible overhead when enabled. RoPE: standalone kernel with no function \
+                  constants needed (always applied identically), ~10us per head. GQA: uses \
+                  AttentionParams.group_size at runtime (pure memory copy, no branching to \
+                  specialize). For trait Attention<Q,K,V>, the recommended dispatch strategy is: \
+                  (1) function constants for attention kernel variants (ALiBi, causal mask, etc.), \
+                  (2) standalone pre/post-processing kernels for RoPE and GQA remap. Combined with \
+                  Proto 4 findings (~63us cold compile, ~178ns cache hit), variant selection adds \
+                  <1ms total overhead to any attention configuration."
+            .to_string(),
+        tags: vec![
+            "proto7".to_string(),
+            "function-constant".to_string(),
+            "trait-attention".to_string(),
+            "dispatch-strategy".to_string(),
+            "metal-compute".to_string(),
+        ],
+        confidence: 0.88,
+        source: "attention-proto/proto7_variants analysis (combined benchmark + correctness data)"
+            .to_string(),
+    });
+
+    // Finding 5: Correctness validation tolerances for each variant
+    emit_finding(&KbFinding {
+        domain: "msl-kernels".to_string(),
+        title: "proto7: Attention variant correctness tolerances — RoPE 1e-4, ALiBi 5e-3, GQA 1e-6 on M4"
+            .to_string(),
+        content: "GPU vs CPU FP64 reference correctness tolerances on M4: RoPE matches at \
+                  atol=1e-4 (tight — element-wise trig ops have good FP32 agreement). ALiBi \
+                  matches at atol=5e-3 (wider — accumulated softmax error from FP32 attention \
+                  compute, same as base flash attention). GQA remap matches at atol=1e-6 (exact — \
+                  pure memory copy with no arithmetic). These tolerances establish baselines for \
+                  regression testing in trait Attention<Q,K,V> implementations. The ALiBi tolerance \
+                  is dominated by flash attention FP32 softmax accumulation, not the ALiBi bias \
+                  computation itself."
+            .to_string(),
+        tags: vec![
+            "proto7".to_string(),
+            "correctness".to_string(),
+            "numerical-tolerance".to_string(),
+            "rope".to_string(),
+            "alibi".to_string(),
+            "gqa".to_string(),
+        ],
+        confidence: 0.92,
+        source: "attention-proto/proto7_variants correctness tests (GPU vs CPU FP64 reference)"
+            .to_string(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +685,13 @@ mod tests {
             }
         }
         assert!(any_different, "Token 1 should be rotated by RoPE");
+    }
+
+    /// Test to emit Proto 7 KB findings. Run manually:
+    /// `cargo test --release -- proto7_variants::tests::generate_proto7_findings --ignored --test-threads=1`
+    #[test]
+    #[ignore]
+    fn generate_proto7_findings() {
+        super::emit_proto7_findings();
     }
 }

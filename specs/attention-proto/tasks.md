@@ -365,7 +365,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-11, AC-5.3_
   - _Design: Proto 7 Benchmark_
 
-- [ ] 4.21 Generate KB findings for Proto 7
+- [x] 4.21 Generate KB findings for Proto 7
   - **Do**: Emit 4+ findings: RoPE overhead (expected 2-5%), ALiBi overhead (<1%), GQA overhead (<1%), validation that all can be function-constant-specialized
   - **Files**: Update findings.jsonl
   - **Done when**: At least 4 findings emitted
