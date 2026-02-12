@@ -21,7 +21,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
   - _Requirements: FR-14_
   - _Design: Project Structure_
 
-- [ ] 1.2 Implement build.rs for Metal shader compilation
+- [x] 1.2 Implement build.rs for Metal shader compilation
   - **Do**: Copy particle-system/build.rs pattern, set -std=metal3.1 for simdgroup_matrix, -O2 for release, compile shaders/*.metal → .air → .metallib
   - **Files**: `attention-proto/build.rs`, `attention-proto/shaders/types.h` (empty placeholder)
   - **Done when**: Build script compiles, rerun-if-changed triggers on .metal files
