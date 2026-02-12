@@ -210,7 +210,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
 
 ### Proto 3: PagedAttention V2
 
-- [ ] 4.4 Implement paged_attention.metal (phase 1 kernel)
+- [x] 4.4 Implement paged_attention.metal (phase 1 kernel)
   - **Do**: Kernel takes page_table buffer, iterates partitions, loads KV from physical page offsets, computes partial attention outputs + running max/sum. Threadgroup memory: 2 pages (16KB) + Q_tile (8KB) = 24KB fits in 32KB.
   - **Files**: `attention-proto/shaders/paged_attention.metal`
   - **Done when**: Phase 1 kernel compiles
