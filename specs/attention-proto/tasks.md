@@ -463,7 +463,7 @@ Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
   - **Commit**: `test(all): verify all prototypes pass correctness tests`
   - _Requirements: NFR-17, NFR-10_
 
-- [ ] 6.2 Run full benchmark suite
+- [x] 6.2 Run full benchmark suite
   - **Do**: Run all criterion benchmarks, generate JSON output
   - **Files**: All benchmarks
   - **Done when**: All benchmarks complete, bench.json generated
