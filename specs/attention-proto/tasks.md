@@ -246,7 +246,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-7, AC-3.3, NFR-1_
   - _Design: Proto 3_
 
-- [ ] 4.8 Implement PagedAttention benchmark
+- [x] 4.8 Implement PagedAttention benchmark
   - **Do**: Benchmark context lengths 1K/4K/8K/16K, page sizes 8/16/32 tokens. Measure throughput vs Proto 1 contiguous. Report overhead %.
   - **Files**: `attention-proto/benches/paged_attention.rs`
   - **Done when**: Benchmark runs, reports overhead 10-25%
