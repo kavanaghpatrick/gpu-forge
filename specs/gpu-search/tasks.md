@@ -492,7 +492,7 @@ Benchmarks, regression detection, CI pipeline, documentation.
   - **Done when**: Clean clippy, all tests pass, release build succeeds
   - **Commit**: `fix(gpu-search): address lint/type issues` (if needed)
 
-- [ ] 4.8 Create .gitignore for gpu-search
+- [x] 4.8 Create .gitignore for gpu-search
   - **Do**: Ignore build artifacts: `/target/`, `*.metallib`, `*.air`, `criterion/`.
   - **Files**: `gpu-search/.gitignore`
   - **Done when**: `cat gpu-search/.gitignore` shows expected patterns
