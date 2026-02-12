@@ -9,6 +9,7 @@ pub mod orchestrator;
 pub mod ranking;
 pub mod streaming;
 pub mod types;
+pub mod verify;
 
 pub use binary::BinaryDetector;
 pub use cancel::{cancellation_pair, CancellationToken, CancellationHandle, SearchGeneration, SearchGenerationGuard, SearchSession};

@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new features -- accuracy first.
 
-- [ ] 1.1 Add memchr CPU verification module
+- [x] 1.1 Add memchr CPU verification module
   - **Do**: Create `src/search/verify.rs` with `cpu_verify_matches()` function. Uses `memchr::memmem::find_iter()` to find all pattern occurrences in file content. Returns `VerificationResult { confirmed, false_positives, missed }`. Add `VerifyMode` enum (Off/Sample/Full). Add `pub mod verify;` to `src/search/mod.rs`.
   - **Files**: `gpu-search/src/search/verify.rs` (create), `gpu-search/src/search/mod.rs` (modify)
   - **Done when**: `verify.rs` compiles, `cpu_verify_matches()` correctly finds patterns via memchr on test strings
