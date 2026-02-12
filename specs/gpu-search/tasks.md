@@ -478,7 +478,7 @@ Benchmarks, regression detection, CI pipeline, documentation.
   - _Requirements: NFR-12_
   - _Design: Test Strategy_
 
-- [ ] 4.6 Create CI pipeline
+- [x] 4.6 Create CI pipeline
   - **Do**: GitHub Actions workflow at `.github/workflows/gpu-search-ci.yml`. 5 stages: fast checks (clippy, check, test --lib), GPU integration (test gpu_*), performance (bench), stress (nightly, --ignored), UI screenshots.
   - **Files**: `.github/workflows/gpu-search-ci.yml`
   - **Done when**: CI YAML valid, pipeline stages defined

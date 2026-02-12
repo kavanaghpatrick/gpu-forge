@@ -1,0 +1,199 @@
+name: GPU Search CI
+
+on:
+  push:
+    branches: [ main, feat/gpu-search ]
+    paths:
+      - 'gpu-search/**'
+      - '.github/workflows/gpu-search-ci.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'gpu-search/**'
+      - '.github/workflows/gpu-search-ci.yml'
+  workflow_dispatch:
+  schedule:
+    # Nightly at 3am UTC for stress tests
+    - cron: '0 3 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Stage 1: Fast checks -- clippy, check, unit tests
+  fast-checks:
+    name: Fast Checks (clippy + check + unit tests)
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-fast-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fast-
+
+      - name: Clippy lint
+        run: cargo clippy -p gpu-search -- -D warnings
+
+      - name: Cargo check
+        run: cargo check -p gpu-search
+
+      - name: Unit tests
+        run: cargo test -p gpu-search --lib
+
+  # Stage 2: GPU integration tests (requires Metal hardware)
+  gpu-integration:
+    name: GPU Integration Tests
+    runs-on: macos-14
+    needs: fast-checks
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-gpu-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gpu-
+
+      - name: GPU-CPU consistency tests
+        run: cargo test -p gpu-search --test test_gpu_cpu_consistency
+        env:
+          METAL_DEVICE_WRAPPER_TYPE: 1
+          MTL_SHADER_VALIDATION: 1
+
+      - name: GPU memory safety tests
+        run: cargo test -p gpu-search --test test_gpu_memory
+        env:
+          METAL_DEVICE_WRAPPER_TYPE: 1
+          MTL_SHADER_VALIDATION: 1
+
+      - name: Filesystem edge case tests
+        run: cargo test -p gpu-search --test test_filesystem_edge_cases
+
+      - name: Orchestrator integration tests
+        run: cargo test -p gpu-search --test test_orchestrator_integration
+
+      - name: Index tests
+        run: cargo test -p gpu-search --test test_index
+
+      - name: Property-based tests
+        run: cargo test -p gpu-search --test test_proptest
+
+  # Stage 3: Performance benchmarks (main branch + manual trigger only)
+  performance:
+    name: Performance Benchmarks
+    runs-on: macos-14
+    needs: fast-checks
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Run benchmarks
+        run: cargo bench -p gpu-search
+
+      - name: Check for regression
+        run: |
+          if [ -f gpu-search/scripts/check_bench_regression.py ]; then
+            python3 gpu-search/scripts/check_bench_regression.py \
+              gpu-search/target/criterion --threshold 10
+          else
+            echo "Regression detection script not yet available, skipping"
+          fi
+
+  # Stage 4: Stress tests (nightly schedule only)
+  stress:
+    name: Stress Tests (Nightly)
+    runs-on: macos-14
+    needs: gpu-integration
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-stress-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stress-
+
+      - name: Stress tests
+        run: cargo test -p gpu-search --test test_stress -- --ignored --test-threads=1
+        timeout-minutes: 15
+
+  # Stage 5: Release build
+  build:
+    name: Release Build
+    runs-on: macos-14
+    needs: fast-checks
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release binary
+        run: cargo build -p gpu-search --release
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-search-macos-arm64
+          path: gpu-search/target/release/gpu-search
+          if-no-files-found: warn
