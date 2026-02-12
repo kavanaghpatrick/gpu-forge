@@ -283,7 +283,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: FR-8, AC-4.1_
   - _Design: Proto 6 MSL Design (chunk_h)_
 
-- [ ] 4.12 Implement linear_attention.metal (chunk_o kernel)
+- [x] 4.12 Implement linear_attention.metal (chunk_o kernel)
   - **Do**: Kernel computes O_chunk = Q_chunk * H_chunk (C×D = C×D * D×D matmul). Plus intra-chunk causal attention for tokens within chunk.
   - **Files**: `attention-proto/shaders/linear_attention.metal`
   - **Done when**: chunk_o kernel compiles
