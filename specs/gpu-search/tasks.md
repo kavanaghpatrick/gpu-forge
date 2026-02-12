@@ -295,7 +295,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-9, FR-18_
   - _Design: UI, results_list.rs_
 
-- [ ] 2.16 Implement ui/keybinds.rs -- keyboard shortcuts
+- [x] 2.16 Implement ui/keybinds.rs -- keyboard shortcuts
   - **Do**: Up/Down navigate results (move selected_index, scroll into view), Enter opens file, Cmd+Enter opens in $EDITOR, Escape dismisses, Cmd+Backspace clears search, Cmd+C copies path, Tab cycles filters.
   - **Files**: `gpu-search/src/ui/keybinds.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: All keyboard shortcuts produce correct actions
