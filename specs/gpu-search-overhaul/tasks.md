@@ -21,7 +21,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
   - _Requirements: FR-1_
   - _Design: Component A_
 
-- [ ] 1.2 Add accuracy test: assert every returned line contains pattern
+- [x] 1.2 Add accuracy test: assert every returned line contains pattern
   - **Do**: Create `tests/test_search_accuracy.rs`. Build test corpus in tempdir: 10 files (100B to 1MB) with known patterns at known byte offsets. Test `test_accuracy_line_content_contains_pattern`: for each of 10 patterns, run `SearchOrchestrator::search()`, assert EVERY `ContentMatch.line_content` contains the pattern. Test `test_no_false_positives_multi_file_batch`: 5 files of different sizes, one unique pattern, assert no cross-file contamination. These tests MAY FAIL initially (they catch the P0 bug).
   - **Files**: `gpu-search/tests/test_search_accuracy.rs` (create)
   - **Done when**: Tests compile and run (expected: some may fail due to P0 bug)
