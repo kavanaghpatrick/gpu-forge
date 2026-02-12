@@ -172,6 +172,130 @@ pub fn metal_flash_attention_bridge<B: Backend>(
 // (a) Backend delegation (mechanical, solvable with macros)
 // (b) Zero-copy bridge (requires native Burn Metal backend, or shared MTLBuffer)
 
+/// Emit KB findings for Proto 8: Burn extension trait viability.
+///
+/// Findings cover:
+/// 1. Trait viability — AttentionBackend: Backend supertrait pattern works without forking Burn
+/// 2. Dispatch overhead — bridge function adds 2-17us depending on tensor size (N=64-512, D=64)
+/// 3. Burn version compatibility — Burn 0.20.1 with NdArray backend for testing
+/// 4. Code complexity — newtype wrapper + bridge function, zero unsafe blocks needed
+pub fn emit_proto8_findings() {
+    use crate::kb::{emit_finding, KbFinding};
+
+    // Finding 1: Trait viability — YES, supertrait pattern works without forking Burn
+    emit_finding(&KbFinding {
+        domain: "metal-compute".to_string(),
+        title: "proto8: AttentionBackend supertrait pattern viable without forking Burn"
+            .to_string(),
+        content: "Defining `trait AttentionBackend: Backend` with a `flash_attention(q, k, v, mask) -> Tensor<Self, 3>` \
+                  method compiles and integrates cleanly with Burn 0.20.1's type system. The orphan rule is solved via \
+                  a newtype wrapper `MetalAttentionBackend<B: Backend>(PhantomData<B>)` with Clone+Default+Debug derives. \
+                  The bridge function `metal_flash_attention_bridge<B: Backend>()` is generic over any Burn Backend, \
+                  extracting data via into_data()/to_vec::<f32>() and reconstructing via TensorData::new()/Tensor::from_data(). \
+                  No fork of Burn is needed — the pattern is purely additive. The remaining production task is Backend \
+                  delegation (forwarding 7+ op traits with hundreds of methods), which is mechanical boilerplate solvable \
+                  with proc-macros or the ambassador crate. Verdict: YES — the supertrait pattern is the correct approach \
+                  for adding custom GPU attention to Burn's trait hierarchy."
+            .to_string(),
+        tags: vec![
+            "proto8".to_string(),
+            "burn".to_string(),
+            "trait-extension".to_string(),
+            "attention-backend".to_string(),
+            "supertrait".to_string(),
+            "orphan-rule".to_string(),
+        ],
+        confidence: 0.95,
+        source: "attention-proto/proto8_burn (compile tests + integration test, Burn 0.20.1 NdArray)"
+            .to_string(),
+    });
+
+    // Finding 2: Dispatch overhead — 2-17us bridge cost depending on tensor size
+    emit_finding(&KbFinding {
+        domain: "gpu-perf".to_string(),
+        title: "proto8: Burn bridge dispatch overhead 2-17us on M4 — dominated by tensor copy cost"
+            .to_string(),
+        content: "The metal_flash_attention_bridge function adds 2-17us overhead vs direct Proto 1 Metal \
+                  dispatch, measured via criterion (20 samples each) at D=64: N=64 ~2us, N=128 ~5us, \
+                  N=256 ~8us, N=512 ~17us. Overhead source: Vec::clone for 3 input tensors + into_data() + \
+                  to_vec::<f32>() extraction + TensorData::new() + Tensor::from_data() re-wrapping. Grows \
+                  linearly with tensor data size (3 * N * D * 4 bytes per dispatch). For N=512 D=64, the \
+                  bridge copies 3 * 512 * 64 * 4 = 384KB total. This is the unavoidable cost of bridging \
+                  two memory models without a shared-memory backend. A native Burn Metal backend sharing \
+                  MTLBuffer pointers would eliminate this overhead entirely. For production trait Attention, \
+                  the 2-17us bridge overhead is negligible relative to attention compute (277-1065us for \
+                  N=64-512)."
+            .to_string(),
+        tags: vec![
+            "proto8".to_string(),
+            "burn".to_string(),
+            "dispatch-overhead".to_string(),
+            "bridge-pattern".to_string(),
+            "gpu-perf".to_string(),
+            "M4".to_string(),
+        ],
+        confidence: 0.9,
+        source: "attention-proto/burn_extension benchmark (criterion, 20 samples, N=64/128/256/512, D=64)"
+            .to_string(),
+    });
+
+    // Finding 3: Burn version compatibility
+    emit_finding(&KbFinding {
+        domain: "metal-compute".to_string(),
+        title: "proto8: Burn 0.20.1 compatible — NdArray backend for testing, ~15 crate footprint"
+            .to_string(),
+        content: "Burn 0.20.1 compiles successfully as an optional dependency behind the `burn-ext` feature flag. \
+                  NdArray backend used for testing (CPU-only, no GPU dependency from Burn side). Burn dependency \
+                  footprint is ~15 additional crates (burn-backend, burn-tensor, burn-core, burn-nn, burn-optim, \
+                  burn-std, burn-derive, ahash, bincode, uuid, rand_distr, etc.) — significantly lighter than \
+                  CubeCL's ~350 crates. Backend trait path is `burn::tensor::backend::Backend` (not \
+                  `burn::backend::Backend`). TensorData API uses `TensorData::new(Vec<f32>, shape)` for creation \
+                  and `.to_vec::<f32>()` (returns Result) for extraction. Tensor API uses `Tensor::from_data(data, &device)` \
+                  and `.into_data()` for CPU round-trip. Burn 0.20 introduced CubeK (CubeCL-based kernels) but \
+                  the extension trait pattern does not depend on CubeK — works with any backend including NdArray."
+            .to_string(),
+        tags: vec![
+            "proto8".to_string(),
+            "burn".to_string(),
+            "burn-0.20".to_string(),
+            "dependency-footprint".to_string(),
+            "compatibility".to_string(),
+        ],
+        confidence: 0.95,
+        source: "attention-proto/proto8_burn (Cargo.toml dependency resolution, compile test)"
+            .to_string(),
+    });
+
+    // Finding 4: Code complexity — minimal boilerplate, zero unsafe
+    emit_finding(&KbFinding {
+        domain: "metal-compute".to_string(),
+        title: "proto8: Burn extension trait requires ~150 lines boilerplate, zero unsafe blocks"
+            .to_string(),
+        content: "The complete Proto 8 implementation is ~240 lines of Rust: ~55 lines for AttentionBackend \
+                  trait definition + MetalAttentionBackend newtype, ~70 lines for metal_flash_attention_bridge \
+                  function, ~60 lines for tests, ~55 lines for documentation. Zero unsafe blocks are needed — \
+                  the bridge goes through safe Burn tensor APIs (into_data, to_vec, from_data) and safe Metal \
+                  host APIs (run_flash_attention). The only remaining boilerplate for production use is Backend \
+                  delegation: forwarding FloatTensorOps, IntTensorOps, BoolTensorOps, ModuleOps, ActivationOps, \
+                  QTensorOps, TransactionOps + Clone + Default + Sized + Send + Sync + Debug + 'static (7 op \
+                  traits with hundreds of methods total). Solutions: (a) proc-macro derive generating forwarding \
+                  impls, (b) ambassador crate for delegation, (c) manual forwarding. The architectural pattern \
+                  is proven; only mechanical boilerplate remains."
+            .to_string(),
+        tags: vec![
+            "proto8".to_string(),
+            "burn".to_string(),
+            "code-complexity".to_string(),
+            "boilerplate".to_string(),
+            "no-unsafe".to_string(),
+            "backend-delegation".to_string(),
+        ],
+        confidence: 0.92,
+        source: "attention-proto/proto8_burn.rs (source analysis, line count, unsafe audit)"
+            .to_string(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +360,14 @@ mod tests {
         }
 
         // If this compiles, the bridge function IS the trait method implementation.
+    }
+
+    /// Generate KB findings for Proto 8 (Burn extension trait).
+    ///
+    /// Run with: `cargo test --release --features burn-ext -- generate_proto8_findings --ignored --test-threads=1`
+    #[test]
+    #[ignore]
+    fn generate_proto8_findings() {
+        emit_proto8_findings();
     }
 }

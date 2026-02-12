@@ -443,7 +443,7 @@ Focus: CubeCL and Burn integration. Non-blocking if they fail.
   - _Requirements: AC-7.3, AC-7.4_
   - _Design: Proto 8_
 
-- [ ] 5.8 Generate KB findings for Proto 8
+- [x] 5.8 Generate KB findings for Proto 8
   - **Do**: Emit 2+ findings: trait viability (yes/no), dispatch overhead, required Burn version, code complexity (lines of boilerplate, unsafe blocks)
   - **Files**: Update findings.jsonl
   - **Done when**: At least 2 findings emitted
