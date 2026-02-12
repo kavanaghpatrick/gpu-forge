@@ -349,7 +349,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-15_
   - _Design: Search Engine, cancel.rs_
 
-- [ ] 2.22 Implement error handling
+- [x] 2.22 Implement error handling
   - **Do**: Centralized error types in `error.rs`. GPU device unavailable: show error. MTLIOCommandQueue failure: fall back to CPU reads. Watchdog timeout: restart chain. Invalid UTF-8: skip file. Permission denied: skip, log. Out of GPU memory: reduce batch size.
   - **Files**: `gpu-search/src/error.rs`, update `gpu-search/src/lib.rs`
   - **Done when**: Each failure mode handled gracefully, no panics
