@@ -471,7 +471,7 @@ Focus: Validate all prototypes, consolidate findings, prepare for KB ingestion.
   - **Commit**: `bench(all): run full benchmark suite`
   - _Requirements: FR-16_
 
-- [ ] 6.3 Validate KB findings quality
+- [x] 6.3 Validate KB findings quality
   - **Do**: Parse findings.jsonl, verify: (1) count >= 20 (minimum), (2) each finding has confidence >= 0.5, (3) CV < 5% for High confidence, (4) all required prototypes have >= 2 findings each
   - **Files**: Script: `attention-proto/scripts/validate_findings.py`
   - **Done when**: Validation passes, count >= 40 (target)
