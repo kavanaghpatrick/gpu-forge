@@ -95,7 +95,7 @@ Focus: Establish project scaffolding, build system, shared Metal host code. All 
 
 Focus: Validate core hypothesis. Hand-written simdgroup_matrix tiled attention kernel.
 
-- [ ] 2.1 Implement naive CPU attention reference (FP64)
+- [x] 2.1 Implement naive CPU attention reference (FP64)
   - **Do**: In proto1_flash.rs, implement cpu_attention_f64: naive O(N²) scaled dot-product attention with FP64 accumulation, safe softmax (max subtraction), output FP32
   - **Files**: `attention-proto/src/proto1_flash.rs`
   - **Done when**: CPU reference produces correct attention output for small inputs (N=4, D=8)
