@@ -255,7 +255,7 @@ Focus: Run Protos 2, 3, 6, 7 in parallel after Proto 1 and Proto 4 establish bas
   - _Requirements: AC-3.4_
   - _Design: Proto 3 Benchmark_
 
-- [ ] 4.9 Generate KB findings for Proto 3
+- [x] 4.9 Generate KB findings for Proto 3
   - **Do**: Emit 5+ findings: optimal page size for M4, threadgroup memory map, overhead vs contiguous, two-phase viability, recommendation
   - **Files**: Update findings.jsonl
   - **Done when**: At least 5 findings emitted
