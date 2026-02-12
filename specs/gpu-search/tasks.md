@@ -313,7 +313,7 @@ After POC validated, build out full feature set: search orchestrator, UI, index,
   - _Requirements: FR-10_
   - _Design: UI, highlight.rs_
 
-- [ ] 2.18 Implement ui/status_bar.rs and ui/filters.rs
+- [x] 2.18 Implement ui/status_bar.rs and ui/filters.rs
   - **Do**: Status bar: match count, timing, search root, active filters. Filter pills: file extension (`.rs`), exclude dir (`!target/`), case sensitive (Cmd+I). Dismissible pills. Filters applied before GPU dispatch.
   - **Files**: `gpu-search/src/ui/status_bar.rs`, `gpu-search/src/ui/filters.rs`, update `gpu-search/src/ui/mod.rs`
   - **Done when**: Status bar shows stats, filter pills add/remove correctly
