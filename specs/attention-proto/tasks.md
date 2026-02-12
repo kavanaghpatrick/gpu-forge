@@ -159,7 +159,7 @@ Focus: Measure compilation overhead. Must run early to inform Proto 2 (stitching
   - _Requirements: FR-4, AC-2.2_
   - _Design: Proto 4_
 
-- [ ] 3.2 Implement binary archive benchmark
+- [x] 3.2 Implement binary archive benchmark
   - **Do**: Measure archive creation time for 72 variants (all combinations of HEAD_DIM, BLOCK_R, BLOCK_C, VARIANT). Then measure PSO load time from archive vs fresh compilation. Compare speedup.
   - **Files**: `attention-proto/benches/constant_overhead.rs`
   - **Done when**: Benchmark measures archive build time and per-PSO load time
