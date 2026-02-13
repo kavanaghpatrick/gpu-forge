@@ -234,7 +234,7 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
   - _Requirements: FR-12_
   - _Design: Agent Prompt Changes, Section 4.2_
 
-- [ ] 2.7 Update architecture-advisor.md with gen consistency check
+- [x] 2.7 Update architecture-advisor.md with gen consistency check
   - **Do**:
     1. Open `agents/architecture-advisor.md`
     2. After step 4 "Apply M4/M5 Hardware Constraints" (~line 55): insert "Check generation consistency" step
