@@ -483,7 +483,7 @@ Focus: Backfill, validation, backward compat, final quality.
   - **Verify**: `gh pr checks` shows all passing
   - **Done when**: CI pipeline green
 
-- [ ] 5.2 Address review comments
+- [x] 5.2 Address review comments
   - **Do**:
     1. Check for review comments: `gh pr view --comments`
     2. Address each comment with code changes
