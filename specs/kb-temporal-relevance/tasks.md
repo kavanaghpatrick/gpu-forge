@@ -142,7 +142,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
 
 Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent prompts, and graceful degradation.
 
-- [ ] 2.1 Add `tag-gen` command (single, auto, clear modes)
+- [x] 2.1 Add `tag-gen` command (single, auto, clear modes)
   - **Do**:
     1. Add `tag-gen)` case to `scripts/kb` before `*)`
     2. Three modes: single (`<id> <gen>`), auto (`--auto [--dry-run] [--skill]`), clear (`<id> --clear`)
