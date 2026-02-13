@@ -347,7 +347,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - _Requirements: NFR-4, FR-6, FR-13, FR-11, FR-17, FR-16, FR-20_
   - _Design: Test Strategy, Section 6.1_
 
-- [ ] 3.5 Create `tests/golden-temporal.bats` with 4 golden query tests
+- [x] 3.5 Create `tests/golden-temporal.bats` with 4 golden query tests
   - **Do**:
     1. Create new test file at `tests/golden-temporal.bats`
     2. setup(): copy production DB, migrate, run tag-gen --auto
