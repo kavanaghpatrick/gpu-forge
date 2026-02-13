@@ -18,6 +18,7 @@ use crate::search::cancel::{cancellation_pair, CancellationHandle, SearchGenerat
 use crate::search::orchestrator::SearchOrchestrator;
 use crate::search::types::{ContentMatch, FileMatch, SearchRequest, SearchUpdate, StampedUpdate};
 
+use super::actions;
 use super::filters::FilterBar;
 use super::highlight::SyntaxHighlighter;
 use super::keybinds::{self, KeyAction};
@@ -290,8 +291,33 @@ impl GpuSearchApp {
             KeyAction::CycleFilter => {
                 self.search_bar.filter_active = !self.search_bar.filter_active;
             }
-            KeyAction::OpenFile | KeyAction::OpenInEditor | KeyAction::CopyPath => {
-                // These actions require a selected result path -- deferred to Phase 3
+            KeyAction::OpenFile => {
+                if let Some(path) = self
+                    .results_list
+                    .get_selected(&self.file_matches, &self.content_matches)
+                {
+                    let _ = actions::open_file(path);
+                }
+            }
+            KeyAction::OpenInEditor => {
+                if let Some(path) = self
+                    .results_list
+                    .get_selected(&self.file_matches, &self.content_matches)
+                {
+                    let line = self
+                        .results_list
+                        .get_selected_line(&self.file_matches, &self.content_matches)
+                        .unwrap_or(1) as usize;
+                    let _ = actions::open_in_editor(path, line);
+                }
+            }
+            KeyAction::CopyPath => {
+                if let Some(path) = self
+                    .results_list
+                    .get_selected(&self.file_matches, &self.content_matches)
+                {
+                    ctx.copy_text(path.display().to_string());
+                }
             }
             KeyAction::None => {}
         }

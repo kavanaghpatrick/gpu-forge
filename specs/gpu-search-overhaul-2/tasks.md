@@ -47,7 +47,7 @@ Focus: Fix the P0 stale results bug and prove the generation-stamped architectur
   - _Requirements: FR-2_
   - _Design: Section 8_
 
-- [ ] 1.4 Change VerifyMode default to Sample with adaptive effective()
+- [x] 1.4 Change VerifyMode default to Sample with adaptive effective()
   - **Do**:
     1. In `src/search/verify.rs`, change default in `from_env()` from `VerifyMode::Off` to `VerifyMode::Sample`.
     2. Add `pub fn effective(self, result_count: usize) -> VerifyMode` method: returns `Full` when `self == Sample && result_count < 100`, otherwise returns `self`.
@@ -60,7 +60,7 @@ Focus: Fix the P0 stale results bug and prove the generation-stamped architectur
   - _Requirements: FR-10_
   - _Design: Component F_
 
-- [ ] 1.5 Wire OpenFile, OpenInEditor, CopyPath actions
+- [x] 1.5 Wire OpenFile, OpenInEditor, CopyPath actions
   - **Do**:
     1. In `app.rs` `handle_key_action()`, replace the deferred block for `OpenFile | OpenInEditor | CopyPath` with actual implementations.
     2. For `OpenFile`: get selected result path from `results_list`, call `actions::open_file(path)`.
