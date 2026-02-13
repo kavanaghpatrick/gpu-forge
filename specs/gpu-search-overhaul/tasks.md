@@ -149,7 +149,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
 
 Focus: Grep oracle, proptest, benchmark regression, shader validation.
 
-- [ ] 3.1 Add grep oracle comparison test
+- [x] 3.1 Add grep oracle comparison test
   - **Do**: Add `test_accuracy_vs_grep_oracle` in `test_search_accuracy.rs`. Search gpu-search/src/ with patterns ["fn ", "pub ", "struct ", "impl ", "use ", "mod "]. Run grep -rn --include=*.rs for each. Assert: every gpu-search match exists in grep output (zero false positives). Assert: miss rate <20%. Parse grep output into (path, line_number) tuples for comparison.
   - **Files**: `gpu-search/tests/test_search_accuracy.rs` (extend ~100 lines)
   - **Done when**: Oracle test passes with zero false positives and miss rate <20%

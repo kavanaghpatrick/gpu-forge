@@ -16,6 +16,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
+use std::process::Command;
 
 use gpu_search::gpu::device::GpuDevice;
 use gpu_search::gpu::pipeline::PsoCache;
@@ -470,4 +472,184 @@ fn test_accuracy_multi_file_batch_byte_offset() {
     }
 
     println!("=== MULTI-FILE BATCH BYTE_OFFSET: All assertions passed ===");
+}
+
+// ============================================================================
+// Test 4: Grep oracle comparison -- gpu-search vs grep on real source files
+// ============================================================================
+
+/// Run grep -rn --include=*.rs for each pattern on gpu-search/src/.
+/// Parse output into (path, line_number) tuples.
+fn grep_oracle(pattern: &str, search_dir: &std::path::Path) -> HashSet<(PathBuf, u32)> {
+    let output = Command::new("grep")
+        .args(["-rn", "--include=*.rs", pattern])
+        .arg(search_dir)
+        .output()
+        .expect("failed to run grep");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = HashSet::new();
+
+    for line in stdout.lines() {
+        // grep output format: path:line_number:content
+        // Split on first two colons to handle content with colons
+        let mut parts = line.splitn(3, ':');
+        if let (Some(path_str), Some(line_str)) = (parts.next(), parts.next()) {
+            if let Ok(line_num) = line_str.parse::<u32>() {
+                // Canonicalize the path to handle relative/absolute differences
+                let path = PathBuf::from(path_str);
+                let canonical = path.canonicalize().unwrap_or(path);
+                results.insert((canonical, line_num));
+            }
+        }
+    }
+
+    results
+}
+
+/// Compare gpu-search results against grep as ground truth oracle.
+///
+/// For each of 6 common Rust patterns, run both grep and gpu-search on
+/// gpu-search/src/. Assert:
+///   1. Zero false positives: every gpu-search match exists in grep output
+///   2. Miss rate < 20%: gpu-search finds at least 80% of what grep finds
+#[test]
+fn test_accuracy_vs_grep_oracle() {
+    let (_device, _pso, mut orchestrator) = create_orchestrator();
+
+    let patterns = ["fn ", "pub ", "struct ", "impl ", "use ", "mod "];
+
+    // Resolve gpu-search/src/ relative to the workspace root
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR not set");
+    let search_dir = PathBuf::from(&manifest_dir).join("src");
+    let search_dir = search_dir
+        .canonicalize()
+        .expect("failed to canonicalize gpu-search/src/");
+
+    println!("Search directory: {:?}", search_dir);
+
+    let mut total_grep_matches = 0usize;
+    let mut total_false_positives = 0usize;
+    let mut total_misses = 0usize;
+    let mut per_pattern_stats: Vec<(String, usize, usize, usize)> = Vec::new();
+
+    for pattern in &patterns {
+        // --- Grep oracle ---
+        let grep_results = grep_oracle(pattern, &search_dir);
+        let grep_count = grep_results.len();
+
+        // --- gpu-search ---
+        let request = SearchRequest {
+            pattern: pattern.to_string(),
+            root: search_dir.clone(),
+            file_types: Some(vec!["rs".to_string()]),
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 100_000,
+        };
+
+        let response = orchestrator.search(request);
+
+        // Build gpu-search result set as (canonical_path, line_number)
+        let gpu_results: HashSet<(PathBuf, u32)> = response
+            .content_matches
+            .iter()
+            .map(|cm| {
+                let canonical = cm.path.canonicalize().unwrap_or_else(|_| cm.path.clone());
+                (canonical, cm.line_number)
+            })
+            .collect();
+
+        let gpu_count = gpu_results.len();
+
+        // --- False positives: gpu-search matches NOT in grep output ---
+        let mut fp_count = 0usize;
+        for (path, line_num) in &gpu_results {
+            if !grep_results.contains(&(path.clone(), *line_num)) {
+                fp_count += 1;
+                // Print first few for debugging
+                if fp_count <= 3 {
+                    eprintln!(
+                        "  FALSE POSITIVE: pattern='{}' file={:?} line={}",
+                        pattern,
+                        path.file_name().unwrap_or_default(),
+                        line_num
+                    );
+                }
+            }
+        }
+
+        // --- Misses: grep matches NOT in gpu-search output ---
+        let miss_count = grep_results
+            .iter()
+            .filter(|entry| !gpu_results.contains(entry))
+            .count();
+
+        println!(
+            "Pattern '{}': grep={} gpu={} false_pos={} misses={}",
+            pattern.trim(),
+            grep_count,
+            gpu_count,
+            fp_count,
+            miss_count
+        );
+
+        total_grep_matches += grep_count;
+        total_false_positives += fp_count;
+        total_misses += miss_count;
+        per_pattern_stats.push((
+            pattern.to_string(),
+            grep_count,
+            fp_count,
+            miss_count,
+        ));
+    }
+
+    // --- Summary ---
+    let miss_rate = if total_grep_matches > 0 {
+        total_misses as f64 / total_grep_matches as f64
+    } else {
+        0.0
+    };
+
+    println!("\n=== GREP ORACLE COMPARISON SUMMARY ===");
+    println!("Total grep matches:    {}", total_grep_matches);
+    println!("Total false positives: {}", total_false_positives);
+    println!("Total misses:          {}", total_misses);
+    println!("Miss rate:             {:.2}%", miss_rate * 100.0);
+
+    for (pat, grep_n, fp, miss) in &per_pattern_stats {
+        let mr = if *grep_n > 0 {
+            *miss as f64 / *grep_n as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "  '{}': grep={} fp={} miss={} miss_rate={:.1}%",
+            pat.trim(),
+            grep_n,
+            fp,
+            miss,
+            mr
+        );
+    }
+
+    // --- Assertions ---
+    assert_eq!(
+        total_false_positives, 0,
+        "ZERO false positives required: gpu-search returned {} matches not in grep output",
+        total_false_positives
+    );
+
+    assert!(
+        miss_rate < 0.20,
+        "Miss rate {:.2}% exceeds 20% threshold ({} misses out of {} grep matches)",
+        miss_rate * 100.0,
+        total_misses,
+        total_grep_matches
+    );
+
+    println!("=== GREP ORACLE: PASSED (0 false positives, {:.1}% miss rate) ===", miss_rate * 100.0);
 }
