@@ -5,3 +5,4 @@ pub mod gpu_index;
 pub mod gpu_loader;
 pub mod scanner;
 pub mod shared_index;
+pub mod watcher;

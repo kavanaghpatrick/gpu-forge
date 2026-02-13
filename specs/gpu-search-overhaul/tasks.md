@@ -112,7 +112,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-4_
   - _Design: Component D_
 
-- [ ] 2.5 Implement IndexWatcher with FSEvents
+- [x] 2.5 Implement IndexWatcher with FSEvents
   - **Do**: Create `src/index/watcher.rs`. `IndexWatcher` struct with `RecommendedWatcher` from notify, `Arc<RwLock<GpuResidentIndex>>`, `SharedIndexManager`. Method `start(root, index)`: create debounced watcher (500ms via notify-debouncer-mini), watch root recursively. On events: batch create/modify/delete, update index entries via scanner re-stat, persist via SharedIndexManager::save(). Method `stop()`: drop watcher. Add `pub mod watcher;` to `src/index/mod.rs`.
   - **Files**: `gpu-search/src/index/watcher.rs` (create ~200 lines), `gpu-search/src/index/mod.rs` (modify)
   - **Done when**: IndexWatcher compiles, can be instantiated with a test directory
