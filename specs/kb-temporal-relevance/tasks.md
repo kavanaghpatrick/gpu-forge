@@ -297,7 +297,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - _Requirements: NFR-4, FR-4, FR-5_
   - _Design: Test Strategy, Section 6.1_
 
-- [ ] 3.3 Add supersession + unsupersede tests to temporal.bats (8 tests)
+- [x] 3.3 Add supersession + unsupersede tests to temporal.bats (8 tests)
   - **Do**:
     1. Append to `tests/unit/temporal.bats`
     2. Write 8 tests covering:
