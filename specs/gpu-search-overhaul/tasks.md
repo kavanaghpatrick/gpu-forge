@@ -76,7 +76,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
 
 Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
 
-- [ ] 2.1 Implement PipelineProfile struct
+- [x] 2.1 Implement PipelineProfile struct
   - **Do**: Create `src/search/profile.rs` with `PipelineProfile` struct (walk_us, filter_us, batch_us, gpu_load_us, gpu_dispatch_us, resolve_us, total_us + counters for files_walked, files_filtered, files_searched, bytes_searched, gpu_dispatches, matches_raw, matches_resolved, matches_rejected, ttfr_us). Add `Display` impl for human-readable output. Add `pub mod profile;` to `src/search/mod.rs`.
   - **Files**: `gpu-search/src/search/profile.rs` (create), `gpu-search/src/search/mod.rs` (modify)
   - **Done when**: Profile struct compiles, Display impl formats stage breakdown
