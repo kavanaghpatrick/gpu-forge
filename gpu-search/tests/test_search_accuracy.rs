@@ -8,8 +8,26 @@
 //! IMPORTANT: Some tests MAY FAIL initially -- they exist to catch the P0 bug.
 //! That is expected behavior.
 //!
-//! Run with Metal shader validation:
+//! ## Metal Shader Validation
+//!
+//! These tests should be run with Apple's Metal diagnostic environment variables
+//! enabled to catch GPU-side correctness issues:
+//!
 //!   MTL_SHADER_VALIDATION=1 MTL_DEBUG_LAYER=1 cargo test --test test_search_accuracy
+//!
+//! - `MTL_SHADER_VALIDATION=1`: Enables runtime validation of Metal shader code.
+//!   Detects out-of-bounds buffer accesses, invalid texture reads, threadgroup
+//!   memory races, and other undefined behavior in compute/fragment/vertex shaders.
+//!   Essential for catching silent data corruption in `turbo_search.metal` kernels.
+//!
+//! - `MTL_DEBUG_LAYER=1`: Enables the Metal API validation layer. Catches
+//!   incorrect API usage: invalid command encoder state, buffer overflows on
+//!   dispatch, mismatched resource hazards, and missing synchronization barriers.
+//!   Reports errors that would otherwise silently produce wrong results.
+//!
+//! Both variables are Apple-provided diagnostics with no code changes required.
+//! They add ~10-20% overhead but should always be enabled in CI/test builds
+//! to ensure GPU kernel correctness alongside CPU-side accuracy checks.
 //!
 //! REQUIRES: Real Apple Silicon GPU (Metal device must be available).
 

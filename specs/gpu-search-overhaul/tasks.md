@@ -173,7 +173,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Commit**: `perf(gpu-search): add pipeline profiler benchmarks with baselines`
   - _Requirements: AC-5.4_
 
-- [ ] 3.4 Add Metal shader validation in test builds
+- [x] 3.4 Add Metal shader validation in test builds
   - **Do**: In existing test setup or a shared test helper, set env vars `MTL_SHADER_VALIDATION=1` and `MTL_DEBUG_LAYER=1` for GPU tests. Add a note in test_search_accuracy.rs header comment explaining these env vars. Verify all GPU tests pass with validation enabled.
   - **Files**: `gpu-search/tests/test_search_accuracy.rs` (add header comment), CI config if exists
   - **Done when**: Tests pass with shader validation enabled

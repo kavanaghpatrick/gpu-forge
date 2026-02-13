@@ -92,6 +92,12 @@ jobs:
       - name: Filesystem edge case tests
         run: cargo test -p gpu-search --test test_filesystem_edge_cases
 
+      - name: Search accuracy tests (with shader validation)
+        run: cargo test -p gpu-search --test test_search_accuracy -- --nocapture
+        env:
+          MTL_SHADER_VALIDATION: 1
+          MTL_DEBUG_LAYER: 1
+
       - name: Orchestrator integration tests
         run: cargo test -p gpu-search --test test_orchestrator_integration
 
