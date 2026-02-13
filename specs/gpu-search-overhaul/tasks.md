@@ -30,7 +30,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
   - _Requirements: AC-1.1, AC-1.3_
   - _Design: Component E_
 
-- [ ] 1.3 Fix byte_offset mapping in collect_results()
+- [x] 1.3 Fix byte_offset mapping in collect_results()
   - **Do**: In `src/search/content.rs`, `collect_results()` at line ~408: change `byte_offset` calculation. Currently uses `m.chunk_index * CHUNK_SIZE + m.context_start` where `context_start` has ambiguous meaning. Fix: store `m.chunk_index * CHUNK_SIZE as u32 + (m.column + (m.context_start - m.context_start % CHUNK_SIZE as u32).min(m.context_start))` -- or more directly, use the match's actual byte position: `m.chunk_index * CHUNK_SIZE as u32 + m.context_start - m.column + m.column` (i.e., the global position of the match). Key insight: `context_start` = `offset_in_chunk + line_start_in_window`, but for byte_offset we need `offset_in_chunk + local_pos` = the match position. The GPU writes `column = local_pos - line_start`, so `match_pos_in_chunk = context_start + column`. Use `byte_offset = m.chunk_index * CHUNK_SIZE as u32 + m.context_start + m.column` to get the actual match byte offset (not line start).
   - **Files**: `gpu-search/src/search/content.rs` (~line 408)
   - **Done when**: `collect_results()` produces byte_offset pointing to the match byte, not line start

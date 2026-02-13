@@ -10,9 +10,9 @@
 //! 4. **MAX_PATTERN_LEN = 64**: Pattern length limited to 64 bytes
 //!
 //! GPU MATCH RESULT FIELDS:
-//! - byte_offset = chunk_index * 4096 + context_start (line start, NOT match position)
+//! - byte_offset = chunk_index * 4096 + context_start + column (actual match position)
 //! - column = offset of match within the line
-//! - Actual match position = byte_offset + column
+//! - byte_offset already includes column, so it IS the match position
 //! - Results sorted by (file_index, line_number, column)
 //!
 //! IMPORTANT: Each test creates ONE GPU engine and reuses it across all
@@ -276,8 +276,8 @@ fn prop_gpu_positions_monotonic() {
 
 /// Property 3: No false positives -- every GPU match corresponds to a real match
 ///
-/// The actual match position is byte_offset + column (byte_offset is line start,
-/// column is offset within line). Verify the pattern exists at that position.
+/// The actual match position is byte_offset (which now includes column).
+/// Verify the pattern exists at that position.
 #[test]
 fn prop_no_false_positives() {
     let (engine, _dev) = create_engine(10);
@@ -302,17 +302,15 @@ fn prop_no_false_positives() {
             let cpu_positions = cpu_search_positions(&content, &pattern, true);
 
             // Every GPU match must correspond to a real CPU match position.
-            // The actual match byte position = byte_offset + column.
+            // byte_offset now includes column, so it IS the actual match position.
             for m in &gpu {
-                let match_pos = m.byte_offset as usize + m.column as usize;
+                let match_pos = m.byte_offset as usize;
 
                 // Verify this position is in the CPU match set
                 prop_assert!(
                     cpu_positions.contains(&match_pos),
-                    "False positive: GPU match at byte_offset={} + column={} = {} not in CPU positions ({} total)",
+                    "False positive: GPU match at byte_offset={} not in CPU positions ({} total)",
                     m.byte_offset,
-                    m.column,
-                    match_pos,
                     cpu_positions.len(),
                 );
             }

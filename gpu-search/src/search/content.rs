@@ -406,7 +406,7 @@ impl ContentSearchEngine {
                     line_number: m.line_number,
                     column: m.column,
                     byte_offset: m.chunk_index * CHUNK_SIZE as u32
-                        + m.context_start,
+                        + m.context_start + m.column,
                     match_length: m.match_length,
                 });
             }
