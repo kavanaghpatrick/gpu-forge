@@ -28,7 +28,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-19_
   - _Design: Schema Migration, Section 2.4_
 
-- [ ] 1.2 Add `migrate-temporal` command to kb CLI
+- [x] 1.2 Add `migrate-temporal` command to kb CLI
   - **Do**:
     1. Open `scripts/kb`
     2. Add `migrate-temporal)` case before the `*)` default case (before line 433)
