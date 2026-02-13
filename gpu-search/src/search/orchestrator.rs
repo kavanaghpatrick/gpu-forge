@@ -1459,4 +1459,120 @@ mod tests {
         assert_eq!(response.content_matches.len(), 0);
         assert_eq!(response.file_matches.len(), 0);
     }
+
+    // ========================================================================
+    // resolve_match() unit tests
+    // ========================================================================
+
+    #[test]
+    fn test_resolve_match_correct_line() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("test.txt");
+        // "hello\nworld\nfoo bar\n" — "foo" starts at byte 12
+        std::fs::write(&file, "hello\nworld\nfoo bar\n").unwrap();
+
+        let result = resolve_match(&file, 12, "foo", true);
+        assert!(result.is_some(), "resolve_match should return Some for valid offset");
+        let (line_num, line_content, ctx_before, ctx_after, col) = result.unwrap();
+        assert_eq!(line_num, 3, "foo is on line 3");
+        assert_eq!(line_content, "foo bar");
+        assert_eq!(col, 0, "foo starts at column 0");
+        assert_eq!(ctx_before, vec!["hello", "world"]);
+        assert!(ctx_after.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_match_rejects_wrong_line() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello\nworld\nfoo bar\n").unwrap();
+
+        // byte_offset 999 is way past end of file — should return None
+        let result = resolve_match(&file, 999, "foo", true);
+        assert!(result.is_none(), "offset beyond file length should return None");
+
+        // byte_offset 0 points to "hello" line which does NOT contain "xyz"
+        let result2 = resolve_match(&file, 0, "xyz", true);
+        assert!(result2.is_none(), "pattern not on resolved line should return None");
+    }
+
+    #[test]
+    fn test_resolve_match_multi_chunk_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("big.txt");
+        // Create 5 chunks worth of content (~20KB) with a pattern in chunk 2
+        let mut content = String::new();
+        for i in 0..500 {
+            content.push_str(&format!("line number {:04} padding text here\n", i));
+        }
+        // Each line is ~36 chars + newline = 37 bytes. Insert "NEEDLE" around line 250 (chunk 2 area)
+        let lines: Vec<&str> = content.lines().collect();
+        let mut rebuilt = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i == 250 {
+                rebuilt.push_str("line number 0250 NEEDLE found here\n");
+            } else {
+                rebuilt.push_str(line);
+                rebuilt.push('\n');
+            }
+        }
+        std::fs::write(&file, &rebuilt).unwrap();
+
+        // Find byte offset of "NEEDLE"
+        let needle_offset = rebuilt.find("NEEDLE").unwrap();
+        let result = resolve_match(&file, needle_offset, "NEEDLE", true);
+        assert!(result.is_some(), "should find NEEDLE in multi-chunk file");
+        let (line_num, line_content, _ctx_before, _ctx_after, col) = result.unwrap();
+        assert_eq!(line_num, 251, "NEEDLE is on line 251 (1-based)");
+        assert!(line_content.contains("NEEDLE"), "line should contain NEEDLE");
+        assert_eq!(col, line_content.find("NEEDLE").unwrap());
+    }
+
+    #[test]
+    fn test_resolve_match_last_line_no_newline() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("no_trailing.txt");
+        // File with no trailing newline — last line is "end"
+        std::fs::write(&file, "start\nmiddle\nend").unwrap();
+
+        // "end" starts at byte 13
+        let result = resolve_match(&file, 13, "end", true);
+        assert!(result.is_some(), "should resolve match on last line without trailing newline");
+        let (line_num, line_content, ctx_before, ctx_after, col) = result.unwrap();
+        assert_eq!(line_num, 3);
+        assert_eq!(line_content, "end");
+        assert_eq!(col, 0);
+        assert_eq!(ctx_before, vec!["start", "middle"]);
+        assert!(ctx_after.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_match_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("empty.txt");
+        std::fs::write(&file, "").unwrap();
+
+        // Any offset in an empty file should return None (offset >= content.len())
+        let result = resolve_match(&file, 0, "anything", true);
+        assert!(result.is_none(), "empty file should return None");
+    }
+
+    #[test]
+    fn test_resolve_match_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("case.txt");
+        std::fs::write(&file, "Hello World\nFOO BAR\nbaz qux\n").unwrap();
+
+        // Case-insensitive search for "foo" should match "FOO BAR" on line 2
+        let result = resolve_match(&file, 12, "foo", false);
+        assert!(result.is_some(), "case-insensitive match should succeed");
+        let (line_num, line_content, _ctx_before, _ctx_after, col) = result.unwrap();
+        assert_eq!(line_num, 2);
+        assert_eq!(line_content, "FOO BAR");
+        assert_eq!(col, 0, "FOO starts at column 0");
+
+        // Case-sensitive search for "foo" on "FOO BAR" line should fail
+        let result2 = resolve_match(&file, 12, "foo", true);
+        assert!(result2.is_none(), "case-sensitive search for 'foo' should not match 'FOO'");
+    }
 }

@@ -57,7 +57,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
   - _Requirements: FR-1, AC-1.5_
   - _Design: Component A_
 
-- [ ] 1.6 Add resolve_match() unit tests
+- [x] 1.6 Add resolve_match() unit tests
   - **Do**: Add inline `#[cfg(test)] mod tests` in `orchestrator.rs` (or extend existing). Tests: `test_resolve_match_correct_line` (known byte_offset -> exact line+column), `test_resolve_match_rejects_wrong_line` (bad offset -> None), `test_resolve_match_multi_chunk_file` (offset in chunk 2 of 5), `test_resolve_match_last_line_no_newline`, `test_resolve_match_empty_file`, `test_resolve_match_case_insensitive`. Make `resolve_match` `pub(crate)` if needed.
   - **Files**: `gpu-search/src/search/orchestrator.rs` (add ~80 lines of tests)
   - **Done when**: All 6 resolve_match unit tests pass
