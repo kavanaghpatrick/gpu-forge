@@ -441,7 +441,7 @@ Focus: Backfill, validation, backward compat, final quality.
   - _Requirements: FR-14, AC-3.2_
   - _Design: Backfill Strategy, Section 5_
 
-- [ ] 4.3 Run freshness dashboard and identify contradictions
+- [x] 4.3 Run freshness dashboard and identify contradictions
   - **Do**:
     1. Run `kb freshness` to see temporal health
     2. Check contradiction count (expected ~7 known contradictions)
