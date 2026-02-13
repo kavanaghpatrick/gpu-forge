@@ -103,7 +103,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-3, AC-2.4_
   - _Design: Component C_
 
-- [ ] 2.4 Add notify v7 + debouncer dependencies
+- [x] 2.4 Add notify v7 + debouncer dependencies
   - **Do**: Add `notify = "7"` and `notify-debouncer-mini = "0.5"` to `Cargo.toml` [dependencies]. Run cargo check to ensure they compile.
   - **Files**: `gpu-search/Cargo.toml` (add 2 lines)
   - **Done when**: `cargo check -p gpu-search` succeeds with new deps
