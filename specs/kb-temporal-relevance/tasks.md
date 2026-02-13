@@ -109,7 +109,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-17, AC-2.2, AC-2.3_
   - _Design: Section 3.8_
 
-- [ ] 1.7 Modify `add` command for optional gpu_generation param
+- [x] 1.7 Modify `add` command for optional gpu_generation param
   - **Do**:
     1. Modify existing `add)` case in `scripts/kb`
     2. Accept optional 11th positional param `${11}` for gpu_generation
