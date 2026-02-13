@@ -414,7 +414,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
 
 Focus: Backfill, validation, backward compat, final quality.
 
-- [ ] 4.1 Run migration on production DB
+- [x] 4.1 Run migration on production DB
   - **Do**:
     1. Run `kb migrate-temporal` on the actual production database
     2. Verify 3 new columns present via pragma_table_info
