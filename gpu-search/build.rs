@@ -111,12 +111,10 @@ fn main() {
     }
 
     // Re-run if any header files change
-    for entry in fs::read_dir(shader_dir).expect("Failed to read shaders/ directory") {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "h") {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
+    for entry in fs::read_dir(shader_dir).expect("Failed to read shaders/ directory").flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "h") {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
 
