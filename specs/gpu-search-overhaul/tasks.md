@@ -218,7 +218,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
 
 ## Phase 5: PR
 
-- [ ] 5.1 Create PR
+- [x] 5.1 Create PR
   - **Do**: Push branch, create PR with `gh pr create`. Title: "fix: gpu-search accuracy + index + profiler overhaul". Body: summary of P0 fix, index wiring, profiler, test additions. Reference any relevant issues.
   - **Verify**: `gh pr checks --watch`
   - **Done when**: PR created, CI passes

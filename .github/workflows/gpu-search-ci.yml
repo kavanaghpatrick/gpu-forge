@@ -20,6 +20,10 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
+defaults:
+  run:
+    working-directory: gpu-search
+
 jobs:
   # Stage 1: Fast checks -- clippy, check, unit tests
   fast-checks:
@@ -46,13 +50,13 @@ jobs:
             ${{ runner.os }}-cargo-fast-
 
       - name: Clippy lint
-        run: cargo clippy -p gpu-search -- -D warnings
+        run: cargo clippy -- -D warnings
 
       - name: Cargo check
-        run: cargo check -p gpu-search
+        run: cargo check
 
       - name: Unit tests
-        run: cargo test -p gpu-search --lib
+        run: cargo test --lib
 
   # Stage 2: GPU integration tests (requires Metal hardware)
   gpu-integration:
@@ -78,34 +82,34 @@ jobs:
             ${{ runner.os }}-cargo-gpu-
 
       - name: GPU-CPU consistency tests
-        run: cargo test -p gpu-search --test test_gpu_cpu_consistency
+        run: cargo test --test test_gpu_cpu_consistency
         env:
           METAL_DEVICE_WRAPPER_TYPE: 1
           MTL_SHADER_VALIDATION: 1
 
       - name: GPU memory safety tests
-        run: cargo test -p gpu-search --test test_gpu_memory
+        run: cargo test --test test_gpu_memory
         env:
           METAL_DEVICE_WRAPPER_TYPE: 1
           MTL_SHADER_VALIDATION: 1
 
       - name: Filesystem edge case tests
-        run: cargo test -p gpu-search --test test_filesystem_edge_cases
+        run: cargo test --test test_filesystem_edge_cases
 
       - name: Search accuracy tests (with shader validation)
-        run: cargo test -p gpu-search --test test_search_accuracy -- --nocapture
+        run: cargo test --test test_search_accuracy -- --nocapture
         env:
           MTL_SHADER_VALIDATION: 1
           MTL_DEBUG_LAYER: 1
 
       - name: Orchestrator integration tests
-        run: cargo test -p gpu-search --test test_orchestrator_integration
+        run: cargo test --test test_orchestrator_integration
 
       - name: Index tests
-        run: cargo test -p gpu-search --test test_index
+        run: cargo test --test test_index
 
       - name: Property-based tests
-        run: cargo test -p gpu-search --test test_proptest
+        run: cargo test --test test_proptest
 
   # Stage 3a: Accuracy gate (runs on every PR, blocks merge)
   accuracy-gate:
@@ -131,19 +135,19 @@ jobs:
             ${{ runner.os }}-cargo-accuracy-
 
       - name: Search accuracy tests (zero false positives required)
-        run: cargo test -p gpu-search --test test_search_accuracy -- --nocapture
+        run: cargo test --test test_search_accuracy -- --nocapture
         env:
           MTL_SHADER_VALIDATION: 1
           MTL_DEBUG_LAYER: 1
           GPU_SEARCH_VERIFY: full
 
       - name: Grep oracle comparison
-        run: cargo test -p gpu-search --test test_search_accuracy test_accuracy_vs_grep -- --nocapture
+        run: cargo test --test test_search_accuracy test_accuracy_vs_grep -- --nocapture
         env:
           MTL_SHADER_VALIDATION: 1
 
       - name: Pipeline property tests
-        run: cargo test -p gpu-search --test test_proptest -- --nocapture
+        run: cargo test --test test_proptest -- --nocapture
 
   # Stage 3b: Benchmark gate (runs pipeline_profile on every PR)
   benchmark-gate:
@@ -169,13 +173,13 @@ jobs:
             ${{ runner.os }}-cargo-bench-
 
       - name: Run pipeline_profile benchmark
-        run: cargo bench -p gpu-search --bench pipeline_profile
+        run: cargo bench --bench pipeline_profile
 
       - name: Check for regression
         run: |
-          if [ -f gpu-search/scripts/check_bench_regression.py ]; then
-            python3 gpu-search/scripts/check_bench_regression.py \
-              gpu-search/target/criterion --threshold 10
+          if [ -f scripts/check_bench_regression.py ]; then
+            python3 scripts/check_bench_regression.py \
+              target/criterion --threshold 10
           else
             echo "No regression script found -- benchmark results logged for review"
           fi
@@ -205,13 +209,13 @@ jobs:
             ${{ runner.os }}-cargo-bench-full-
 
       - name: Run all benchmarks
-        run: cargo bench -p gpu-search
+        run: cargo bench
 
       - name: Check for regression
         run: |
-          if [ -f gpu-search/scripts/check_bench_regression.py ]; then
-            python3 gpu-search/scripts/check_bench_regression.py \
-              gpu-search/target/criterion --threshold 10
+          if [ -f scripts/check_bench_regression.py ]; then
+            python3 scripts/check_bench_regression.py \
+              target/criterion --threshold 10
           else
             echo "Regression detection script not yet available, skipping"
           fi
@@ -241,7 +245,7 @@ jobs:
             ${{ runner.os }}-cargo-stress-
 
       - name: Stress tests
-        run: cargo test -p gpu-search --test test_stress -- --ignored --test-threads=1
+        run: cargo test --test test_stress -- --ignored --test-threads=1
         timeout-minutes: 15
 
   # Stage 5: Release build
@@ -268,7 +272,7 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       - name: Build release binary
-        run: cargo build -p gpu-search --release
+        run: cargo build --release
 
       - name: Upload release binary
         uses: actions/upload-artifact@v4
