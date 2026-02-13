@@ -86,14 +86,14 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-8_
   - _Design: Supersession Manager, Section 3.5_
 
-- [ ] V1 [VERIFY] Quality checkpoint: existing 194 BATS tests still pass
+- [x] V1 [VERIFY] Quality checkpoint: existing 194 BATS tests still pass
   - **Do**: Run full existing test suite to confirm no regressions from Phase 1 changes
   - **Verify**: `cd /Users/patrickkavanagh/.claude/plugins/cache/gpu-forge-local/gpu-forge/1.0.0-dev && bats tests/ --recursive 2>&1 | tail -3`
   - **Done when**: All 194 tests pass (0 failures)
   - **Commit**: `chore(kb): pass quality checkpoint after core temporal commands` (only if fixes needed)
   - _Requirements: NFR-3_
 
-- [ ] 1.6 Modify `detail` command for supersession chain display
+- [x] 1.6 Modify `detail` command for supersession chain display
   - **Do**:
     1. Replace existing `detail)` case in `scripts/kb`
     2. After standard `SELECT f.*, s.name`, add supersession chain section
