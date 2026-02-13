@@ -188,13 +188,13 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
   - _Requirements: FR-11, AC-5.3_
   - _Design: Section 3.9_
 
-- [ ] V2 [VERIFY] Quality checkpoint: all 194 existing tests pass + new commands work
+- [x] V2 [VERIFY] Quality checkpoint: all 194 existing tests pass + new commands work
   - **Do**: Run full BATS suite to verify no regressions; spot-check new commands
   - **Verify**: `cd /Users/patrickkavanagh/.claude/plugins/cache/gpu-forge-local/gpu-forge/1.0.0-dev && bats tests/ --recursive 2>&1 | tail -3`
   - **Done when**: All 194 tests pass (0 failures)
   - **Commit**: `chore(kb): pass quality checkpoint after feature-complete commands` (only if fixes needed)
 
-- [ ] 2.4 Update help text with temporal commands
+- [x] 2.4 Update help text with temporal commands
   - **Do**:
     1. In the `*)` default/help case of `scripts/kb`, add "Temporal commands:" section after "Quality commands:"
     2. List: supersede, unsupersede, tag-gen, tag-gen --auto, freshness, migrate-temporal
