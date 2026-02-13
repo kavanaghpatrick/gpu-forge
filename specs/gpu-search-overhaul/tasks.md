@@ -94,7 +94,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-2, AC-4.2, AC-4.3_
   - _Design: Component B_
 
-- [ ] 2.3 Wire MmapIndexCache into orchestrator search path
+- [x] 2.3 Wire MmapIndexCache into orchestrator search path
   - **Do**: In `orchestrator.rs`, modify `search_streaming()` Stage 1. Before spawning walk_and_filter producer: check if GSIX index exists via `SharedIndexManager::index_path()`, load via `MmapIndexCache::load_mmap()`, check staleness. If fresh: iterate index entries into crossbeam channel (instant, no walk). If stale/missing: fall back to walk_and_filter as before. Add `index_path` to SearchRequest or derive from root. Import from `crate::index::{cache::MmapIndexCache, shared_index::SharedIndexManager}`.
   - **Files**: `gpu-search/src/search/orchestrator.rs` (~40 lines in search_streaming), `gpu-search/src/search/types.rs` (optional: add index_path to SearchRequest)
   - **Done when**: Orchestrator uses index when available, falls back to walk when not

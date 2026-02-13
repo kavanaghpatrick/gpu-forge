@@ -24,13 +24,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel as channel;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLDevice;
 
 use crate::gpu::pipeline::PsoCache;
+use crate::index::cache::MmapIndexCache;
+use crate::index::shared_index::SharedIndexManager;
 use super::binary::BinaryDetector;
 use super::cancel::{CancellationToken, SearchSession};
 use super::content::SearchOptions;
@@ -367,7 +369,7 @@ impl SearchOrchestrator {
         let total_files_counter = Arc::new(AtomicU64::new(0));
 
         // ----------------------------------------------------------------
-        // Stage 1: Spawn directory walker + inline filter on producer thread
+        // Stage 1: Try GSIX index first, fall back to walk_and_filter
         // ----------------------------------------------------------------
         let walk_start = Instant::now();
         let (path_tx, path_rx) = channel::bounded::<PathBuf>(DISCOVERY_CHANNEL_CAPACITY);
@@ -379,18 +381,37 @@ impl SearchOrchestrator {
         let file_types = request.file_types.clone();
 
         let cancel_token = session.token.clone();
-        let producer = std::thread::spawn(move || {
-            walk_and_filter(
-                &root,
-                respect_gitignore,
-                include_binary,
-                file_types.as_deref(),
-                &path_tx,
-                &producer_counter,
-                &cancel_token,
-            );
-            // path_tx drops here, closing the channel
-        });
+
+        // Try loading from GSIX index for instant file discovery
+        let use_index = Self::try_index_producer(
+            &root,
+            &path_tx,
+            &producer_counter,
+            include_binary,
+            file_types.as_deref(),
+        );
+
+        let producer = if use_index {
+            eprintln!("[gpu-search] Stage 1: using GSIX index (instant discovery)");
+            // Index entries already sent -- drop sender to close channel
+            drop(path_tx);
+            None
+        } else {
+            eprintln!("[gpu-search] Stage 1: falling back to walk_and_filter");
+            let producer = std::thread::spawn(move || {
+                walk_and_filter(
+                    &root,
+                    respect_gitignore,
+                    include_binary,
+                    file_types.as_deref(),
+                    &path_tx,
+                    &producer_counter,
+                    &cancel_token,
+                );
+                // path_tx drops here, closing the channel
+            });
+            Some(producer)
+        };
 
         // ----------------------------------------------------------------
         // Stage 2 + 3: Consume paths, batch, dispatch GPU, send results
@@ -543,8 +564,10 @@ impl SearchOrchestrator {
             }
         }
 
-        // Wait for producer thread to finish
-        let _ = producer.join();
+        // Wait for producer thread to finish (if walk_and_filter was used)
+        if let Some(producer) = producer {
+            let _ = producer.join();
+        }
 
         // Walk+filter timing: from walk_start to when producer finishes
         // (walk and filter happen on the producer thread concurrently with GPU dispatch)
@@ -602,6 +625,118 @@ impl SearchOrchestrator {
         eprintln!("[gpu-search] profile:\n{}", response.profile);
 
         response
+    }
+
+    /// Try to use the GSIX index for instant file discovery.
+    ///
+    /// If a fresh index exists for the given root, iterates all index entries
+    /// into the crossbeam channel (instant, no filesystem walk). Applies the
+    /// same binary and filetype filters as walk_and_filter.
+    ///
+    /// Returns `true` if the index was used (entries sent), `false` if the
+    /// caller should fall back to walk_and_filter.
+    fn try_index_producer(
+        root: &Path,
+        path_tx: &channel::Sender<PathBuf>,
+        counter: &AtomicU64,
+        include_binary: bool,
+        file_types: Option<&[String]>,
+    ) -> bool {
+        // Try to create the shared index manager
+        let manager = match SharedIndexManager::new() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[gpu-search] index: manager init failed: {}", e);
+                return false;
+            }
+        };
+
+        let idx_path = manager.index_path(root);
+
+        // Check if index file exists
+        if !idx_path.exists() {
+            eprintln!("[gpu-search] index: no cached index at {}", idx_path.display());
+            return false;
+        }
+
+        // Check staleness (1 hour max age)
+        if manager.is_stale(root, Duration::from_secs(3600)) {
+            eprintln!("[gpu-search] index: stale index at {}", idx_path.display());
+            return false;
+        }
+
+        // Load via mmap for zero-copy access
+        let cache = match MmapIndexCache::load_mmap(&idx_path, None) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[gpu-search] index: mmap load failed: {}", e);
+                return false;
+            }
+        };
+
+        let entry_count = cache.entry_count();
+        eprintln!(
+            "[gpu-search] index: loaded {} entries from {}",
+            entry_count,
+            idx_path.display()
+        );
+
+        // Set up binary detector for filtering
+        let detector = if include_binary {
+            BinaryDetector::include_all()
+        } else {
+            BinaryDetector::new()
+        };
+
+        let mut sent = 0u64;
+        for entry in cache.entries() {
+            // Extract path from GpuPathEntry
+            let path_bytes = &entry.path[..entry.path_len as usize];
+            let path = match std::str::from_utf8(path_bytes) {
+                Ok(s) => PathBuf::from(s),
+                Err(_) => continue,
+            };
+
+            // Skip directories (flag bit 0 = is_dir)
+            if entry.flags & 1 != 0 {
+                continue;
+            }
+
+            // Skip empty or oversized files
+            let size = (entry.size_hi as u64) << 32 | entry.size_lo as u64;
+            if size == 0 || size > 100 * 1024 * 1024 {
+                continue;
+            }
+
+            // Binary filter
+            if detector.should_skip(&path) {
+                continue;
+            }
+
+            // File type filter
+            if let Some(types) = file_types {
+                let passes = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    types.iter().any(|t| t.eq_ignore_ascii_case(ext))
+                } else {
+                    false
+                };
+                if !passes {
+                    continue;
+                }
+            }
+
+            sent += 1;
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if path_tx.send(path).is_err() {
+                break;
+            }
+        }
+
+        eprintln!(
+            "[gpu-search] index: sent {} paths from {} entries",
+            sent, entry_count
+        );
+        true
     }
 
     /// Dispatch a batch to GPU and return matches with per-batch profile data.
