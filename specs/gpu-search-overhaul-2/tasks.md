@@ -36,7 +36,7 @@ Focus: Fix the P0 stale results bug and prove the generation-stamped architectur
   - _Requirements: FR-1, FR-18_
   - _Design: Component A_
 
-- [ ] 1.3 Change debounce from 30ms to 100ms
+- [x] 1.3 Change debounce from 30ms to 100ms
   - **Do**:
     1. In `src/ui/search_bar.rs`, change `const DEFAULT_DEBOUNCE_MS: u64 = 30;` to `100`.
     2. Update the test `test_default_debounce_is_30ms` to assert 100ms and rename to `test_default_debounce_is_100ms`.

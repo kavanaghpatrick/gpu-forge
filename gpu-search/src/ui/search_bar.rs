@@ -1,7 +1,7 @@
-//! Search bar widget with 30ms debounce.
+//! Search bar widget with 100ms debounce.
 //!
 //! Renders a single-line `egui::TextEdit` with placeholder text, a search icon on the left,
-//! and a filter toggle on the right. Implements a 30ms debounce timer: on each keystroke
+//! and a filter toggle on the right. Implements a 100ms debounce timer: on each keystroke
 //! the timer resets, and when elapsed > debounce_ms the query fires.
 //!
 //! Minimum query lengths: 1 character for filename search, 2 characters for content search.
@@ -19,7 +19,7 @@ pub const MIN_FILENAME_QUERY_LEN: usize = 1;
 pub const MIN_CONTENT_QUERY_LEN: usize = 2;
 
 /// Default debounce duration in milliseconds.
-const DEFAULT_DEBOUNCE_MS: u64 = 30;
+const DEFAULT_DEBOUNCE_MS: u64 = 100;
 
 /// Search mode determining minimum query length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,9 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn test_default_debounce_is_30ms() {
+    fn test_default_debounce_is_100ms() {
         let bar = SearchBar::default();
-        assert_eq!(bar.debounce_ms, 30);
+        assert_eq!(bar.debounce_ms, 100);
     }
 
     #[test]
