@@ -210,7 +210,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Commit**: `ci(gpu-search): add accuracy gate and benchmark stage`
   - _Requirements: AC-5.4_
 
-- [ ] 4.3 Quality checkpoint
+- [x] 4.3 Quality checkpoint
   - **Do**: Run all quality checks: clippy, tests (all), benchmarks, Metal shader validation. Verify everything passes.
   - **Verify**: `cargo clippy -p gpu-search -- -D warnings && MTL_SHADER_VALIDATION=1 cargo test -p gpu-search && cargo bench -p gpu-search --bench pipeline_profile`
   - **Done when**: All quality gates pass
