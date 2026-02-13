@@ -209,9 +209,18 @@ impl GpuSearchApp {
     /// The streaming pipeline sends multiple `ContentMatches` updates as
     /// GPU batches complete. These are accumulated (not replaced) until
     /// the `Complete` message arrives with the final aggregated results.
+    ///
+    /// Generation guard: updates from stale (superseded) searches are
+    /// silently discarded by comparing the stamped generation ID against
+    /// the current generation. This fixes the P0 stale-results race.
     fn poll_updates(&mut self) {
         // Process all available updates this frame (non-blocking)
         while let Ok(stamped) = self.update_rx.try_recv() {
+            // Discard updates from stale (superseded) search generations
+            if stamped.generation != self.search_generation.current_id() {
+                continue;
+            }
+
             match stamped.update {
                 SearchUpdate::FileMatches(matches) => {
                     self.file_matches = matches;
@@ -228,13 +237,29 @@ impl GpuSearchApp {
                     self.is_searching = false;
                     self.last_elapsed = response.elapsed;
                     self.status_bar.update(
-                        response.total_matches as usize,
+                        self.file_matches.len() + self.content_matches.len(),
                         response.elapsed,
                         self.filter_bar.count(),
                     );
                 }
             }
         }
+
+        // Keep status bar count in sync with displayed results every frame
+        self.update_status_from_displayed();
+    }
+
+    /// Derive status bar match count from the currently displayed results.
+    ///
+    /// Called after every poll loop iteration so the status bar always reflects
+    /// the actual number of visible results, even during progressive streaming.
+    fn update_status_from_displayed(&mut self) {
+        let displayed_count = self.file_matches.len() + self.content_matches.len();
+        self.status_bar.update(
+            displayed_count,
+            self.last_elapsed,
+            self.filter_bar.count(),
+        );
     }
 
     /// Handle a keyboard action.

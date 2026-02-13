@@ -24,7 +24,7 @@ Focus: Fix the P0 stale results bug and prove the generation-stamped architectur
   - _Requirements: FR-1_
   - _Design: Component A_
 
-- [ ] 1.2 Add generation guard to poll_updates()
+- [x] 1.2 Add generation guard to poll_updates()
   - **Do**:
     1. In `poll_updates()` in `app.rs`, unwrap `StampedUpdate`: `while let Ok(stamped) = self.update_rx.try_recv()`. Add guard: `if stamped.generation != self.search_generation.current_id() { continue; }`. Then match on `stamped.update`.
     2. Add `update_status_from_displayed()` method that derives status bar count from `self.file_matches.len() + self.content_matches.len()`. Call it after every poll loop iteration.
