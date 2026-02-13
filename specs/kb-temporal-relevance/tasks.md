@@ -221,7 +221,7 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
   - _Requirements: FR-9, FR-10, AC-5.1, AC-5.2_
   - _Design: Agent Prompt Changes, Section 4.1_
 
-- [ ] 2.6 Update knowledge-retriever.md with gen detection + formatting
+- [x] 2.6 Update knowledge-retriever.md with gen detection + formatting
   - **Do**:
     1. Open `agents/knowledge-retriever.md`
     2. After step 4 "Run the query" (~line 49): insert "Detect generation context" step
