@@ -66,7 +66,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
   - _Requirements: AC-1.4_
   - _Design: Component E_
 
-- [ ] 1.7 POC Checkpoint -- verify zero false positives
+- [x] 1.7 POC Checkpoint -- verify zero false positives
   - **Do**: Run full accuracy test suite and existing 409 tests. Verify zero false positives across all patterns. Check `matches_rejected` counter is low (ideally zero after fix). Run with Metal shader validation enabled.
   - **Done when**: All accuracy tests pass, all existing tests pass, zero false positives
   - **Verify**: `MTL_SHADER_VALIDATION=1 cargo test -p gpu-search 2>&1 | tail -20`
