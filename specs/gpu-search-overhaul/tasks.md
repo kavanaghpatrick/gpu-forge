@@ -39,7 +39,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
   - _Requirements: FR-5_
   - _Design: Component E_
 
-- [ ] 1.4 Add multi-file batch chunk mapping test
+- [x] 1.4 Add multi-file batch chunk mapping test
   - **Do**: Add test `test_accuracy_multi_file_batch_byte_offset` in `test_search_accuracy.rs`. Create 5 files: file_a (100B, "ALPHA" at byte 50), file_b (8000B, "ALPHA" at byte 4000), file_c (200B, "ALPHA" at byte 10), file_d (16000B, "ALPHA" at bytes 1000 and 12000), file_e (50B, no "ALPHA"). Search "ALPHA". Assert: match count = 5, file_e never in results, every match line_content contains "ALPHA".
   - **Files**: `gpu-search/tests/test_search_accuracy.rs` (extend)
   - **Done when**: Test passes with correct file attribution for all matches
