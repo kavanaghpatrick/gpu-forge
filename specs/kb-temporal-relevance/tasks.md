@@ -381,7 +381,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - _Requirements: NFR-4_
   - _Design: Test Strategy_
 
-- [ ] 3.7 Add 2 performance regression tests to `tests/performance/benchmarks.bats`
+- [x] 3.7 Add 2 performance regression tests to `tests/performance/benchmarks.bats`
   - **Do**:
     1. Append to existing `tests/performance/benchmarks.bats`
     2. Add setup for these tests: copy DB, migrate, auto-tag
@@ -396,7 +396,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - _Requirements: NFR-1, NFR-4_
   - _Design: Performance Considerations_
 
-- [ ] 3.8 Add agent prompt static verification tests (2 tests)
+- [x] 3.8 Add agent prompt static verification tests (2 tests)
   - **Do**:
     1. Append to `tests/unit/temporal.bats`
     2. Write 2 tests:
