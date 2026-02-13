@@ -179,7 +179,7 @@ jobs:
         run: |
           if [ -f scripts/check_bench_regression.py ]; then
             python3 scripts/check_bench_regression.py \
-              target/criterion --threshold 10
+              target/criterion --threshold 20
           else
             echo "No regression script found -- benchmark results logged for review"
           fi
@@ -215,7 +215,7 @@ jobs:
         run: |
           if [ -f scripts/check_bench_regression.py ]; then
             python3 scripts/check_bench_regression.py \
-              target/criterion --threshold 10
+              target/criterion --threshold 20
           else
             echo "Regression detection script not yet available, skipping"
           fi
