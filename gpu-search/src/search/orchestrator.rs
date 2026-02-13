@@ -960,7 +960,7 @@ fn walk_and_filter(
         .filter_entry(|entry| {
             // Skip system/framework directories early to avoid walking millions
             // of irrelevant files when searching from root `/`.
-            if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 if let Some(name) = entry.file_name().to_str() {
                     let skip = matches!(
                         name,
@@ -1025,7 +1025,7 @@ fn walk_and_filter(
         walked += 1;
 
         // Log walking progress every 1K files (diagnostic)
-        if walked % 1_000 == 0 {
+        if walked.is_multiple_of(1_000) {
             eprintln!("[gpu-search] producer: walked {} files ({:.1}s)",
                 walked, walk_start.elapsed().as_secs_f64());
         }
@@ -1066,7 +1066,7 @@ fn walk_and_filter(
         counter.fetch_add(1, Ordering::Relaxed);
 
         // Log progress every 2K files that pass filters
-        if filtered_in % 2_000 == 0 {
+        if filtered_in.is_multiple_of(2_000) {
             eprintln!("[gpu-search] producer: {} files passed filters ({} walked, {:.1}s)",
                 filtered_in, walked, walk_start.elapsed().as_secs_f64());
         }
@@ -1134,15 +1134,9 @@ fn resolve_match(
     // If the pattern is NOT found in this line, reject the match entirely —
     // this catches byte_offset mapping errors from the GPU pipeline.
     let match_col = if case_sensitive {
-        match line_content.find(pattern) {
-            Some(col) => col,
-            None => return None, // GPU byte_offset was wrong — reject false positive
-        }
+        line_content.find(pattern)?
     } else {
-        match line_content.to_lowercase().find(&pattern.to_lowercase()) {
-            Some(col) => col,
-            None => return None, // GPU byte_offset was wrong — reject false positive
-        }
+        line_content.to_lowercase().find(&pattern.to_lowercase())?
     };
 
     // Context: 2 lines before and after

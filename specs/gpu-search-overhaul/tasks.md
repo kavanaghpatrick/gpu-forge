@@ -196,7 +196,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
 
 ## Phase 4: Quality Gates
 
-- [ ] 4.1 Clippy clean pass
+- [x] 4.1 Clippy clean pass
   - **Do**: Run clippy with all warnings as errors. Fix any new warnings introduced by the overhaul. Ensure no `unwrap()` in non-test code (use `?` or explicit error handling).
   - **Verify**: `cargo clippy -p gpu-search -- -D warnings 2>&1 | tail -20`
   - **Done when**: Zero clippy warnings
