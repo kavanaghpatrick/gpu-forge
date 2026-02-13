@@ -224,7 +224,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Done when**: PR created, CI passes
   - **Commit**: (no commit -- PR creation)
 
-- [ ] 5.2 Address CI/review feedback
+- [x] 5.2 Address CI/review feedback
   - **Do**: Monitor CI checks, fix any failures. Address code review comments if any.
   - **Verify**: `gh pr checks`
   - **Done when**: PR is green and ready for merge
