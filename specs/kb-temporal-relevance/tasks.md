@@ -72,7 +72,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-7, AC-2.1, AC-2.6_
   - _Design: Supersession Manager, Section 3.4_
 
-- [ ] 1.5 Add `unsupersede` command
+- [x] 1.5 Add `unsupersede` command
   - **Do**:
     1. Add `unsupersede)` case to `scripts/kb` before `*)`
     2. Validate finding exists and is actually superseded
