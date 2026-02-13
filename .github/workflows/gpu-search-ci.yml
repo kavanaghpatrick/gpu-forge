@@ -2,7 +2,7 @@ name: GPU Search CI
 
 on:
   push:
-    branches: [ main, feat/gpu-search ]
+    branches: [ main, feat/gpu-search, feat/gpu-query ]
     paths:
       - 'gpu-search/**'
       - '.github/workflows/gpu-search-ci.yml'
@@ -107,12 +107,49 @@ jobs:
       - name: Property-based tests
         run: cargo test -p gpu-search --test test_proptest
 
-  # Stage 3: Performance benchmarks (main branch + manual trigger only)
-  performance:
-    name: Performance Benchmarks
+  # Stage 3a: Accuracy gate (runs on every PR, blocks merge)
+  accuracy-gate:
+    name: Accuracy Gate (PR Required)
     runs-on: macos-14
     needs: fast-checks
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-accuracy-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-accuracy-
+
+      - name: Search accuracy tests (zero false positives required)
+        run: cargo test -p gpu-search --test test_search_accuracy -- --nocapture
+        env:
+          MTL_SHADER_VALIDATION: 1
+          MTL_DEBUG_LAYER: 1
+          GPU_SEARCH_VERIFY: full
+
+      - name: Grep oracle comparison
+        run: cargo test -p gpu-search --test test_search_accuracy test_accuracy_vs_grep -- --nocapture
+        env:
+          MTL_SHADER_VALIDATION: 1
+
+      - name: Pipeline property tests
+        run: cargo test -p gpu-search --test test_proptest -- --nocapture
+
+  # Stage 3b: Benchmark gate (runs pipeline_profile on every PR)
+  benchmark-gate:
+    name: Benchmark Gate (PR)
+    runs-on: macos-14
+    needs: fast-checks
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -131,7 +168,43 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-bench-
 
-      - name: Run benchmarks
+      - name: Run pipeline_profile benchmark
+        run: cargo bench -p gpu-search --bench pipeline_profile
+
+      - name: Check for regression
+        run: |
+          if [ -f gpu-search/scripts/check_bench_regression.py ]; then
+            python3 gpu-search/scripts/check_bench_regression.py \
+              gpu-search/target/criterion --threshold 10
+          else
+            echo "No regression script found -- benchmark results logged for review"
+          fi
+
+  # Stage 3c: Full performance benchmarks (main branch + manual trigger only)
+  performance:
+    name: Full Performance Benchmarks
+    runs-on: macos-14
+    needs: fast-checks
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gpu-search/target
+          key: ${{ runner.os }}-cargo-bench-full-${{ hashFiles('gpu-search/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-full-
+
+      - name: Run all benchmarks
         run: cargo bench -p gpu-search
 
       - name: Check for regression

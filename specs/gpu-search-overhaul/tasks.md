@@ -202,7 +202,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Done when**: Zero clippy warnings
   - **Commit**: `fix(gpu-search): address clippy warnings`
 
-- [ ] 4.2 CI pipeline with benchmark gate
+- [x] 4.2 CI pipeline with benchmark gate
   - **Do**: Update `.github/workflows/` (if exists) to add accuracy test stage. Ensure `test_search_accuracy` runs on every PR and blocks merge. Add benchmark stage that runs `pipeline_profile` benchmark.
   - **Files**: `.github/workflows/gpu-search-ci.yml` (modify or create)
   - **Done when**: CI runs accuracy tests and benchmarks on PR
