@@ -48,7 +48,7 @@ Focus: Fix the P0 false positive bug end-to-end. Add CPU verification. No new fe
   - _Requirements: AC-1.3_
   - _Design: Component E_
 
-- [ ] 1.5 Wire CPU verification into dispatch_gpu_batch
+- [x] 1.5 Wire CPU verification into dispatch_gpu_batch
   - **Do**: In `orchestrator.rs`, `dispatch_gpu_batch()` (~line 468): after GPU results collected and before `resolve_match()`, if `GPU_SEARCH_VERIFY` env var is set, run `cpu_verify_matches()` on each file's content and GPU byte offsets. Log any mismatches via `eprintln!("[VERIFY]...")`. In test mode (env var Full), assert zero false positives.
   - **Files**: `gpu-search/src/search/orchestrator.rs` (modify ~20 lines in dispatch_gpu_batch)
   - **Done when**: Running with `GPU_SEARCH_VERIFY=full` logs verification results, no false positives in test corpus
