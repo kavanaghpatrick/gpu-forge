@@ -4,6 +4,8 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use super::profile::PipelineProfile;
+
 /// A search request describing what to search for and where.
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
@@ -79,6 +81,8 @@ pub struct SearchResponse {
     pub total_matches: u64,
     /// Wall-clock time for the search.
     pub elapsed: Duration,
+    /// Per-stage pipeline profile with timing and counters.
+    pub profile: PipelineProfile,
 }
 
 /// Progressive search update for streaming results to the UI.

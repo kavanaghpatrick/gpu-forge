@@ -150,6 +150,7 @@ mod tests {
             total_files_searched: 42,
             total_matches: 3,
             elapsed: Duration::from_millis(5),
+            profile: Default::default(),
         };
         assert!(tx.send_complete(response));
 
@@ -347,6 +348,7 @@ mod tests {
                 total_files_searched: 1,
                 total_matches: 2,
                 elapsed: Duration::from_millis(1),
+                profile: Default::default(),
             });
         });
 

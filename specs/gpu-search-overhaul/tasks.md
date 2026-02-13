@@ -85,7 +85,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-2, AC-4.1_
   - _Design: Component B_
 
-- [ ] 2.2 Instrument orchestrator with per-stage timing
+- [x] 2.2 Instrument orchestrator with per-stage timing
   - **Do**: In `orchestrator.rs`, add `Instant::now()` checkpoints at: walk_and_filter start/end, filter inline, batch loop, GPU dispatch (wrap `engine.search_files()`), resolve_match loop, TTFR (first SearchUpdate::ContentMatches send). Populate `PipelineProfile` fields. Add `profile` field to `SearchResponse`. Merge existing `StreamingProfile` timing into `PipelineProfile`.
   - **Files**: `gpu-search/src/search/orchestrator.rs` (~50 lines instrumentation), `gpu-search/src/search/types.rs` (add profile field to SearchResponse)
   - **Done when**: Every search produces a populated PipelineProfile in SearchResponse

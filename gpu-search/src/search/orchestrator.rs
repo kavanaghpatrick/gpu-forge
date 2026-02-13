@@ -35,6 +35,7 @@ use super::binary::BinaryDetector;
 use super::cancel::{CancellationToken, SearchSession};
 use super::content::SearchOptions;
 use super::ignore::GitignoreFilter;
+use super::profile::PipelineProfile;
 use super::streaming::StreamingSearchEngine;
 use super::types::{ContentMatch, FileMatch, SearchRequest, SearchResponse, SearchUpdate};
 use super::verify::{cpu_verify_matches, VerifyMode};
@@ -97,25 +98,32 @@ impl SearchOrchestrator {
     /// 8. Truncate results to `max_results` and build SearchResponse
     pub fn search(&mut self, request: SearchRequest) -> SearchResponse {
         let start = Instant::now();
+        let mut profile = PipelineProfile::default();
 
         // ----------------------------------------------------------------
         // Stage 1: Walk directory
         // ----------------------------------------------------------------
+        let walk_start = Instant::now();
         let all_files = walk_directory(&request.root);
+        profile.walk_us = walk_start.elapsed().as_micros() as u64;
+        profile.files_walked = all_files.len() as u32;
 
         if all_files.is_empty() {
+            profile.total_us = start.elapsed().as_micros() as u64;
             return SearchResponse {
                 file_matches: vec![],
                 content_matches: vec![],
                 total_files_searched: 0,
                 total_matches: 0,
                 elapsed: start.elapsed(),
+                profile,
             };
         }
 
         // ----------------------------------------------------------------
         // Stage 2: Gitignore filter
         // ----------------------------------------------------------------
+        let filter_start = Instant::now();
         let files_after_gitignore = if request.respect_gitignore {
             match GitignoreFilter::from_directory(&request.root) {
                 Ok(filter) => all_files
@@ -160,6 +168,8 @@ impl SearchOrchestrator {
             files_after_binary
         };
 
+        profile.filter_us = filter_start.elapsed().as_micros() as u64;
+        profile.files_filtered = filtered_files.len() as u32;
         let total_files_searched = filtered_files.len() as u64;
 
         // ----------------------------------------------------------------
@@ -201,11 +211,26 @@ impl SearchOrchestrator {
             ..Default::default()
         };
 
-        let gpu_results = self.engine.search_files(
+        let gpu_dispatch_start = Instant::now();
+        let (gpu_results, streaming_profile) = self.engine.search_files_with_profile(
             &filtered_files,
             request.pattern.as_bytes(),
             &search_options,
         );
+        let gpu_elapsed = gpu_dispatch_start.elapsed().as_micros() as u64;
+
+        // Merge StreamingProfile timing into PipelineProfile
+        profile.gpu_load_us = streaming_profile.io_us;
+        profile.gpu_dispatch_us = streaming_profile.search_us;
+        profile.batch_us = streaming_profile.partition_us;
+        profile.bytes_searched = streaming_profile.bytes_processed;
+        profile.files_searched = streaming_profile.files_processed as u32;
+        profile.gpu_dispatches += 1;
+        profile.matches_raw = gpu_results.len() as u32;
+        // If streaming total exceeds sum of parts, attribute remainder to batch
+        if gpu_elapsed > profile.gpu_load_us + profile.gpu_dispatch_us + profile.batch_us {
+            profile.batch_us = gpu_elapsed - profile.gpu_load_us - profile.gpu_dispatch_us;
+        }
 
         // ----------------------------------------------------------------
         // Stage 6b: CPU verification (if GPU_SEARCH_VERIFY env var is set)
@@ -262,6 +287,7 @@ impl SearchOrchestrator {
         // ----------------------------------------------------------------
         // Stage 7: Resolve GPU matches to ContentMatch entries
         // ----------------------------------------------------------------
+        let resolve_start = Instant::now();
         let mut content_matches: Vec<ContentMatch> = Vec::new();
 
         for m in &gpu_results {
@@ -283,11 +309,19 @@ impl SearchOrchestrator {
                 });
             }
         }
+        profile.resolve_us = resolve_start.elapsed().as_micros() as u64;
+        profile.matches_resolved = content_matches.len() as u32;
+        profile.matches_rejected = profile.matches_raw.saturating_sub(profile.matches_resolved);
 
         // ----------------------------------------------------------------
         // Stage 8: Build SearchResponse
         // ----------------------------------------------------------------
         let total_matches = (file_matches.len() + content_matches.len()) as u64;
+        profile.total_us = start.elapsed().as_micros() as u64;
+        // For blocking search, TTFR equals total (no progressive delivery)
+        profile.ttfr_us = profile.total_us;
+
+        eprintln!("[gpu-search] profile:\n{}", profile);
 
         SearchResponse {
             file_matches,
@@ -295,6 +329,7 @@ impl SearchOrchestrator {
             total_files_searched,
             total_matches,
             elapsed: start.elapsed(),
+            profile,
         }
     }
 
@@ -324,6 +359,8 @@ impl SearchOrchestrator {
         session: &SearchSession,
     ) -> SearchResponse {
         let start = Instant::now();
+        let mut profile = PipelineProfile::default();
+        let mut ttfr_recorded = false;
 
         // Shared counter: producer increments as files pass filters,
         // consumer reads at the end for total_files_searched.
@@ -332,6 +369,7 @@ impl SearchOrchestrator {
         // ----------------------------------------------------------------
         // Stage 1: Spawn directory walker + inline filter on producer thread
         // ----------------------------------------------------------------
+        let walk_start = Instant::now();
         let (path_tx, path_rx) = channel::bounded::<PathBuf>(DISCOVERY_CHANNEL_CAPACITY);
         let producer_counter = Arc::clone(&total_files_counter);
 
@@ -428,13 +466,30 @@ impl SearchOrchestrator {
                     pending_file_matches.clear();
                 }
 
-                let batch_matches = self.dispatch_gpu_batch(
+                let (batch_matches, batch_profile) = self.dispatch_gpu_batch_profiled(
                     &batch,
                     &request.pattern,
                     &search_options,
                     request.max_results.saturating_sub(all_content_matches.len()),
                 );
+                // Accumulate batch profile into pipeline profile
+                profile.gpu_load_us += batch_profile.gpu_load_us;
+                profile.gpu_dispatch_us += batch_profile.gpu_dispatch_us;
+                profile.batch_us += batch_profile.batch_us;
+                profile.resolve_us += batch_profile.resolve_us;
+                profile.bytes_searched += batch_profile.bytes_searched;
+                profile.files_searched += batch_profile.files_searched;
+                profile.gpu_dispatches += 1;
+                profile.matches_raw += batch_profile.matches_raw;
+                profile.matches_resolved += batch_profile.matches_resolved;
+                profile.matches_rejected += batch_profile.matches_rejected;
+
                 if !batch_matches.is_empty() {
+                    // Record TTFR on first content matches sent
+                    if !ttfr_recorded {
+                        profile.ttfr_us = start.elapsed().as_micros() as u64;
+                        ttfr_recorded = true;
+                    }
                     eprintln!("[gpu-search] batch #{}: {} content matches", batch_number, batch_matches.len());
                     let _ = update_tx.send(SearchUpdate::ContentMatches(batch_matches.clone()));
                     all_content_matches.extend(batch_matches);
@@ -459,13 +514,29 @@ impl SearchOrchestrator {
                 pending_file_matches.clear();
             }
 
-            let batch_matches = self.dispatch_gpu_batch(
+            let (batch_matches, batch_profile) = self.dispatch_gpu_batch_profiled(
                 &batch,
                 &request.pattern,
                 &search_options,
                 request.max_results.saturating_sub(all_content_matches.len()),
             );
+            // Accumulate batch profile into pipeline profile
+            profile.gpu_load_us += batch_profile.gpu_load_us;
+            profile.gpu_dispatch_us += batch_profile.gpu_dispatch_us;
+            profile.batch_us += batch_profile.batch_us;
+            profile.resolve_us += batch_profile.resolve_us;
+            profile.bytes_searched += batch_profile.bytes_searched;
+            profile.files_searched += batch_profile.files_searched;
+            profile.gpu_dispatches += 1;
+            profile.matches_raw += batch_profile.matches_raw;
+            profile.matches_resolved += batch_profile.matches_resolved;
+            profile.matches_rejected += batch_profile.matches_rejected;
+
             if !batch_matches.is_empty() {
+                if !ttfr_recorded {
+                    profile.ttfr_us = start.elapsed().as_micros() as u64;
+                    ttfr_recorded = true;
+                }
                 eprintln!("[gpu-search] batch #{}: {} content matches", batch_number, batch_matches.len());
                 let _ = update_tx.send(SearchUpdate::ContentMatches(batch_matches.clone()));
                 all_content_matches.extend(batch_matches);
@@ -475,12 +546,19 @@ impl SearchOrchestrator {
         // Wait for producer thread to finish
         let _ = producer.join();
 
+        // Walk+filter timing: from walk_start to when producer finishes
+        // (walk and filter happen on the producer thread concurrently with GPU dispatch)
+        profile.walk_us = walk_start.elapsed().as_micros() as u64;
+
         // ----------------------------------------------------------------
         // Build final response (only send updates if not cancelled)
         // ----------------------------------------------------------------
         let total_files_searched = total_files_counter.load(Ordering::Acquire);
+        profile.files_walked = total_files_searched as u32;
+        profile.files_filtered = total_files_searched as u32;
 
         if session.should_stop() {
+            profile.total_us = start.elapsed().as_micros() as u64;
             eprintln!("[gpu-search] search aborted: {} batches dispatched before cancel ({:.1}s)",
                 batch_number, start.elapsed().as_secs_f64());
             return SearchResponse {
@@ -489,6 +567,7 @@ impl SearchOrchestrator {
                 total_files_searched,
                 total_matches: 0,
                 elapsed: start.elapsed(),
+                profile,
             };
         }
 
@@ -500,12 +579,19 @@ impl SearchOrchestrator {
 
         let total_matches = (all_file_matches.len() + all_content_matches.len()) as u64;
 
+        // If no content matches were found, TTFR = total (no first result)
+        if !ttfr_recorded {
+            profile.ttfr_us = start.elapsed().as_micros() as u64;
+        }
+        profile.total_us = start.elapsed().as_micros() as u64;
+
         let response = SearchResponse {
             file_matches: all_file_matches,
             content_matches: all_content_matches,
             total_files_searched,
             total_matches,
             elapsed: start.elapsed(),
+            profile,
         };
 
         let _ = update_tx.send(SearchUpdate::Complete(response.clone()));
@@ -513,27 +599,46 @@ impl SearchOrchestrator {
         eprintln!("[gpu-search] search complete: {} batches, {} files, {} file matches, {} content matches, {:.1}s",
             batch_number, total_files_searched, response.file_matches.len(),
             response.content_matches.len(), response.elapsed.as_secs_f64());
+        eprintln!("[gpu-search] profile:\n{}", response.profile);
 
         response
     }
 
-    /// Dispatch a batch of files to the GPU streaming engine and resolve matches.
-    fn dispatch_gpu_batch(
+    /// Dispatch a batch to GPU and return matches with per-batch profile data.
+    fn dispatch_gpu_batch_profiled(
         &mut self,
         files: &[PathBuf],
         pattern: &str,
         options: &SearchOptions,
         remaining_budget: usize,
-    ) -> Vec<ContentMatch> {
+    ) -> (Vec<ContentMatch>, PipelineProfile) {
+        let mut batch_profile = PipelineProfile::default();
+
         if files.is_empty() || remaining_budget == 0 {
-            return vec![];
+            return (vec![], batch_profile);
         }
 
-        let gpu_results = self.engine.search_files(
+        let gpu_start = Instant::now();
+        let (gpu_results, streaming_profile) = self.engine.search_files_with_profile(
             files,
             pattern.as_bytes(),
             options,
         );
+
+        // Merge StreamingProfile into batch profile
+        batch_profile.gpu_load_us = streaming_profile.io_us;
+        batch_profile.gpu_dispatch_us = streaming_profile.search_us;
+        batch_profile.batch_us = streaming_profile.partition_us;
+        batch_profile.bytes_searched = streaming_profile.bytes_processed;
+        batch_profile.files_searched = streaming_profile.files_processed as u32;
+        batch_profile.matches_raw = gpu_results.len() as u32;
+
+        // Attribute any remaining time to batch overhead
+        let gpu_elapsed = gpu_start.elapsed().as_micros() as u64;
+        let accounted = batch_profile.gpu_load_us + batch_profile.gpu_dispatch_us + batch_profile.batch_us;
+        if gpu_elapsed > accounted {
+            batch_profile.batch_us += gpu_elapsed - accounted;
+        }
 
         // --- CPU verification layer ---
         let verify_mode = VerifyMode::from_env();
@@ -587,6 +692,7 @@ impl SearchOrchestrator {
             }
         }
 
+        let resolve_start = Instant::now();
         let mut content_matches = Vec::new();
         for m in &gpu_results {
             if content_matches.len() >= remaining_budget {
@@ -606,8 +712,11 @@ impl SearchOrchestrator {
                 });
             }
         }
+        batch_profile.resolve_us = resolve_start.elapsed().as_micros() as u64;
+        batch_profile.matches_resolved = content_matches.len() as u32;
+        batch_profile.matches_rejected = batch_profile.matches_raw.saturating_sub(batch_profile.matches_resolved);
 
-        content_matches
+        (content_matches, batch_profile)
     }
 }
 
