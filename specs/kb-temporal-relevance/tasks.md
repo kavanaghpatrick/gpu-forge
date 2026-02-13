@@ -323,7 +323,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - **Done when**: All tests pass (0 failures)
   - **Commit**: `chore(kb): pass quality checkpoint after core test coverage` (only if fixes needed)
 
-- [ ] 3.4 Add tag-gen, freshness, verify, detail, add, help tests to temporal.bats (12 tests)
+- [x] 3.4 Add tag-gen, freshness, verify, detail, add, help tests to temporal.bats (12 tests)
   - **Do**:
     1. Append to `tests/unit/temporal.bats`
     2. Write 12 tests covering:
