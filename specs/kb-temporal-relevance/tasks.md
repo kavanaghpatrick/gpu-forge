@@ -124,7 +124,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-16_
   - _Design: Section 3.10_
 
-- [ ] 1.8 POC Checkpoint: end-to-end temporal workflow
+- [x] 1.8 POC Checkpoint: end-to-end temporal workflow
   - **Do**: Verify the complete write-search-supersede-detail flow works end-to-end on a test DB copy
     1. Migrate DB
     2. Add a finding with gpu_generation=m4
