@@ -462,7 +462,7 @@ Focus: Backfill, validation, backward compat, final quality.
   - **Commit**: `chore(kb): pass full local CI` (only if fixes needed)
   - _Requirements: NFR-3, NFR-4_
 
-- [ ] 4.4 Create PR and verify CI
+- [x] 4.4 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current`
     2. If on default branch, STOP and alert user
