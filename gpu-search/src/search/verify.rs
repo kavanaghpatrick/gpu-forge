@@ -9,7 +9,7 @@ use memchr::memmem;
 /// Controls when CPU verification runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyMode {
-    /// No verification (production default).
+    /// No verification.
     Off,
     /// Verify a random sample of matches (low overhead).
     Sample,
@@ -20,12 +20,24 @@ pub enum VerifyMode {
 impl VerifyMode {
     /// Parse from the `GPU_SEARCH_VERIFY` environment variable.
     ///
-    /// Values: "off" (default), "sample", "full".
+    /// Values: "off", "sample" (default), "full".
     pub fn from_env() -> Self {
         match std::env::var("GPU_SEARCH_VERIFY").as_deref() {
             Ok("full") => VerifyMode::Full,
-            Ok("sample") => VerifyMode::Sample,
-            _ => VerifyMode::Off,
+            Ok("off") => VerifyMode::Off,
+            _ => VerifyMode::Sample,
+        }
+    }
+
+    /// Return the effective verify mode given the result count.
+    ///
+    /// When mode is `Sample` and result count is below 100, upgrades to `Full`
+    /// (cheap enough to verify everything). Otherwise returns `self` unchanged.
+    pub fn effective(self, result_count: usize) -> VerifyMode {
+        if self == VerifyMode::Sample && result_count < 100 {
+            VerifyMode::Full
+        } else {
+            self
         }
     }
 }
@@ -201,9 +213,9 @@ mod tests {
 
     #[test]
     fn test_verify_mode_from_env() {
-        // Default (no env var) should be Off
+        // Default (no env var) should be Sample
         std::env::remove_var("GPU_SEARCH_VERIFY");
-        assert_eq!(VerifyMode::from_env(), VerifyMode::Off);
+        assert_eq!(VerifyMode::from_env(), VerifyMode::Sample);
 
         std::env::set_var("GPU_SEARCH_VERIFY", "full");
         assert_eq!(VerifyMode::from_env(), VerifyMode::Full);
@@ -216,6 +228,27 @@ mod tests {
 
         // Clean up
         std::env::remove_var("GPU_SEARCH_VERIFY");
+    }
+
+    #[test]
+    fn test_verify_mode_effective() {
+        // Sample upgrades to Full below 100 results
+        assert_eq!(VerifyMode::Sample.effective(0), VerifyMode::Full);
+        assert_eq!(VerifyMode::Sample.effective(50), VerifyMode::Full);
+        assert_eq!(VerifyMode::Sample.effective(99), VerifyMode::Full);
+
+        // Sample stays Sample at 100 and above
+        assert_eq!(VerifyMode::Sample.effective(100), VerifyMode::Sample);
+        assert_eq!(VerifyMode::Sample.effective(500), VerifyMode::Sample);
+
+        // Full ignores count -- stays Full
+        assert_eq!(VerifyMode::Full.effective(0), VerifyMode::Full);
+        assert_eq!(VerifyMode::Full.effective(200), VerifyMode::Full);
+
+        // Off ignores count -- stays Off
+        assert_eq!(VerifyMode::Off.effective(0), VerifyMode::Off);
+        assert_eq!(VerifyMode::Off.effective(50), VerifyMode::Off);
+        assert_eq!(VerifyMode::Off.effective(200), VerifyMode::Off);
     }
 
     #[test]

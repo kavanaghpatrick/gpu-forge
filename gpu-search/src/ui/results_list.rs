@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use eframe::egui::{self, Color32, RichText, Sense, Vec2};
+use eframe::egui::{self, Color32, FontId, RichText, Sense, Vec2};
 
 use crate::search::types::{ContentMatch, FileMatch};
 use super::theme;
@@ -262,17 +262,33 @@ impl ResultsList {
                 painter.rect_filled(border_rect, 1.0, theme::ACCENT);
             }
 
-            // Render path with highlighted query match
+            // Render: dimmed directory + highlighted filename
             let path_str = fm.path.display().to_string();
+            let (dir_part, name_part) = match path_str.rfind('/') {
+                Some(idx) => (&path_str[..=idx], &path_str[idx + 1..]),
+                None => ("", path_str.as_str()),
+            };
+
             let text_pos = rect.left_top() + Vec2::new(
                 if is_selected { ACCENT_BORDER_WIDTH + 8.0 } else { 8.0 },
                 (FILE_ROW_HEIGHT - 14.0) / 2.0,
             );
 
+            // Draw directory portion (dimmed, no highlighting)
+            let dir_galley = painter.layout_no_wrap(
+                dir_part.to_string(),
+                FontId::proportional(14.0),
+                theme::TEXT_MUTED,
+            );
+            let dir_width = dir_galley.rect.width();
+            painter.galley(text_pos, dir_galley, Color32::TRANSPARENT);
+
+            // Draw filename portion with query highlighting
+            let name_pos = text_pos + Vec2::new(dir_width, 0.0);
             render_highlighted_text(
                 &painter,
-                text_pos,
-                &path_str,
+                name_pos,
+                name_part,
                 query,
                 theme::TEXT_PRIMARY,
                 theme::ACCENT,

@@ -16,19 +16,73 @@ const BINARY_CHECK_SIZE: usize = 8192;
 /// Known binary file extensions that should always be skipped.
 const BINARY_EXTENSIONS: &[&str] = &[
     // Compiled objects / executables
-    "exe", "o", "obj", "dylib", "so", "a", "lib",
+    "exe", "o", "obj", "dylib", "so", "a", "lib", "dll", "bin",
+    "class", "pyc", "pyo", "wasm", "dSYM", "elc", "eln",
+    // Rust build artifacts
+    "rmeta", "rlib", "crate", "d",
     // Metal GPU artifacts
     "metallib", "air",
     // Images
-    "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg",
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "tiff", "tif",
+    "webp", "heic", "heif", "raw", "cr2", "nef", "icns",
+    // Fonts
+    "ttf", "otf", "woff", "woff2", "eot",
     // Audio
-    "mp3", "wav",
+    "mp3", "wav", "aac", "flac", "ogg", "m4a", "aiff",
     // Video
-    "mp4", "avi", "mov",
+    "mp4", "avi", "mov", "mkv", "wmv", "flv", "webm",
     // Archives
-    "zip", "gz", "tar",
+    "zip", "gz", "tar", "bz2", "xz", "7z", "rar", "zst", "lz4", "tgz",
+    "ltar",
     // Documents (binary formats)
-    "pdf", "doc", "docx", "xls", "xlsx",
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    // Database / data
+    "db", "sqlite", "sqlite3", "mdb",
+    // Disk images / packages
+    "dmg", "iso", "pkg", "deb", "rpm",
+    // macOS specific
+    "plist", "nib", "storyboardc", "car", "pf_fragment",
+    "pbxproj", "xcworkspacedata", "xcscheme", "xcuserstate",
+    "mom", "momd", "ipa",
+    // macOS data stores / caches (text format but not source code)
+    "emlx", "mbox", "olk15message", "olk16message",
+    "spotlight", "mdimporter",
+    "savedSearch", "webarchive", "download",
+    // Misc binary / data
+    "dat", "swp", "swo", "bak", "orig", "tmp",
+    "cache", "idx", "pack", "bitmap",
+    "min.js", "min.css", "bundle.js", "chunk.js",
+];
+
+/// Known text file extensions that should never trigger the content-based
+/// binary check. Avoids reading 8KB per file for common text formats.
+const TEXT_EXTENSIONS: &[&str] = &[
+    // Programming languages
+    "rs", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "cs", "java",
+    "kt", "kts", "scala", "go", "py", "rb", "pl", "pm", "lua",
+    "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts",
+    "swift", "m", "mm", "zig", "nim", "dart", "r", "jl",
+    "hs", "ml", "mli", "fs", "fsx", "fsi", "clj", "cljs", "cljc",
+    "ex", "exs", "erl", "hrl", "elm", "v", "sv", "vhd", "vhdl",
+    "lean", "olean",
+    // Shell / scripting
+    "sh", "bash", "zsh", "fish", "ps1", "psm1", "bat", "cmd",
+    // Web
+    "html", "htm", "css", "scss", "sass", "less",
+    // Data / config
+    "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
+    "xml", "csv", "tsv", "env",
+    // Documentation
+    "md", "markdown", "rst", "txt", "adoc", "tex", "org",
+    // Build / project
+    "mk", "cmake", "gradle", "sbt", "cabal",
+    "lock", "sum",
+    // Metal / GPU
+    "metal", "msl", "glsl", "hlsl", "wgsl", "cl",
+    // Misc text
+    "log", "diff", "patch", "sql", "graphql", "gql",
+    "proto", "thrift", "avsc",
+    "dockerfile", "editorconfig", "gitignore", "gitattributes",
 ];
 
 /// Binary file detector with configurable behavior.
@@ -56,13 +110,20 @@ impl BinaryDetector {
     /// Returns true if the file should be skipped (is binary).
     ///
     /// When `include_binary` is true, always returns false (never skip).
-    /// Otherwise checks extension first (fast), then content (accurate).
+    /// Three-layer check (fastest first):
+    /// 1. Known binary extension -> skip immediately (no I/O)
+    /// 2. Known text extension -> keep immediately (no I/O)
+    /// 3. Unknown extension -> read first 8KB for NUL byte heuristic
     pub fn should_skip(&self, path: &Path) -> bool {
         if self.include_binary {
             return false;
         }
         if is_binary_path(path) {
             return true;
+        }
+        // Known text extension -> definitely not binary, skip I/O
+        if is_known_text(path) {
+            return false;
         }
         is_binary_file(path)
     }
@@ -83,6 +144,37 @@ pub fn is_binary_path(path: &Path) -> bool {
         BINARY_EXTENSIONS.contains(&ext_lower.as_str())
     } else {
         false
+    }
+}
+
+/// Check if a file path has a known text extension.
+///
+/// If the extension matches TEXT_EXTENSIONS, we know it's text and can
+/// skip the expensive 8KB content read. This is the key optimization
+/// for large-scale searches from system root.
+pub fn is_known_text(path: &Path) -> bool {
+    if let Some(ext) = path.extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        TEXT_EXTENSIONS.contains(&ext_lower.as_str())
+    } else {
+        // Files with no extension (Makefile, LICENSE, Dockerfile, etc.)
+        // Check common extensionless text files by filename
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            matches!(
+                name,
+                "Makefile" | "makefile" | "GNUmakefile"
+                | "Dockerfile" | "Containerfile"
+                | "LICENSE" | "LICENCE" | "COPYING"
+                | "README" | "CHANGES" | "CHANGELOG" | "AUTHORS"
+                | "INSTALL" | "NEWS" | "TODO" | "THANKS"
+                | "Rakefile" | "Gemfile" | "Brewfile"
+                | "Procfile" | "Vagrantfile"
+                | ".gitignore" | ".gitattributes" | ".editorconfig"
+                | ".dockerignore" | ".eslintrc" | ".prettierrc"
+            )
+        } else {
+            false
+        }
     }
 }
 
@@ -258,5 +350,82 @@ mod tests {
         assert!(is_binary_path(Path::new("file.Exe")));
         assert!(is_binary_path(Path::new("file.DyLib")));
         assert!(is_binary_path(Path::new("file.METALLIB")));
+    }
+
+    #[test]
+    fn test_known_text_extensions() {
+        // Programming languages
+        assert!(is_known_text(Path::new("main.rs")));
+        assert!(is_known_text(Path::new("app.py")));
+        assert!(is_known_text(Path::new("index.js")));
+        assert!(is_known_text(Path::new("component.tsx")));
+        assert!(is_known_text(Path::new("main.go")));
+        assert!(is_known_text(Path::new("App.swift")));
+        assert!(is_known_text(Path::new("shader.metal")));
+
+        // Config / data
+        assert!(is_known_text(Path::new("Cargo.toml")));
+        assert!(is_known_text(Path::new("config.json")));
+        assert!(is_known_text(Path::new("config.yaml")));
+        assert!(is_known_text(Path::new("style.css")));
+
+        // Documentation
+        assert!(is_known_text(Path::new("README.md")));
+        assert!(is_known_text(Path::new("notes.txt")));
+
+        // Extensionless text files
+        assert!(is_known_text(Path::new("Makefile")));
+        assert!(is_known_text(Path::new("Dockerfile")));
+        assert!(is_known_text(Path::new("LICENSE")));
+
+        // Case insensitive
+        assert!(is_known_text(Path::new("code.RS")));
+        assert!(is_known_text(Path::new("page.HTML")));
+
+        // Unknown extensions should NOT match
+        assert!(!is_known_text(Path::new("data.xyz")));
+        assert!(!is_known_text(Path::new("file.unknown")));
+        // Extensionless unknown files
+        assert!(!is_known_text(Path::new("randomfile")));
+    }
+
+    #[test]
+    fn test_text_extension_skips_content_check() {
+        // A .rs file with NUL bytes should NOT be skipped by the detector
+        // because the text extension fast-path returns false before content check
+        let dir = TempDir::new().unwrap();
+
+        let rs_with_nul = dir.path().join("weird.rs");
+        {
+            let mut f = File::create(&rs_with_nul).unwrap();
+            f.write_all(b"fn main() { \x00 }").unwrap();
+        }
+
+        let detector = BinaryDetector::new();
+        // .rs is a known text extension, so should_skip returns false
+        // even though content has NUL bytes (text extension fast-path)
+        assert!(!detector.should_skip(&rs_with_nul));
+    }
+
+    #[test]
+    fn test_detector_unknown_ext_checks_content() {
+        let dir = TempDir::new().unwrap();
+
+        // Unknown extension with text content -> not skipped
+        let text_unk = dir.path().join("data.xyz");
+        {
+            let mut f = File::create(&text_unk).unwrap();
+            f.write_all(b"this is plain text\n").unwrap();
+        }
+        let detector = BinaryDetector::new();
+        assert!(!detector.should_skip(&text_unk));
+
+        // Unknown extension with binary content -> skipped
+        let bin_unk = dir.path().join("data.qqq");
+        {
+            let mut f = File::create(&bin_unk).unwrap();
+            f.write_all(b"\x00\x01\x02binary").unwrap();
+        }
+        assert!(detector.should_skip(&bin_unk));
     }
 }
