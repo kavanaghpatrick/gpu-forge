@@ -121,7 +121,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-4, AC-3.1, AC-3.2_
   - _Design: Component D_
 
-- [ ] 2.6 Implement deferred line counting as default path
+- [x] 2.6 Implement deferred line counting as default path
   - **Do**: In `orchestrator.rs`, modify `resolve_match()` to compute line numbers from byte_offset by counting newlines in file content up to byte_offset. This is already what it does -- but ensure it's the sole source of truth for line numbers (don't trust GPU `line_number` field which only counts within 64B window). Set `line_number` from `resolve_match()` result, not from GPU result.
   - **Files**: `gpu-search/src/search/orchestrator.rs` (~10 lines in dispatch_gpu_batch)
   - **Done when**: All line numbers come from CPU counting, not GPU field
@@ -130,7 +130,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-6_
   - _Design: Technical Decision (KB #1320, #1322)_
 
-- [ ] 2.7 Add hot/cold dispatch logic stub
+- [x] 2.7 Add hot/cold dispatch logic stub
   - **Do**: In `streaming.rs` or a new `dispatch.rs`, add a function `should_use_gpu(file_size: u64, page_cache_hint: bool) -> bool`. For now: always return true for files >128KB, false for files <4KB, configurable for middle range. This is a stub for future page-cache detection. Mark with TODO for KB #1377 hot/cold implementation.
   - **Files**: `gpu-search/src/search/streaming.rs` (~30 lines)
   - **Done when**: Function compiles, unit test verifies threshold logic

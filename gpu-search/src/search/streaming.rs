@@ -478,6 +478,41 @@ pub fn cpu_streaming_search(files: &[PathBuf], pattern: &[u8], case_sensitive: b
 }
 
 // ============================================================================
+// Hot/Cold Dispatch Logic
+// ============================================================================
+
+/// Threshold below which files are always dispatched to CPU (4 KB).
+const COLD_THRESHOLD_BYTES: u64 = 4 * 1024;
+
+/// Threshold above which files are always dispatched to GPU (128 KB).
+const HOT_THRESHOLD_BYTES: u64 = 128 * 1024;
+
+/// Determine whether a file should be searched on the GPU or fall back to CPU.
+///
+/// Decision logic:
+/// - Files > 128 KB: always GPU (large sequential reads amortize dispatch overhead)
+/// - Files < 4 KB: always CPU (memchr is faster than GPU dispatch latency)
+/// - Middle range (4 KB - 128 KB): use `page_cache_hint` -- if the file is likely
+///   hot in the page cache, CPU memchr wins; otherwise GPU batch amortizes I/O.
+///
+/// This is a stub for future page-cache detection. The `page_cache_hint` parameter
+/// will eventually be replaced by actual mincore(2) / fs_usage probing.
+///
+/// TODO(KB #1377): Replace page_cache_hint with real hot/cold detection using
+/// mincore(2) for resident-page ratio and adaptive threshold learning from
+/// per-file search latency history. See also KB #1290 for CPU/GPU crossover analysis.
+pub fn should_use_gpu(file_size: u64, page_cache_hint: bool) -> bool {
+    if file_size >= HOT_THRESHOLD_BYTES {
+        return true;
+    }
+    if file_size < COLD_THRESHOLD_BYTES {
+        return false;
+    }
+    // Middle range: if page cache hint says hot, CPU is faster; otherwise GPU.
+    !page_cache_hint
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -826,5 +861,57 @@ mod tests {
         assert!(profile.chunk_count > 0, "Should have chunks");
 
         profile.print();
+    }
+
+    // ====================================================================
+    // Hot/cold dispatch threshold tests
+    // ====================================================================
+
+    #[test]
+    fn test_should_use_gpu_large_files() {
+        // Files >= 128KB always go to GPU regardless of page_cache_hint
+        assert!(should_use_gpu(128 * 1024, false), "128KB cold -> GPU");
+        assert!(should_use_gpu(128 * 1024, true), "128KB hot -> GPU");
+        assert!(should_use_gpu(1024 * 1024, false), "1MB cold -> GPU");
+        assert!(should_use_gpu(1024 * 1024, true), "1MB hot -> GPU");
+        assert!(should_use_gpu(100 * 1024 * 1024, true), "100MB hot -> GPU");
+    }
+
+    #[test]
+    fn test_should_use_gpu_small_files() {
+        // Files < 4KB always go to CPU regardless of page_cache_hint
+        assert!(!should_use_gpu(0, false), "0B cold -> CPU");
+        assert!(!should_use_gpu(0, true), "0B hot -> CPU");
+        assert!(!should_use_gpu(1024, false), "1KB cold -> CPU");
+        assert!(!should_use_gpu(1024, true), "1KB hot -> CPU");
+        assert!(!should_use_gpu(4 * 1024 - 1, false), "4KB-1 cold -> CPU");
+        assert!(!should_use_gpu(4 * 1024 - 1, true), "4KB-1 hot -> CPU");
+    }
+
+    #[test]
+    fn test_should_use_gpu_middle_range() {
+        // Middle range (4KB to 128KB): page_cache_hint decides
+        // hot (in page cache) -> CPU; cold (not cached) -> GPU
+        let mid = 64 * 1024; // 64KB -- squarely in the middle
+
+        assert!(should_use_gpu(mid, false), "64KB cold -> GPU");
+        assert!(!should_use_gpu(mid, true), "64KB hot -> CPU");
+
+        // Boundary: exactly 4KB
+        assert!(should_use_gpu(4 * 1024, false), "4KB cold -> GPU");
+        assert!(!should_use_gpu(4 * 1024, true), "4KB hot -> CPU");
+
+        // Boundary: just under 128KB
+        assert!(should_use_gpu(128 * 1024 - 1, false), "128KB-1 cold -> GPU");
+        assert!(!should_use_gpu(128 * 1024 - 1, true), "128KB-1 hot -> CPU");
+    }
+
+    #[test]
+    fn test_should_use_gpu_boundary_values() {
+        // Exact boundaries
+        assert!(!should_use_gpu(COLD_THRESHOLD_BYTES - 1, false), "just below cold threshold -> CPU");
+        assert!(should_use_gpu(COLD_THRESHOLD_BYTES, false), "exactly cold threshold, cold -> GPU");
+        assert!(should_use_gpu(HOT_THRESHOLD_BYTES, false), "exactly hot threshold -> GPU");
+        assert!(should_use_gpu(HOT_THRESHOLD_BYTES, true), "exactly hot threshold, hot -> GPU");
     }
 }
