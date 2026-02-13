@@ -174,7 +174,7 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
   - _Requirements: FR-13, AC-4.1, AC-4.2, AC-4.3, AC-4.4_
   - _Design: Freshness Dashboard, Section 3.7_
 
-- [ ] 2.3 Add Check 6 to `verify` command (temporal quality)
+- [x] 2.3 Add Check 6 to `verify` command (temporal quality)
   - **Do**:
     1. In existing `verify)` case, add Check 6 after Check 5 (after line ~342, before the final summary block)
     2. Gate on `pragma_table_info` check (only run post-migration)
