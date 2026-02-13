@@ -427,7 +427,7 @@ Focus: Backfill, validation, backward compat, final quality.
   - _Requirements: FR-15, NFR-2_
   - _Design: Schema Migration_
 
-- [ ] 4.2 Run backfill: auto-tag existing findings from tags field
+- [x] 4.2 Run backfill: auto-tag existing findings from tags field
   - **Do**:
     1. Run `kb tag-gen --auto --dry-run` to preview
     2. Review output for false positives (especially "pre-m5" edge case)
