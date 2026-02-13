@@ -288,6 +288,12 @@ impl SearchOrchestrator {
 
         // ----------------------------------------------------------------
         // Stage 7: Resolve GPU matches to ContentMatch entries
+        //
+        // DEFERRED LINE COUNTING (KB #1320, #1322): line_number comes
+        // exclusively from CPU-side resolve_match() which counts newlines
+        // in file content up to byte_offset.  The GPU's line_number field
+        // (StreamingMatch.line_number) only counts within the 64-byte
+        // thread window and is intentionally ignored here.
         // ----------------------------------------------------------------
         let resolve_start = Instant::now();
         let mut content_matches: Vec<ContentMatch> = Vec::new();
@@ -297,6 +303,8 @@ impl SearchOrchestrator {
                 break;
             }
 
+            // NOTE: m.line_number (GPU) is NOT used -- resolve_match()
+            // computes the authoritative line number from byte_offset.
             if let Some((line_number, line_content, context_before, context_after, match_start)) =
                 resolve_match(&m.file_path, m.byte_offset as usize, &request.pattern, request.case_sensitive)
             {
@@ -827,6 +835,9 @@ impl SearchOrchestrator {
             }
         }
 
+        // DEFERRED LINE COUNTING: resolve_match() is the sole source of
+        // truth for line numbers.  GPU's m.line_number (local to 64B thread
+        // window) is intentionally ignored -- only byte_offset is used.
         let resolve_start = Instant::now();
         let mut content_matches = Vec::new();
         for m in &gpu_results {
@@ -1076,6 +1087,12 @@ fn walk_and_filter(
 // ============================================================================
 
 /// Resolve a GPU byte offset to line number, line content, and context.
+///
+/// This is the **deferred line counting** implementation (KB #1320, #1322):
+/// the GPU kernel only records byte offsets; this CPU function reads the file
+/// and counts newlines up to `byte_offset` to derive the authoritative
+/// 1-based line number.  The GPU's own `line_number` field (which only counts
+/// within the 64-byte thread window) is never used.
 ///
 /// Returns `(line_number, line_content, context_before, context_after, match_col_in_line)`.
 /// Returns `None` if the file cannot be read or offset is out of bounds.
