@@ -188,7 +188,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Commit**: `test(gpu-search): add FSEvents index watcher integration test`
   - _Requirements: AC-3.1_
 
-- [ ] 3.6 Testing checkpoint -- full suite passes
+- [x] 3.6 Testing checkpoint -- full suite passes
   - **Do**: Run all tests: existing 409 + new accuracy + proptest + index watcher. Verify zero failures.
   - **Done when**: All tests pass
   - **Verify**: `cargo test -p gpu-search 2>&1 | tail -20`
