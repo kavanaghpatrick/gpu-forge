@@ -180,7 +180,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Verify**: `MTL_SHADER_VALIDATION=1 MTL_DEBUG_LAYER=1 cargo test -p gpu-search --test test_search_accuracy -- --nocapture`
   - **Commit**: `test(gpu-search): verify Metal shader validation passes on all tests`
 
-- [ ] 3.5 Add index watcher integration test
+- [x] 3.5 Add index watcher integration test
   - **Do**: In `tests/test_index.rs` (or new file), add test: create tempdir, build index, start IndexWatcher, create new file, wait 1s, verify index updated. Delete file, wait 1s, verify removed. Rename file, wait 1s, verify path updated.
   - **Files**: `gpu-search/tests/test_index.rs` (extend ~80 lines)
   - **Done when**: FSEvents watcher correctly updates index on file changes

@@ -821,3 +821,138 @@ fn test_full_pipeline_scan_to_gpu() {
         buffer.length()
     );
 }
+
+// ============================================================================
+// 16. IndexWatcher integration test: create/delete/rename detection
+// ============================================================================
+
+#[test]
+fn test_watcher_detects_file_changes() {
+    use gpu_search::index::watcher::IndexWatcher;
+
+    let dir = TempDir::new().expect("Failed to create temp dir");
+    let cache_dir = TempDir::new().expect("Failed to create cache dir");
+
+    // Create initial files (not hidden, so default scanner finds them)
+    fs::write(dir.path().join("alpha.rs"), "fn alpha() {}").unwrap();
+    fs::write(dir.path().join("beta.rs"), "fn beta() {}").unwrap();
+    fs::write(dir.path().join("gamma.rs"), "fn gamma() {}").unwrap();
+
+    // Build and persist the initial index
+    let scanner = FilesystemScanner::with_config(ScannerConfig {
+        respect_gitignore: false,
+        skip_hidden: true,
+        ..Default::default()
+    });
+    let entries = scanner.scan(dir.path());
+    let initial_count = entries.len();
+    assert_eq!(initial_count, 3, "Should start with 3 files");
+
+    let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
+    let index = GpuResidentIndex::from_entries(entries);
+    manager.save(&index, dir.path()).expect("Failed to save initial index");
+
+    // Start the watcher (uses same cache_dir so it persists to the same location)
+    let watcher_manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
+    let mut watcher = IndexWatcher::new(watcher_manager);
+    watcher.start(dir.path()).expect("Failed to start watcher");
+    assert!(watcher.is_watching());
+
+    // Allow watcher to fully initialize before making changes
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // --- Test 1: Create a new file ---
+    eprintln!("[test] Creating new file delta.rs");
+    fs::write(dir.path().join("delta.rs"), "fn delta() {}").unwrap();
+
+    // Wait for debounce (500ms) + processing time + margin
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // Reload the persisted index and verify it has 4 entries
+    let loaded = manager.load(dir.path()).expect("Failed to load index after create");
+    let paths_after_create: Vec<String> = (0..loaded.entry_count())
+        .map(|i| entry_path(loaded.get_entry(i).unwrap()).to_string())
+        .collect();
+    eprintln!("[test] After create: {} entries: {:?}", loaded.entry_count(), paths_after_create);
+
+    assert!(
+        paths_after_create.iter().any(|p| p.ends_with("delta.rs")),
+        "Index should contain delta.rs after creation. Paths: {:?}",
+        paths_after_create
+    );
+    assert_eq!(
+        loaded.entry_count(),
+        initial_count + 1,
+        "Should have {} entries after adding 1 file, got {}. Paths: {:?}",
+        initial_count + 1,
+        loaded.entry_count(),
+        paths_after_create
+    );
+
+    // --- Test 2: Delete a file ---
+    eprintln!("[test] Deleting beta.rs");
+    fs::remove_file(dir.path().join("beta.rs")).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    let loaded = manager.load(dir.path()).expect("Failed to load index after delete");
+    let paths_after_delete: Vec<String> = (0..loaded.entry_count())
+        .map(|i| entry_path(loaded.get_entry(i).unwrap()).to_string())
+        .collect();
+    eprintln!("[test] After delete: {} entries: {:?}", loaded.entry_count(), paths_after_delete);
+
+    assert!(
+        !paths_after_delete.iter().any(|p| p.ends_with("beta.rs")),
+        "Index should NOT contain beta.rs after deletion. Paths: {:?}",
+        paths_after_delete
+    );
+    assert_eq!(
+        loaded.entry_count(),
+        initial_count, // 3 original + 1 added - 1 deleted = 3
+        "Should have {} entries after delete, got {}. Paths: {:?}",
+        initial_count,
+        loaded.entry_count(),
+        paths_after_delete
+    );
+
+    // --- Test 3: Rename a file ---
+    eprintln!("[test] Renaming alpha.rs -> omega.rs");
+    fs::rename(
+        dir.path().join("alpha.rs"),
+        dir.path().join("omega.rs"),
+    )
+    .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    let loaded = manager.load(dir.path()).expect("Failed to load index after rename");
+    let paths_after_rename: Vec<String> = (0..loaded.entry_count())
+        .map(|i| entry_path(loaded.get_entry(i).unwrap()).to_string())
+        .collect();
+    eprintln!("[test] After rename: {} entries: {:?}", loaded.entry_count(), paths_after_rename);
+
+    assert!(
+        !paths_after_rename.iter().any(|p| p.ends_with("alpha.rs")),
+        "Index should NOT contain alpha.rs after rename. Paths: {:?}",
+        paths_after_rename
+    );
+    assert!(
+        paths_after_rename.iter().any(|p| p.ends_with("omega.rs")),
+        "Index should contain omega.rs after rename. Paths: {:?}",
+        paths_after_rename
+    );
+    assert_eq!(
+        loaded.entry_count(),
+        initial_count, // count should be same as after delete (3)
+        "Entry count should remain {} after rename, got {}. Paths: {:?}",
+        initial_count,
+        loaded.entry_count(),
+        paths_after_rename
+    );
+
+    // Stop watcher
+    watcher.stop();
+    assert!(!watcher.is_watching());
+
+    eprintln!("[test] IndexWatcher integration test PASSED");
+}
