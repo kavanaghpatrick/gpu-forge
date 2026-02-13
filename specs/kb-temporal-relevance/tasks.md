@@ -56,7 +56,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-4, FR-5, FR-18, AC-1.1, AC-1.2, AC-1.3, AC-1.4, AC-2.4, AC-2.5_
   - _Design: Search Filter Engine, Section 3.3_
 
-- [ ] 1.4 Add `supersede` command with self-guard
+- [x] 1.4 Add `supersede` command with self-guard
   - **Do**:
     1. Add `supersede)` case to `scripts/kb` before `*)`
     2. Parse: `old_id` (grep numeric), `new_id` (grep numeric), optional `reason`
