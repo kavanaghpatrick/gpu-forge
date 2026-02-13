@@ -41,7 +41,7 @@ Focus: Schema migration + core CLI commands working end-to-end. Skip edge cases,
   - _Requirements: FR-15, NFR-2_
   - _Design: Schema Migration, Section 3.2_
 
-- [ ] 1.3 Modify `search` command with --gen and --include-superseded flags
+- [x] 1.3 Modify `search` command with --gen and --include-superseded flags
   - **Do**:
     1. Replace the existing `search)` case (lines 68-90 of `scripts/kb`)
     2. Add graceful degradation: `pragma_table_info` check for `gpu_generation` column
