@@ -275,7 +275,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - _Requirements: NFR-4, FR-15_
   - _Design: Test Strategy, Section 6.1_
 
-- [ ] 3.2 Add search filtering tests to temporal.bats (10 tests)
+- [x] 3.2 Add search filtering tests to temporal.bats (10 tests)
   - **Do**:
     1. Append to `tests/unit/temporal.bats`
     2. Write 10 tests covering:
