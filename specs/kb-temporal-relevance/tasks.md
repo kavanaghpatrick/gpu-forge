@@ -250,7 +250,7 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
 
 Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modified.
 
-- [ ] 3.1 Create `tests/unit/temporal.bats` with migration + constraint tests (12 tests)
+- [x] 3.1 Create `tests/unit/temporal.bats` with migration + constraint tests (12 tests)
   - **Do**:
     1. Create test file with setup/teardown matching existing kb-cli.bats pattern
     2. setup(): copy production DB, set GPU_FORGE_DB, run migrate-temporal
