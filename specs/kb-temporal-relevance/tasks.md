@@ -455,7 +455,7 @@ Focus: Backfill, validation, backward compat, final quality.
   - _Requirements: AC-4.4_
   - _Design: Backfill Strategy, Section 5.5_
 
-- [ ] V4 [VERIFY] Full local CI: all tests pass (194 existing + ~54 new)
+- [x] V4 [VERIFY] Full local CI: all tests pass (194 existing + ~54 new)
   - **Do**: Run complete BATS test suite, verify total count is ~248
   - **Verify**: `cd /Users/patrickkavanagh/.claude/plugins/cache/gpu-forge-local/gpu-forge/1.0.0-dev && bats tests/ --recursive 2>&1 | tail -5`
   - **Done when**: All tests pass, 0 failures
