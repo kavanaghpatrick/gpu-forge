@@ -112,3 +112,44 @@ _now_ns() {
   # 5MB = 5242880 bytes
   [ "$db_size" -lt 5242880 ]
 }
+
+# =============================================================================
+# Temporal performance benchmarks
+# =============================================================================
+
+# Helper: set up a migrated + auto-tagged temporal DB copy
+_setup_temporal_db() {
+  TEMPORAL_DB="${BATS_TEST_TMPDIR}/perf_temporal.db"
+  cp "${PLUGIN_ROOT}/data/gpu_knowledge.db" "$TEMPORAL_DB"
+  export GPU_FORGE_DB="$TEMPORAL_DB"
+  "$KB" migrate-temporal >/dev/null 2>&1
+  "$KB" tag-gen --auto >/dev/null 2>&1
+}
+
+_teardown_temporal_db() {
+  rm -f "${BATS_TEST_TMPDIR}/perf_temporal.db"
+  rm -f "${BATS_TEST_TMPDIR}/perf_temporal.db.pre-temporal-backup"
+  unset GPU_FORGE_DB
+}
+
+@test "kb search --gen m4 completes under 1 second" {
+  _setup_temporal_db
+  start=$(_now_ns)
+  run "$KB" search "GPU" --gen m4
+  end=$(_now_ns)
+  _teardown_temporal_db
+  elapsed=$(( (end - start) / 1000000 ))  # ms
+  [ "$status" -eq 0 ]
+  [ "$elapsed" -lt 1000 ]
+}
+
+@test "kb freshness completes under 2 seconds" {
+  _setup_temporal_db
+  start=$(_now_ns)
+  run "$KB" freshness
+  end=$(_now_ns)
+  _teardown_temporal_db
+  elapsed=$(( (end - start) / 1000000 ))  # ms
+  [ "$status" -eq 0 ]
+  [ "$elapsed" -lt 2000 ]
+}

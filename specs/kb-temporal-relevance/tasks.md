@@ -364,7 +364,7 @@ Focus: Comprehensive BATS test suite -- 54 new tests across 3 new files + 1 modi
   - _Requirements: NFR-4_
   - _Design: Test Strategy, Section 6.2_
 
-- [ ] 3.6 Create `tests/integration/temporal-workflows.bats` with 4 workflow tests
+- [x] 3.6 Create `tests/integration/temporal-workflows.bats` with 4 workflow tests
   - **Do**:
     1. Create new test file at `tests/integration/temporal-workflows.bats`
     2. setup(): copy production DB, migrate
