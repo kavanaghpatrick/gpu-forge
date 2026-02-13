@@ -139,7 +139,7 @@ Focus: Wire filesystem index, add pipeline profiler, add FSEvents watcher.
   - _Requirements: FR-9_
   - _Design: Technical Decision (KB #1377, #1290)_
 
-- [ ] 2.8 Performance checkpoint -- benchmark against baseline
+- [x] 2.8 Performance checkpoint -- benchmark against baseline
   - **Do**: Run existing benchmarks. Compare TTFR for project search (should be <50ms), GPU throughput (should maintain 79-110 GB/s). Record baseline numbers in specs/gpu-search-overhaul/.progress.md.
   - **Done when**: Benchmarks run, no regression >10% from baseline
   - **Verify**: `cargo bench -p gpu-search 2>&1 | tail -30`
