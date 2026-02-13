@@ -158,7 +158,7 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
   - _Requirements: FR-6, FR-14, AC-3.1, AC-3.2, AC-3.3, AC-3.4_
   - _Design: Generation Tagger, Section 3.6_
 
-- [ ] 2.2 Add `freshness` command (dashboard + JSON)
+- [x] 2.2 Add `freshness` command (dashboard + JSON)
   - **Do**:
     1. Add `freshness)` case to `scripts/kb` before `*)`
     2. Parse `--skill <name>` and `--json` flags
