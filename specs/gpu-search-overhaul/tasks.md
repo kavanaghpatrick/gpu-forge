@@ -157,7 +157,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Commit**: `test(gpu-search): add grep oracle comparison test`
   - _Requirements: AC-5.1, AC-5.2, AC-5.3_
 
-- [ ] 3.2 Add pipeline-level proptest at orchestrator level
+- [x] 3.2 Add pipeline-level proptest at orchestrator level
   - **Do**: Extend `tests/test_proptest.rs` (or create new) with property: "For any (corpus, pattern) pair, every ContentMatch.line_content contains the pattern." Strategy: generate 1-10 temp files with random ASCII content (64-4096 bytes), pick a 2-16 byte substring from one file as pattern, run orchestrator, verify all matches. 100 iterations.
   - **Files**: `gpu-search/tests/test_proptest.rs` (extend ~60 lines)
   - **Done when**: Proptest runs 100 iterations with zero false positives

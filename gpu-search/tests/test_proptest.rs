@@ -22,11 +22,15 @@
 use gpu_search::gpu::device::GpuDevice;
 use gpu_search::gpu::pipeline::PsoCache;
 use gpu_search::search::content::{ContentSearchEngine, SearchMode, SearchOptions};
+use gpu_search::search::orchestrator::SearchOrchestrator;
+use gpu_search::search::types::SearchRequest;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
 
 // ============================================================================
 // Constants (must match GPU kernel limits)
@@ -456,5 +460,105 @@ fn prop_no_false_negatives_guaranteed_match() {
                 Ok(())
             },
         )
+        .unwrap();
+}
+
+// ============================================================================
+// Property 7: Pipeline-level accuracy via SearchOrchestrator
+//
+// For any (corpus, pattern) pair where the pattern is a substring drawn from
+// one of the corpus files, every ContentMatch.line_content must contain the
+// pattern. This tests the full pipeline: walk -> GPU dispatch -> resolve_match.
+// ============================================================================
+
+/// Strategy: generate 1-10 files of random ASCII content (64-4096 bytes each),
+/// then pick a 2-16 byte substring from one file as the search pattern.
+fn corpus_with_substring_pattern() -> impl Strategy<Value = (Vec<Vec<u8>>, String)> {
+    // Generate 1-10 files of 64-4096 bytes of printable ASCII, then pick a
+    // 2-16 byte substring from one file as the search pattern.
+    prop::collection::vec(64usize..=4096, 1..=10).prop_flat_map(|sizes| {
+        // Generate actual file contents matching the requested sizes
+        let file_strats: Vec<_> = sizes
+            .iter()
+            .map(|&sz| prop::collection::vec(32u8..=126u8, sz..=sz))
+            .collect();
+        file_strats
+            .prop_flat_map(|files: Vec<Vec<u8>>| {
+                let num_files = files.len();
+                let file_idx = 0..num_files;
+                let pat_len = 2usize..=16;
+                (Just(files), file_idx, pat_len)
+            })
+            .prop_flat_map(|(files, fidx, plen)| {
+                let file_len = files[fidx].len();
+                let max_start = if file_len > plen { file_len - plen } else { 0 };
+                (Just(files), Just(fidx), Just(plen), 0..=max_start)
+            })
+            .prop_map(|(files, fidx, plen, start)| {
+                let pattern_bytes = &files[fidx][start..start + plen];
+                let pattern = String::from_utf8_lossy(pattern_bytes).to_string();
+                (files, pattern)
+            })
+    })
+}
+
+#[test]
+fn prop_pipeline_accuracy_no_false_positives() {
+    let device = GpuDevice::new();
+    let pso_cache = PsoCache::new(&device.device);
+    let orchestrator = SearchOrchestrator::new(&device.device, &pso_cache)
+        .expect("Failed to create SearchOrchestrator");
+    let orchestrator = RefCell::new(orchestrator);
+
+    let mut runner = TestRunner::new(Config {
+        cases: 100,
+        ..Config::default()
+    });
+
+    runner
+        .run(&corpus_with_substring_pattern(), |(files, pattern)| {
+            // Skip empty or whitespace-only patterns
+            if pattern.trim().is_empty() || pattern.len() < 2 {
+                return Ok(());
+            }
+
+            // Create temp directory with corpus files
+            let dir = tempfile::TempDir::new().expect("create temp dir");
+            for (i, content) in files.iter().enumerate() {
+                let path = dir.path().join(format!("file_{:03}.txt", i));
+                let mut f = fs::File::create(&path).expect("create file");
+                f.write_all(content).expect("write file");
+            }
+
+            let request = SearchRequest {
+                pattern: pattern.clone(),
+                root: dir.path().to_path_buf(),
+                file_types: None,
+                case_sensitive: false,
+                respect_gitignore: false,
+                include_binary: false,
+                max_results: 10_000,
+            };
+
+            let mut orch = orchestrator.borrow_mut();
+            let response = orch.search(request);
+            drop(orch);
+
+            // Core property: every ContentMatch.line_content contains the pattern
+            let pat_lower = pattern.to_lowercase();
+            for cm in &response.content_matches {
+                let line_lower = cm.line_content.to_lowercase();
+                prop_assert!(
+                    line_lower.contains(&pat_lower),
+                    "FALSE POSITIVE: pattern='{}' file={:?} line={} content='{}'",
+                    pattern,
+                    cm.path.file_name().unwrap_or_default().to_string_lossy(),
+                    cm.line_number,
+                    cm.line_content.trim(),
+                );
+            }
+
+            Ok(())
+        })
         .unwrap();
 }
