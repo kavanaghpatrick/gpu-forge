@@ -238,7 +238,7 @@ impl SearchOrchestrator {
         // ----------------------------------------------------------------
         // Stage 6b: CPU verification (if GPU_SEARCH_VERIFY env var is set)
         // ----------------------------------------------------------------
-        let verify_mode = VerifyMode::from_env();
+        let verify_mode = VerifyMode::from_env().effective(gpu_results.len());
         if verify_mode != VerifyMode::Off {
             let mut by_file: std::collections::HashMap<&PathBuf, Vec<u32>> =
                 std::collections::HashMap::new();
@@ -832,7 +832,7 @@ impl SearchOrchestrator {
         }
 
         // --- CPU verification layer ---
-        let verify_mode = VerifyMode::from_env();
+        let verify_mode = VerifyMode::from_env().effective(gpu_results.len());
         if verify_mode != VerifyMode::Off {
             // Group GPU results by file path
             let mut by_file: std::collections::HashMap<&PathBuf, Vec<u32>> =
@@ -977,6 +977,7 @@ fn walk_directory(root: &Path) -> Vec<PathBuf> {
 /// 2. Gitignore filter (if enabled)
 /// 3. Binary file filter (extension + NUL-byte heuristic)
 /// 4. File type filter (extension whitelist)
+#[allow(clippy::too_many_arguments)]
 fn walk_and_filter(
     root: &Path,
     respect_gitignore: bool,
