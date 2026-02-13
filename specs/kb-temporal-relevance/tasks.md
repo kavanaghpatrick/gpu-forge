@@ -207,7 +207,7 @@ Focus: Remaining CLI commands (tag-gen, freshness, verify Check 6, help), agent 
   - _Requirements: FR-20_
   - _Design: Section 3.11_
 
-- [ ] 2.5 Update investigation-agent.md with 3 temporal insertions
+- [x] 2.5 Update investigation-agent.md with 3 temporal insertions
   - **Do**:
     1. Open `agents/investigation-agent.md`
     2. After Phase 2 step 3 ("Code Analysis", ~line 73): insert supersession check step
