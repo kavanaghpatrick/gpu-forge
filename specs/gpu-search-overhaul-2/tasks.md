@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Fix the P0 stale results bug and prove the generation-stamped architecture works. Add the core data model types. Accept minimal tests, no grouped rendering yet.
 
-- [ ] 1.1 Add StampedUpdate struct and change channel types
+- [x] 1.1 Add StampedUpdate struct and change channel types
   - **Do**:
     1. In `src/search/types.rs`, add `StampedUpdate` struct with `generation: u64` and `update: SearchUpdate` fields. Derive Debug, Clone.
     2. In `src/search/orchestrator.rs`, change `search_streaming` signature from `tx: &Sender<SearchUpdate>` to `tx: &Sender<StampedUpdate>`. Wrap every `tx.send(SearchUpdate::...)` call with `StampedUpdate { generation: session.guard.generation_id(), update: ... }`.

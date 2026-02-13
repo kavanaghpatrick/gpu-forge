@@ -23,7 +23,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel as channel;
@@ -32,6 +32,7 @@ use objc2_metal::MTLDevice;
 
 use crate::gpu::pipeline::PsoCache;
 use crate::index::cache::MmapIndexCache;
+use crate::index::gpu_index::GpuResidentIndex;
 use crate::index::shared_index::SharedIndexManager;
 use super::binary::BinaryDetector;
 use super::cancel::{CancellationToken, SearchSession};
@@ -39,7 +40,7 @@ use super::content::SearchOptions;
 use super::ignore::GitignoreFilter;
 use super::profile::PipelineProfile;
 use super::streaming::StreamingSearchEngine;
-use super::types::{ContentMatch, FileMatch, SearchRequest, SearchResponse, SearchUpdate};
+use super::types::{ContentMatch, FileMatch, SearchRequest, SearchResponse, SearchUpdate, StampedUpdate};
 use super::verify::{cpu_verify_matches, VerifyMode};
 
 // ============================================================================
@@ -365,7 +366,7 @@ impl SearchOrchestrator {
     pub fn search_streaming(
         &mut self,
         request: SearchRequest,
-        update_tx: &channel::Sender<SearchUpdate>,
+        update_tx: &channel::Sender<StampedUpdate>,
         session: &SearchSession,
     ) -> SearchResponse {
         let start = Instant::now();
@@ -399,6 +400,9 @@ impl SearchOrchestrator {
             file_types.as_deref(),
         );
 
+        // Collect paths for GSIX index building when falling back to walk
+        let index_collector: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+
         let producer = if use_index {
             eprintln!("[gpu-search] Stage 1: using GSIX index (instant discovery)");
             // Index entries already sent -- drop sender to close channel
@@ -406,6 +410,7 @@ impl SearchOrchestrator {
             None
         } else {
             eprintln!("[gpu-search] Stage 1: falling back to walk_and_filter");
+            let idx_collector = Arc::clone(&index_collector);
             let producer = std::thread::spawn(move || {
                 walk_and_filter(
                     &root,
@@ -415,6 +420,7 @@ impl SearchOrchestrator {
                     &path_tx,
                     &producer_counter,
                     &cancel_token,
+                    Some(&idx_collector),
                 );
                 // path_tx drops here, closing the channel
             });
@@ -491,7 +497,10 @@ impl SearchOrchestrator {
 
                 // Send accumulated file matches progressively
                 if !pending_file_matches.is_empty() {
-                    let _ = update_tx.send(SearchUpdate::FileMatches(pending_file_matches.clone()));
+                    let _ = update_tx.send(StampedUpdate {
+                        generation: session.guard.generation_id(),
+                        update: SearchUpdate::FileMatches(pending_file_matches.clone()),
+                    });
                     pending_file_matches.clear();
                 }
 
@@ -520,7 +529,10 @@ impl SearchOrchestrator {
                         ttfr_recorded = true;
                     }
                     eprintln!("[gpu-search] batch #{}: {} content matches", batch_number, batch_matches.len());
-                    let _ = update_tx.send(SearchUpdate::ContentMatches(batch_matches.clone()));
+                    let _ = update_tx.send(StampedUpdate {
+                        generation: session.guard.generation_id(),
+                        update: SearchUpdate::ContentMatches(batch_matches.clone()),
+                    });
                     all_content_matches.extend(batch_matches);
                 }
                 batch.clear();
@@ -539,7 +551,10 @@ impl SearchOrchestrator {
 
             // Send any remaining file matches
             if !pending_file_matches.is_empty() {
-                let _ = update_tx.send(SearchUpdate::FileMatches(pending_file_matches.clone()));
+                let _ = update_tx.send(StampedUpdate {
+                    generation: session.guard.generation_id(),
+                    update: SearchUpdate::FileMatches(pending_file_matches.clone()),
+                });
                 pending_file_matches.clear();
             }
 
@@ -567,7 +582,10 @@ impl SearchOrchestrator {
                     ttfr_recorded = true;
                 }
                 eprintln!("[gpu-search] batch #{}: {} content matches", batch_number, batch_matches.len());
-                let _ = update_tx.send(SearchUpdate::ContentMatches(batch_matches.clone()));
+                let _ = update_tx.send(StampedUpdate {
+                    generation: session.guard.generation_id(),
+                    update: SearchUpdate::ContentMatches(batch_matches.clone()),
+                });
                 all_content_matches.extend(batch_matches);
             }
         }
@@ -606,7 +624,10 @@ impl SearchOrchestrator {
         all_file_matches.sort_by(|a, b| {
             b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
         });
-        let _ = update_tx.send(SearchUpdate::FileMatches(all_file_matches.clone()));
+        let _ = update_tx.send(StampedUpdate {
+            generation: session.guard.generation_id(),
+            update: SearchUpdate::FileMatches(all_file_matches.clone()),
+        });
 
         let total_matches = (all_file_matches.len() + all_content_matches.len()) as u64;
 
@@ -625,12 +646,39 @@ impl SearchOrchestrator {
             profile,
         };
 
-        let _ = update_tx.send(SearchUpdate::Complete(response.clone()));
+        let _ = update_tx.send(StampedUpdate {
+            generation: session.guard.generation_id(),
+            update: SearchUpdate::Complete(response.clone()),
+        });
 
         eprintln!("[gpu-search] search complete: {} batches, {} files, {} file matches, {} content matches, {:.1}s",
             batch_number, total_files_searched, response.file_matches.len(),
             response.content_matches.len(), response.elapsed.as_secs_f64());
         eprintln!("[gpu-search] profile:\n{}", response.profile);
+
+        // Build GSIX index in background if we walked (no index was used)
+        // and the search wasn't cancelled. This makes the next search instant.
+        if !use_index && !session.should_stop() {
+            let search_root = request.root.clone();
+            std::thread::spawn(move || {
+                let paths = match Arc::try_unwrap(index_collector) {
+                    Ok(mutex) => mutex.into_inner().unwrap_or_default(),
+                    Err(arc) => arc.lock().map(|g| g.clone()).unwrap_or_default(),
+                };
+                if paths.is_empty() {
+                    return;
+                }
+                eprintln!("[gpu-search] index: building GSIX from {} walked paths...", paths.len());
+                let index = GpuResidentIndex::build_from_paths(&paths);
+                if let Ok(manager) = SharedIndexManager::new() {
+                    match manager.save(&index, &search_root) {
+                        Ok(path) => eprintln!("[gpu-search] index: saved {} entries to {}",
+                            index.entry_count(), path.display()),
+                        Err(e) => eprintln!("[gpu-search] index: save failed: {}", e),
+                    }
+                }
+            });
+        }
 
         response
     }
@@ -937,6 +985,7 @@ fn walk_and_filter(
     path_tx: &channel::Sender<PathBuf>,
     counter: &AtomicU64,
     cancel_token: &CancellationToken,
+    index_paths: Option<&Mutex<Vec<PathBuf>>>,
 ) {
     use ignore::WalkBuilder;
 
@@ -969,16 +1018,48 @@ fn walk_and_filter(
                         | "Volumes" | "cores" | "private"
                         | "usr" | "bin" | "sbin" | "dev" | "opt"
                         | "etc" | "tmp" | "var" | "nix"
+                        // macOS user data directories (not source code)
+                        | "Mail" | "Messages" | "Photos"
+                        | "Music" | "Movies" | "Pictures"
+                        | "Downloads" | "Documents"
+                        | "Containers" | "Group Containers"
+                        | "CloudStorage" | "MobileBackups"
+                        // macOS system caches and metadata
+                        | "Caches" | "CrashReporter" | "Logs"
+                        | "DiagnosticReports" | "WebKit"
+                        | "Preferences" | "Saved Application State"
+                        | "Cookies" | "HTTPStorages"
+                        // Homebrew
+                        | "Homebrew" | "Cellar" | "Caskroom"
                         // Build/dependency directories
                         | "node_modules" | "target" | ".git"
                         | "__pycache__" | ".cargo" | ".rustup"
-                        | "DerivedData" | "Build" | "Caches"
+                        | "DerivedData" | "Build"
                         | ".Trash" | "vendor" | "dist"
                         | ".next" | ".nuxt" | "coverage"
                         | "build" | ".build" | "Pods"
                         | ".venv" | "venv" | "env"
                         | ".tox" | ".mypy_cache" | ".pytest_cache"
                         | "bower_components" | ".gradle"
+                        // Misc caches and package managers
+                        | "cache" | ".cache" | "Cache"
+                        | "logs" | "log"
+                        | ".npm" | ".yarn" | ".pnpm-store"
+                        | ".conda" | ".local"
+                        | ".docker" | ".minikube"
+                        | ".ssh" | ".gnupg"
+                        // Language package manager caches (huge trees)
+                        | "go" | ".go" | "pkg"
+                        | "gems" | ".gem" | ".rbenv"
+                        | ".pyenv" | ".nvm" | ".sdkman"
+                        | ".m2" | ".ivy2" | ".sbt"
+                        | "anaconda3" | "miniconda3"
+                        | ".cpan" | ".cpanm"
+                        // Game / app data
+                        | "Steam" | "Battle.net" | "Blizzard"
+                        | "Epic Games" | "GOG Galaxy"
+                        | "Previously Relocated Items"
+                        | "Relocated Items"
                     );
                     if skip {
                         eprintln!("[gpu-search] filter: skipping dir '{}'", entry.path().display());
@@ -1064,6 +1145,13 @@ fn walk_and_filter(
 
         filtered_in += 1;
         counter.fetch_add(1, Ordering::Relaxed);
+
+        // Collect path for index building (if requested)
+        if let Some(idx) = index_paths {
+            if let Ok(mut paths) = idx.lock() {
+                paths.push(path.clone());
+            }
+        }
 
         // Log progress every 2K files that pass filters
         if filtered_in.is_multiple_of(2_000) {
@@ -1496,12 +1584,12 @@ mod tests {
             response.content_matches.len()
         );
 
-        // Should have sent progressive updates
+        // Should have sent progressive updates (now StampedUpdate)
         let mut update_count = 0;
         let mut got_complete = false;
-        while let Ok(update) = update_rx.try_recv() {
+        while let Ok(stamped) = update_rx.try_recv() {
             update_count += 1;
-            if matches!(update, SearchUpdate::Complete(_)) {
+            if matches!(stamped.update, SearchUpdate::Complete(_)) {
                 got_complete = true;
             }
         }
@@ -1616,10 +1704,10 @@ mod tests {
             response.content_matches.len()
         );
 
-        // Count progressive updates
+        // Count progressive updates (now StampedUpdate)
         let mut content_updates = 0;
-        while let Ok(update) = update_rx.try_recv() {
-            if matches!(update, SearchUpdate::ContentMatches(_)) {
+        while let Ok(stamped) = update_rx.try_recv() {
+            if matches!(stamped.update, SearchUpdate::ContentMatches(_)) {
                 content_updates += 1;
             }
         }
@@ -1667,8 +1755,8 @@ mod tests {
 
         // Should NOT send a Complete update (cancelled searches don't send final updates)
         let mut got_complete = false;
-        while let Ok(update) = update_rx.try_recv() {
-            if matches!(update, SearchUpdate::Complete(_)) {
+        while let Ok(stamped) = update_rx.try_recv() {
+            if matches!(stamped.update, SearchUpdate::Complete(_)) {
                 got_complete = true;
             }
         }

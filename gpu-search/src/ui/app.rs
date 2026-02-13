@@ -14,8 +14,9 @@ use eframe::egui;
 
 use crate::gpu::device::GpuDevice;
 use crate::gpu::pipeline::PsoCache;
+use crate::search::cancel::{cancellation_pair, CancellationHandle, SearchGeneration, SearchSession};
 use crate::search::orchestrator::SearchOrchestrator;
-use crate::search::types::{ContentMatch, FileMatch, SearchRequest, SearchUpdate};
+use crate::search::types::{ContentMatch, FileMatch, SearchRequest, SearchUpdate, StampedUpdate};
 
 use super::filters::FilterBar;
 use super::highlight::SyntaxHighlighter;
@@ -28,7 +29,8 @@ use super::theme;
 /// Message from UI -> orchestrator background thread.
 enum OrchestratorCommand {
     /// Execute a new search, cancelling any in-progress search.
-    Search(SearchRequest),
+    /// Carries a `SearchSession` for cooperative cancellation + generation tracking.
+    Search(SearchRequest, SearchSession),
     /// Shut down the background thread.
     Shutdown,
 }
@@ -68,8 +70,8 @@ pub struct GpuSearchApp {
     /// Channel to send commands to the orchestrator background thread.
     cmd_tx: Sender<OrchestratorCommand>,
 
-    /// Channel to receive search updates from the orchestrator.
-    update_rx: Receiver<SearchUpdate>,
+    /// Channel to receive generation-stamped search updates from the orchestrator.
+    update_rx: Receiver<StampedUpdate>,
 
     /// Root directory for searches (current working dir by default).
     search_root: PathBuf,
@@ -77,15 +79,23 @@ pub struct GpuSearchApp {
     /// Last search elapsed time.
     last_elapsed: Duration,
 
+    /// Generation counter for search sessions (monotonically increasing).
+    /// Used to detect and discard stale results from superseded searches.
+    search_generation: SearchGeneration,
+
+    /// Handle to cancel the currently in-flight search.
+    /// Set on each `dispatch_search`, cancelled when a new search starts.
+    current_cancel_handle: Option<CancellationHandle>,
+
     /// Handle to the background orchestrator thread.
     _bg_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Default for GpuSearchApp {
     fn default() -> Self {
-        // Create channels
+        // Create channels (StampedUpdate for generation-stamped messages)
         let (cmd_tx, _cmd_rx) = crossbeam_channel::unbounded();
-        let (_update_tx, update_rx) = crossbeam_channel::unbounded();
+        let (_update_tx, update_rx) = crossbeam_channel::unbounded::<StampedUpdate>();
 
         Self {
             search_input: String::new(),
@@ -102,6 +112,8 @@ impl Default for GpuSearchApp {
             update_rx,
             search_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             last_elapsed: Duration::ZERO,
+            search_generation: SearchGeneration::new(),
+            current_cancel_handle: None,
             _bg_thread: None,
         }
     }
@@ -111,11 +123,12 @@ impl GpuSearchApp {
     /// Create a new GpuSearchApp, initializing the GPU device, pipeline,
     /// and orchestrator on a background thread.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let search_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let search_root = parse_root_arg()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         // Channels: UI -> orchestrator commands, orchestrator -> UI updates
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<OrchestratorCommand>();
-        let (update_tx, update_rx) = crossbeam_channel::unbounded::<SearchUpdate>();
+        let (update_tx, update_rx) = crossbeam_channel::unbounded::<StampedUpdate>();
 
         // Spawn background orchestrator thread with its own GPU resources.
         // Each Metal device + command queue is created on the background thread
@@ -142,6 +155,8 @@ impl GpuSearchApp {
             update_rx,
             search_root,
             last_elapsed: Duration::ZERO,
+            search_generation: SearchGeneration::new(),
+            current_cancel_handle: None,
             _bg_thread: Some(bg_thread),
         }
     }
@@ -152,9 +167,17 @@ impl GpuSearchApp {
     }
 
     /// Send a search request to the orchestrator background thread.
+    ///
+    /// Cancels any in-flight search via the cancellation handle before starting
+    /// a new one. Creates a fresh `SearchSession` (token + generation guard) so
+    /// the orchestrator can detect cancellation and discard stale results.
     fn dispatch_search(&mut self, query: String) {
+        // Always cancel previous in-flight search first
+        if let Some(handle) = self.current_cancel_handle.take() {
+            handle.cancel();
+        }
+
         if query.is_empty() {
-            // Clear results
             self.file_matches.clear();
             self.content_matches.clear();
             self.is_searching = false;
@@ -166,24 +189,38 @@ impl GpuSearchApp {
         let mut request = SearchRequest::new(&query, &self.search_root);
         self.filter_bar.apply_to_request(&mut request);
 
+        // Create new cancellation pair + generation guard for this search
+        let (token, handle) = cancellation_pair();
+        let guard = self.search_generation.next();
+        let session = SearchSession { token, guard };
+        self.current_cancel_handle = Some(handle);
+
         self.is_searching = true;
-        // Drain any pending updates from previous searches
+        self.file_matches.clear();
+        self.content_matches.clear();
+        // Drain any pending updates from previous (now-cancelled) searches
         while self.update_rx.try_recv().is_ok() {}
 
-        let _ = self.cmd_tx.send(OrchestratorCommand::Search(request));
+        let _ = self.cmd_tx.send(OrchestratorCommand::Search(request, session));
     }
 
     /// Poll for search updates from the orchestrator.
+    ///
+    /// The streaming pipeline sends multiple `ContentMatches` updates as
+    /// GPU batches complete. These are accumulated (not replaced) until
+    /// the `Complete` message arrives with the final aggregated results.
     fn poll_updates(&mut self) {
         // Process all available updates this frame (non-blocking)
-        while let Ok(update) = self.update_rx.try_recv() {
-            match update {
+        while let Ok(stamped) = self.update_rx.try_recv() {
+            match stamped.update {
                 SearchUpdate::FileMatches(matches) => {
                     self.file_matches = matches;
                     self.results_list.selected_index = 0;
                 }
                 SearchUpdate::ContentMatches(matches) => {
-                    self.content_matches = matches;
+                    // Accumulate progressive content match batches from
+                    // the streaming pipeline (each GPU batch sends one update)
+                    self.content_matches.extend(matches);
                 }
                 SearchUpdate::Complete(response) => {
                     self.file_matches = response.file_matches;
@@ -324,9 +361,13 @@ impl Drop for GpuSearchApp {
 /// Creates its own GpuDevice + PsoCache + SearchOrchestrator on this thread
 /// (Metal objects are created per-thread for safety). Loops waiting for commands
 /// from the UI via crossbeam channel.
+///
+/// Uses `search_streaming` for progressive result delivery -- directory walking
+/// overlaps with GPU search so results start arriving immediately instead of
+/// blocking until all files are enumerated.
 fn orchestrator_thread(
     cmd_rx: Receiver<OrchestratorCommand>,
-    update_tx: Sender<SearchUpdate>,
+    update_tx: Sender<StampedUpdate>,
 ) {
     // Initialize GPU resources on this thread
     let device = GpuDevice::new();
@@ -342,25 +383,29 @@ fn orchestrator_thread(
     // Event loop: wait for commands
     loop {
         match cmd_rx.recv() {
-            Ok(OrchestratorCommand::Search(request)) => {
+            Ok(OrchestratorCommand::Search(request, session)) => {
                 // Drain any queued search commands -- only process the latest
                 let mut latest_request = request;
+                let mut latest_session = session;
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
-                        OrchestratorCommand::Search(r) => latest_request = r,
+                        OrchestratorCommand::Search(r, s) => {
+                            latest_request = r;
+                            latest_session = s;
+                        }
                         OrchestratorCommand::Shutdown => return,
                     }
                 }
 
-                // Execute the search
-                let response = orchestrator.search(latest_request);
+                // Skip if already cancelled/superseded before we even start
+                if latest_session.should_stop() {
+                    continue;
+                }
 
-                // Send progressive updates
-                let _ = update_tx.send(SearchUpdate::FileMatches(response.file_matches.clone()));
-                let _ = update_tx.send(SearchUpdate::ContentMatches(
-                    response.content_matches.clone(),
-                ));
-                let _ = update_tx.send(SearchUpdate::Complete(response));
+                // Execute streaming search with cancellation support.
+                // search_streaming checks session.should_stop() between GPU batches
+                // and aborts early if a new search has been dispatched.
+                orchestrator.search_streaming(latest_request, &update_tx, &latest_session);
             }
             Ok(OrchestratorCommand::Shutdown) | Err(_) => {
                 // Channel closed or explicit shutdown
@@ -374,6 +419,27 @@ fn orchestrator_thread(
 ///
 /// Configures eframe with a 720x400 floating window, then runs the event loop.
 /// This function blocks until the window is closed.
+/// Parse `--root <path>` from CLI arguments.
+///
+/// Returns `Some(path)` if `--root` was provided and the path exists,
+/// `None` otherwise (caller falls back to current working directory).
+fn parse_root_arg() -> Option<PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--root" {
+            if let Some(path_str) = args.get(i + 1) {
+                let path = PathBuf::from(path_str);
+                if path.is_dir() {
+                    return Some(path);
+                }
+                eprintln!("gpu-search: --root path does not exist: {}", path_str);
+                return None;
+            }
+        }
+    }
+    None
+}
+
 pub fn run_app() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

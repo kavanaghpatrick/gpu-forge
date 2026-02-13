@@ -98,3 +98,16 @@ pub enum SearchUpdate {
     /// Final: Complete response with all results and stats.
     Complete(SearchResponse),
 }
+
+/// A generation-stamped search update.
+///
+/// Wraps a `SearchUpdate` with the generation ID of the search session that
+/// produced it. The UI uses the generation to discard stale results from
+/// superseded searches (the P0 stale-results race condition fix).
+#[derive(Debug, Clone)]
+pub struct StampedUpdate {
+    /// Generation ID of the search session that produced this update.
+    pub generation: u64,
+    /// The underlying search update payload.
+    pub update: SearchUpdate,
+}
