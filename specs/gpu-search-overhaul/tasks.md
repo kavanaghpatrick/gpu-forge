@@ -165,7 +165,7 @@ Focus: Grep oracle, proptest, benchmark regression, shader validation.
   - **Commit**: `test(gpu-search): add pipeline-level property test for accuracy`
   - _Requirements: AC-1.1_
 
-- [ ] 3.3 Add benchmark regression detection with stored baselines
+- [x] 3.3 Add benchmark regression detection with stored baselines
   - **Do**: Create `benches/pipeline_profile.rs`. Benchmarks: (1) `bench_project_search` -- search gpu-search/src/ for "fn ", (2) `bench_index_load` -- load GSIX index via MmapIndexCache, (3) `bench_full_pipeline` -- orchestrator search end-to-end. Use Criterion groups. Store initial baseline via `cargo bench --save-baseline initial`.
   - **Files**: `gpu-search/benches/pipeline_profile.rs` (create ~120 lines), `gpu-search/Cargo.toml` (add [[bench]] entry)
   - **Done when**: New benchmark runs and produces Criterion reports

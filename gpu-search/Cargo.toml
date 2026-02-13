@@ -60,3 +60,7 @@ harness = false
 [[bench]]
 name = "search_latency"
 harness = false
+
+[[bench]]
+name = "pipeline_profile"
+harness = false
