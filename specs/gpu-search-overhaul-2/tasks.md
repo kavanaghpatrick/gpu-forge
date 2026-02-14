@@ -129,7 +129,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-7_
   - _Design: Component E_
 
-- [ ] 2.4 Add ContentGroup struct and incremental grouping logic
+- [x] 2.4 Add ContentGroup struct and incremental grouping logic
   - **Do**:
     1. In `src/ui/results_list.rs` (or new `src/ui/grouping.rs`), add `ContentGroup` struct: `path: PathBuf, dir_display: String, filename: String, extension: String, match_indices: Vec<usize>`.
     2. In `app.rs`, add fields: `content_groups: Vec<ContentGroup>`, `group_index_map: HashMap<PathBuf, usize>`, `last_grouped_index: usize`.

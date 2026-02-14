@@ -5,6 +5,7 @@
 //! crossbeam channels: UI sends `SearchRequest`, orchestrator sends `SearchUpdate`
 //! back. UI polls `try_recv` every frame to update results progressively.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -22,7 +23,8 @@ use super::actions;
 use super::filters::FilterBar;
 use super::highlight::SyntaxHighlighter;
 use super::keybinds::{self, KeyAction};
-use super::results_list::ResultsList;
+use super::path_utils::abbreviate_path;
+use super::results_list::{ContentGroup, ResultsList};
 use super::search_bar::{SearchBar, SearchMode};
 use super::status_bar::StatusBar;
 use super::theme;
@@ -46,6 +48,16 @@ pub struct GpuSearchApp {
 
     /// Content matches from the most recent search.
     pub content_matches: Vec<ContentMatch>,
+
+    /// Content matches grouped by file path for grouped rendering.
+    pub content_groups: Vec<ContentGroup>,
+
+    /// Map from file path to index in `content_groups` for O(1) group lookup.
+    group_index_map: HashMap<PathBuf, usize>,
+
+    /// Index into `content_matches` up to which grouping has been computed.
+    /// Enables incremental grouping -- only new matches are processed.
+    last_grouped_index: usize,
 
     /// Index of the currently selected result in the combined list.
     pub selected_index: usize,
@@ -102,6 +114,9 @@ impl Default for GpuSearchApp {
             search_input: String::new(),
             file_matches: Vec::new(),
             content_matches: Vec::new(),
+            content_groups: Vec::new(),
+            group_index_map: HashMap::new(),
+            last_grouped_index: 0,
             selected_index: 0,
             is_searching: false,
             search_bar: SearchBar::default(),
@@ -145,6 +160,9 @@ impl GpuSearchApp {
             search_input: String::new(),
             file_matches: Vec::new(),
             content_matches: Vec::new(),
+            content_groups: Vec::new(),
+            group_index_map: HashMap::new(),
+            last_grouped_index: 0,
             selected_index: 0,
             is_searching: false,
             search_bar: SearchBar::default(),
@@ -181,6 +199,7 @@ impl GpuSearchApp {
         if query.is_empty() {
             self.file_matches.clear();
             self.content_matches.clear();
+            self.clear_groups();
             self.is_searching = false;
             self.results_list.selected_index = 0;
             self.status_bar.update(0, Duration::ZERO, self.filter_bar.count());
@@ -199,6 +218,7 @@ impl GpuSearchApp {
         self.is_searching = true;
         self.file_matches.clear();
         self.content_matches.clear();
+        self.clear_groups();
         // Drain any pending updates from previous (now-cancelled) searches
         while self.update_rx.try_recv().is_ok() {}
 
@@ -231,10 +251,15 @@ impl GpuSearchApp {
                     // Accumulate progressive content match batches from
                     // the streaming pipeline (each GPU batch sends one update)
                     self.content_matches.extend(matches);
+                    self.recompute_groups();
                 }
                 SearchUpdate::Complete(response) => {
                     self.file_matches = response.file_matches;
                     self.content_matches = response.content_matches;
+                    // Complete replaces all content_matches, so reset and rebuild groups
+                    self.clear_groups();
+                    self.recompute_groups();
+                    self.sort_groups_by_count();
                     self.is_searching = false;
                     self.last_elapsed = response.elapsed;
                     self.status_bar.update(
@@ -263,6 +288,60 @@ impl GpuSearchApp {
         );
     }
 
+    /// Incrementally group new content matches by file path.
+    ///
+    /// Only processes matches from `last_grouped_index` onward, so it is
+    /// efficient for progressive streaming where new batches arrive each frame.
+    /// Uses `group_index_map` for O(1) lookup of existing groups.
+    fn recompute_groups(&mut self) {
+        let search_root = self.search_root.clone();
+        for i in self.last_grouped_index..self.content_matches.len() {
+            let cm = &self.content_matches[i];
+            if let Some(&group_idx) = self.group_index_map.get(&cm.path) {
+                // Existing group: append match index
+                self.content_groups[group_idx].match_indices.push(i);
+            } else {
+                // New group: compute abbreviated path and extension
+                let (dir_display, filename) = abbreviate_path(&cm.path, &search_root);
+                let extension = cm
+                    .path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let group_idx = self.content_groups.len();
+                self.group_index_map.insert(cm.path.clone(), group_idx);
+                self.content_groups.push(ContentGroup {
+                    path: cm.path.clone(),
+                    dir_display,
+                    filename,
+                    extension,
+                    match_indices: vec![i],
+                });
+            }
+        }
+        self.last_grouped_index = self.content_matches.len();
+    }
+
+    /// Sort content groups by match count descending (most matches first).
+    ///
+    /// Called on `Complete` to produce the final display order.
+    fn sort_groups_by_count(&mut self) {
+        self.content_groups
+            .sort_by(|a, b| b.match_indices.len().cmp(&a.match_indices.len()));
+        // Rebuild the index map after sorting
+        self.group_index_map.clear();
+        for (idx, group) in self.content_groups.iter().enumerate() {
+            self.group_index_map.insert(group.path.clone(), idx);
+        }
+    }
+
+    /// Clear all grouping state. Called when starting a new search.
+    fn clear_groups(&mut self) {
+        self.content_groups.clear();
+        self.group_index_map.clear();
+        self.last_grouped_index = 0;
+    }
+
     /// Handle a keyboard action.
     fn handle_key_action(&mut self, action: KeyAction, ctx: &egui::Context) {
         match action {
@@ -281,6 +360,7 @@ impl GpuSearchApp {
                 self.search_input.clear();
                 self.file_matches.clear();
                 self.content_matches.clear();
+                self.clear_groups();
                 self.is_searching = false;
                 self.results_list.selected_index = 0;
                 self.selected_index = 0;

@@ -8,13 +8,32 @@
 //! Virtual scroll via `egui::ScrollArea::vertical().show_rows()` for O(1) rendering
 //! regardless of result count.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Vec2};
 
 use crate::search::types::{ContentMatch, FileMatch};
 use super::path_utils::abbreviate_path;
 use super::theme;
+
+/// A group of content matches sharing the same file path.
+///
+/// Used to display content matches grouped by file with a single header
+/// showing the abbreviated path, file type dot, and match count.
+/// `match_indices` stores indices into the parent `content_matches` vec.
+#[derive(Debug, Clone)]
+pub struct ContentGroup {
+    /// Full path to the file.
+    pub path: PathBuf,
+    /// Abbreviated directory display string (from `abbreviate_path`).
+    pub dir_display: String,
+    /// Filename component (from `abbreviate_path`).
+    pub filename: String,
+    /// File extension (lowercase, without dot), e.g. "rs", "py".
+    pub extension: String,
+    /// Indices into the `content_matches` vec for matches in this file.
+    pub match_indices: Vec<usize>,
+}
 
 /// Height of a single filename match row in pixels.
 const FILE_ROW_HEIGHT: f32 = 28.0;
