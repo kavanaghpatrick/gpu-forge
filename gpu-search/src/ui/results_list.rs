@@ -219,6 +219,44 @@ impl FlatRowModel {
         }
         None
     }
+
+    /// Find the first selectable row in the content matches section.
+    ///
+    /// Locates the `SectionHeader(ContentMatches)` row and returns the first
+    /// selectable row after it (typically a `MatchRow`).
+    /// Returns `None` if no content matches section exists.
+    pub fn first_selectable_in_content_section(&self) -> Option<usize> {
+        // Find the ContentMatches section header
+        let header_idx = self.rows.iter().position(|r| {
+            matches!(r, RowKind::SectionHeader(SectionType::ContentMatches))
+        })?;
+        // Find first selectable row after the header
+        for idx in (header_idx + 1)..self.rows.len() {
+            if self.is_selectable(idx) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Find the first selectable row in the file matches section.
+    ///
+    /// Locates the `SectionHeader(FileMatches)` row and returns the first
+    /// selectable row after it (typically a `FileMatchRow`).
+    /// Returns `None` if no file matches section exists.
+    pub fn first_selectable_in_file_section(&self) -> Option<usize> {
+        // Find the FileMatches section header
+        let header_idx = self.rows.iter().position(|r| {
+            matches!(r, RowKind::SectionHeader(SectionType::FileMatches))
+        })?;
+        // Find first selectable row after the header
+        for idx in (header_idx + 1)..self.rows.len() {
+            if self.is_selectable(idx) {
+                return Some(idx);
+            }
+        }
+        None
+    }
 }
 
 /// Width of the left accent border for selected items.
@@ -507,16 +545,16 @@ fn render_file_row(
         );
     }
 
-    response
+    response.on_hover_text(fm.path.display().to_string())
 }
 
 /// Render a content group header: 6px colored dot + bold filename + " -- N matches" + dir path.
 fn render_group_header(
     ui: &mut egui::Ui,
     group: &ContentGroup,
-) {
+) -> egui::Response {
     let desired_size = Vec2::new(ui.available_width(), GROUP_HEADER_HEIGHT);
-    let (rect, _response) = ui.allocate_exact_size(desired_size, Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter_at(rect);
@@ -562,6 +600,8 @@ fn render_group_header(
             painter.galley(egui::pos2(dir_x, text_y + 1.0), dir_galley, Color32::TRANSPARENT);
         }
     }
+
+    response.on_hover_text(group.path.display().to_string())
 }
 
 /// Render a content match row.

@@ -401,8 +401,21 @@ impl GpuSearchApp {
             KeyAction::Dismiss => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            KeyAction::CycleFilter => {
-                self.search_bar.filter_active = !self.search_bar.filter_active;
+            KeyAction::JumpToContentSection => {
+                if let Some(idx) = self.flat_row_model.first_selectable_in_content_section() {
+                    self.results_list.selected_index = idx;
+                    self.selected_index = idx;
+                    self.results_list.scroll_to_selected = true;
+                    self.rebuild_flat_model();
+                }
+            }
+            KeyAction::JumpToFileSection => {
+                if let Some(idx) = self.flat_row_model.first_selectable_in_file_section() {
+                    self.results_list.selected_index = idx;
+                    self.selected_index = idx;
+                    self.results_list.scroll_to_selected = true;
+                    self.rebuild_flat_model();
+                }
             }
             KeyAction::OpenFile => {
                 if let Some(path) = self

@@ -195,7 +195,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-14, FR-18_
   - _Design: Section 9_
 
-- [ ] 2.8 Add hover tooltip and Tab section jump
+- [x] 2.8 Add hover tooltip and Tab section jump
   - **Do**:
     1. In `render_file_row()` and `render_group_header()`, add `response.on_hover_text(full_absolute_path)` to show full path on hover.
     2. In `keybinds.rs` or `results_list.rs`, add Tab handling: jump from filename section to first content match, Shift+Tab jumps back.

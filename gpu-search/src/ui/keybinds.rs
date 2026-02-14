@@ -22,8 +22,10 @@ pub enum KeyAction {
     ClearSearch,
     /// Copy the selected result's path to clipboard (Cmd+C).
     CopyPath,
-    /// Cycle through filter modes (Tab).
-    CycleFilter,
+    /// Jump to first content match section (Tab).
+    JumpToContentSection,
+    /// Jump back to first file match section (Shift+Tab).
+    JumpToFileSection,
     /// No action matched.
     None,
 }
@@ -35,6 +37,8 @@ pub struct ModifierState {
     pub command: bool,
     /// Control key.
     pub ctrl: bool,
+    /// Shift key.
+    pub shift: bool,
 }
 
 impl From<egui::Modifiers> for ModifierState {
@@ -42,6 +46,7 @@ impl From<egui::Modifiers> for ModifierState {
         Self {
             command: m.command,
             ctrl: m.ctrl,
+            shift: m.shift,
         }
     }
 }
@@ -64,27 +69,29 @@ pub enum KeyPress {
 ///
 /// This is the core mapping logic, separated from egui for testability.
 pub fn map_key_action(key: KeyPress, mods: ModifierState) -> KeyAction {
-    match (key, mods.command, mods.ctrl) {
+    match key {
         // Cmd+Enter -> OpenInEditor (must check before plain Enter)
-        (KeyPress::Enter, true, _) => KeyAction::OpenInEditor,
+        KeyPress::Enter if mods.command => KeyAction::OpenInEditor,
         // Plain Enter -> OpenFile
-        (KeyPress::Enter, false, _) => KeyAction::OpenFile,
+        KeyPress::Enter => KeyAction::OpenFile,
         // Cmd+Backspace -> ClearSearch
-        (KeyPress::Backspace, true, _) => KeyAction::ClearSearch,
+        KeyPress::Backspace if mods.command => KeyAction::ClearSearch,
         // Cmd+C -> CopyPath
-        (KeyPress::C, true, _) => KeyAction::CopyPath,
+        KeyPress::C if mods.command => KeyAction::CopyPath,
         // Ctrl+P -> NavigateUp (Emacs-style)
-        (KeyPress::P, _, true) => KeyAction::NavigateUp,
+        KeyPress::P if mods.ctrl => KeyAction::NavigateUp,
         // Ctrl+N -> NavigateDown (Emacs-style)
-        (KeyPress::N, _, true) => KeyAction::NavigateDown,
+        KeyPress::N if mods.ctrl => KeyAction::NavigateDown,
         // Up arrow -> NavigateUp
-        (KeyPress::ArrowUp, false, false) => KeyAction::NavigateUp,
+        KeyPress::ArrowUp if !mods.command && !mods.ctrl => KeyAction::NavigateUp,
         // Down arrow -> NavigateDown
-        (KeyPress::ArrowDown, false, false) => KeyAction::NavigateDown,
+        KeyPress::ArrowDown if !mods.command && !mods.ctrl => KeyAction::NavigateDown,
         // Escape -> Dismiss
-        (KeyPress::Escape, _, _) => KeyAction::Dismiss,
-        // Tab -> CycleFilter
-        (KeyPress::Tab, false, false) => KeyAction::CycleFilter,
+        KeyPress::Escape => KeyAction::Dismiss,
+        // Shift+Tab -> JumpToFileSection
+        KeyPress::Tab if mods.shift => KeyAction::JumpToFileSection,
+        // Tab -> JumpToContentSection
+        KeyPress::Tab if !mods.command && !mods.ctrl => KeyAction::JumpToContentSection,
         // No match
         _ => KeyAction::None,
     }
@@ -130,8 +137,12 @@ pub fn process_input(ctx: &egui::Context) -> KeyAction {
         if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             return KeyAction::Dismiss;
         }
+        // Shift+Tab -> JumpToFileSection (check before plain Tab)
+        if input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
+            return KeyAction::JumpToFileSection;
+        }
         if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
-            return KeyAction::CycleFilter;
+            return KeyAction::JumpToContentSection;
         }
 
         KeyAction::None
@@ -150,6 +161,7 @@ mod tests {
         ModifierState {
             command: true,
             ctrl: false,
+            shift: false,
         }
     }
 
@@ -157,6 +169,15 @@ mod tests {
         ModifierState {
             command: false,
             ctrl: true,
+            shift: false,
+        }
+    }
+
+    fn shift() -> ModifierState {
+        ModifierState {
+            command: false,
+            ctrl: false,
+            shift: true,
         }
     }
 
@@ -212,10 +233,16 @@ mod tests {
             KeyAction::CopyPath,
         );
 
-        // Cycle filter (Tab)
+        // Tab -> JumpToContentSection
         assert_eq!(
             map_key_action(KeyPress::Tab, no_mods()),
-            KeyAction::CycleFilter,
+            KeyAction::JumpToContentSection,
+        );
+
+        // Shift+Tab -> JumpToFileSection
+        assert_eq!(
+            map_key_action(KeyPress::Tab, shift()),
+            KeyAction::JumpToFileSection,
         );
 
         // No action for unbound keys
@@ -236,10 +263,11 @@ mod tests {
             KeyAction::Dismiss,
             KeyAction::ClearSearch,
             KeyAction::CopyPath,
-            KeyAction::CycleFilter,
+            KeyAction::JumpToContentSection,
+            KeyAction::JumpToFileSection,
             KeyAction::None,
         ];
-        // All 9 variants should be unique
+        // All 10 variants should be unique
         for (i, a) in actions.iter().enumerate() {
             for (j, b) in actions.iter().enumerate() {
                 if i != j {
