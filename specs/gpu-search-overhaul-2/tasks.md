@@ -334,7 +334,7 @@ Focus: CI pipeline, benchmark hard gate, clippy, full regression.
   - **Commit**: `fix(gpu-search): address lint/type issues` (if needed)
   - _Requirements: NFR-5, NFR-6_
 
-- [ ] 4.2 Add grouped scroll benchmark
+- [x] 4.2 Add grouped scroll benchmark
   - **Do**:
     1. Create `gpu-search/benches/grouped_scroll.rs` with Criterion benchmarks.
     2. `bench_rebuild_flat_row_model_100`: 10 groups, 10 matches each.
