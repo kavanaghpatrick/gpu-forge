@@ -280,7 +280,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-4.1_
   - _Design: Component E_
 
-- [ ] 3.7 Integration tests for stale result filtering
+- [x] 3.7 Integration tests for stale result filtering
   - **Do**:
     1. Create `gpu-search/tests/test_stale_results.rs`.
     2. Implement synchronous test harness: construct `StampedUpdate` messages manually (no real channels), call poll helper directly.
