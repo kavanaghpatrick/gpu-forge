@@ -161,7 +161,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-5, FR-15_
   - _Design: Component C_
 
-- [ ] 2.6 Replace show_rows() with show_viewport() grouped rendering
+- [x] 2.6 Replace show_rows() with show_viewport() grouped rendering
   - **Do**:
     1. In `results_list.rs`, replace `show_file_matches()` and `show_content_matches()` with a unified `show()` method using `ScrollArea::vertical().show_viewport()`.
     2. Inside `show_viewport`, use `first_visible_row(viewport.top())` to find start row. Iterate forward rendering rows until y-position exceeds viewport bottom.

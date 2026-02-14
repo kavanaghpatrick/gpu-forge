@@ -1,18 +1,20 @@
-//! Scrollable results list with virtual scroll for 10K+ items.
+//! Scrollable results list with grouped virtual scroll for 10K+ items.
 //!
 //! Two sections:
 //! - **FILENAME MATCHES (N)**: file path with highlighted query substring
-//! - **CONTENT MATCHES (N)**: `file:line` header + context lines with highlighted match
+//! - **CONTENT MATCHES (N)**: grouped by file with colored dots, match rows with
+//!   syntax highlighting + match_range overlay
 //!
 //! Selected item gets a background highlight (ACCENT tint) and left accent border.
-//! Virtual scroll via `egui::ScrollArea::vertical().show_rows()` for O(1) rendering
-//! regardless of result count.
+//! Virtual scroll via `egui::ScrollArea::vertical().show_viewport()` with prefix-sum
+//! binary search for O(log n) first-visible-row lookup and O(1) rendering.
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, FontId, RichText, Sense, Vec2};
+use eframe::egui::{self, Color32, FontId, Rect, Sense, UiBuilder, Vec2};
 
 use crate::search::types::{ContentMatch, FileMatch};
+use super::highlight::{apply_match_range_overlay, StyledSpan, SyntaxHighlighter};
 use super::path_utils::abbreviate_path;
 use super::theme;
 
@@ -219,10 +221,6 @@ impl FlatRowModel {
     }
 }
 
-/// Height of a single filename match row in pixels.
-const FILE_ROW_HEIGHT: f32 = 28.0;
-/// Height of a single content match row in pixels (header + up to 3 context lines).
-const CONTENT_ROW_HEIGHT: f32 = 80.0;
 /// Width of the left accent border for selected items.
 const ACCENT_BORDER_WIDTH: f32 = 3.0;
 /// Background alpha for selected item highlight.
@@ -313,243 +311,288 @@ impl ResultsList {
         }
     }
 
-    /// Render the results list with virtual scrolling.
+    /// Render the results list with grouped virtual scrolling.
     ///
-    /// Displays two sections:
-    /// 1. FILENAME MATCHES (N) -- paths with highlighted query substring
-    /// 2. CONTENT MATCHES (N) -- file:line headers + context with highlighted match
+    /// Displays two sections using `show_viewport()` with prefix-sum binary search:
+    /// 1. FILENAME MATCHES -- paths with highlighted query substring
+    /// 2. CONTENT MATCHES -- grouped by file with colored dots, syntax highlighting,
+    ///    and match_range overlay
     ///
-    /// Uses `show_rows()` for each section to only render visible rows.
+    /// Only visible rows are rendered for O(1) frame cost regardless of total count.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         file_matches: &[FileMatch],
         content_matches: &[ContentMatch],
+        content_groups: &[ContentGroup],
+        flat_row_model: &FlatRowModel,
         query: &str,
         search_root: &Path,
+        highlighter: &mut SyntaxHighlighter,
     ) {
-        let total = Self::total_items(file_matches, content_matches);
-        if total == 0 {
+        if flat_row_model.rows.is_empty() {
             return;
         }
 
-        // Clamp selected index to valid range
-        if self.selected_index >= total {
-            self.selected_index = total.saturating_sub(1);
-        }
+        let total_height = flat_row_model.total_height;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                // --- FILENAME MATCHES section ---
-                if !file_matches.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(format!("FILENAME MATCHES ({})", file_matches.len()))
-                            .color(theme::TEXT_MUTED)
-                            .size(11.0)
-                            .strong(),
+            .show_viewport(ui, |ui, viewport| {
+                // Tell egui the total content height for scrollbar sizing
+                ui.set_height(total_height);
+
+                let start_row = flat_row_model.first_visible_row(viewport.min.y);
+                let top_of_ui = ui.max_rect().top();
+
+                // Compute y offset of the first visible row
+                let y_start = if start_row == 0 {
+                    0.0
+                } else {
+                    flat_row_model.cum_heights[start_row - 1]
+                };
+
+                let mut y_pos = y_start;
+
+                for row_idx in start_row..flat_row_model.rows.len() {
+                    if y_pos > viewport.max.y {
+                        break;
+                    }
+
+                    let row_kind = flat_row_model.rows[row_idx];
+                    let row_height = if row_idx == 0 {
+                        flat_row_model.cum_heights[0]
+                    } else {
+                        flat_row_model.cum_heights[row_idx]
+                            - flat_row_model.cum_heights[row_idx - 1]
+                    };
+
+                    let row_rect = Rect::from_min_size(
+                        egui::pos2(ui.max_rect().left(), top_of_ui + y_pos),
+                        Vec2::new(ui.available_width(), row_height),
                     );
-                    ui.add_space(2.0);
 
-                    self.show_file_matches(ui, file_matches, query, search_root);
-                }
-
-                // --- CONTENT MATCHES section ---
-                if !content_matches.is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("CONTENT MATCHES ({})", content_matches.len()))
-                            .color(theme::TEXT_MUTED)
-                            .size(11.0)
-                            .strong(),
+                    let row_ui_rect = Rect::from_min_size(
+                        row_rect.min,
+                        Vec2::new(ui.max_rect().width(), row_height),
                     );
-                    ui.add_space(2.0);
 
-                    self.show_content_matches(ui, file_matches.len(), content_matches, query);
+                    ui.allocate_new_ui(UiBuilder::new().max_rect(row_ui_rect), |row_ui| {
+                        let is_selected = self.selected_index == row_idx;
+
+                        if self.scroll_to_selected && is_selected {
+                            row_ui.scroll_to_cursor(Some(egui::Align::Center));
+                        }
+
+                        match row_kind {
+                            RowKind::SectionHeader(section_type) => {
+                                render_section_header(row_ui, section_type, file_matches, content_matches);
+                            }
+                            RowKind::FileMatchRow(fm_idx) => {
+                                if let Some(fm) = file_matches.get(fm_idx) {
+                                    let response = render_file_row(row_ui, fm, query, is_selected, search_root);
+                                    if response.clicked() {
+                                        self.selected_index = row_idx;
+                                    }
+                                }
+                            }
+                            RowKind::GroupHeader(g_idx) => {
+                                if let Some(group) = content_groups.get(g_idx) {
+                                    render_group_header(row_ui, group);
+                                }
+                            }
+                            RowKind::MatchRow { group_idx, local_idx } => {
+                                if let Some(group) = content_groups.get(group_idx) {
+                                    if let Some(&cm_idx) = group.match_indices.get(local_idx) {
+                                        if let Some(cm) = content_matches.get(cm_idx) {
+                                            let response = render_match_row(
+                                                row_ui, cm, &group.extension,
+                                                is_selected, highlighter,
+                                            );
+                                            if response.clicked() {
+                                                self.selected_index = row_idx;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    y_pos += row_height;
                 }
             });
 
         // Reset scroll flag after rendering
         self.scroll_to_selected = false;
     }
+}
 
-    /// Render file match rows with virtual scrolling via show_rows().
-    fn show_file_matches(
-        &mut self,
-        ui: &mut egui::Ui,
-        file_matches: &[FileMatch],
-        query: &str,
-        search_root: &Path,
-    ) {
-        let total_rows = file_matches.len();
-        // Use show_rows for virtual scrolling -- only renders visible rows
-        egui::ScrollArea::vertical()
-            .id_salt("file_matches_scroll")
-            .max_height(FILE_ROW_HEIGHT * total_rows.min(200) as f32)
-            .auto_shrink([false, true])
-            .show_rows(ui, FILE_ROW_HEIGHT, total_rows, |ui, row_range| {
-                for row in row_range {
-                    let is_selected = row == self.selected_index;
-                    let fm = &file_matches[row];
+// ---------------------------------------------------------------------------
+// Row rendering functions
+// ---------------------------------------------------------------------------
 
-                    if self.scroll_to_selected && is_selected {
-                        ui.scroll_to_cursor(Some(egui::Align::Center));
-                    }
+/// Render a section header row ("FILENAME MATCHES (N)" or "CONTENT MATCHES (N)").
+fn render_section_header(
+    ui: &mut egui::Ui,
+    section_type: SectionType,
+    file_matches: &[FileMatch],
+    content_matches: &[ContentMatch],
+) {
+    let (label, count) = match section_type {
+        SectionType::FileMatches => ("FILENAME MATCHES", file_matches.len()),
+        SectionType::ContentMatches => ("CONTENT MATCHES", content_matches.len()),
+    };
+    let desired_size = Vec2::new(ui.available_width(), SECTION_HEADER_HEIGHT);
+    let (rect, _response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
-                    let response = self.render_file_row(ui, fm, query, is_selected, search_root);
-                    if response.clicked() {
-                        self.selected_index = row;
-                    }
-                }
-            });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
+        let text = format!("{} ({})", label, count);
+        let text_pos = rect.left_top() + Vec2::new(8.0, (SECTION_HEADER_HEIGHT - 11.0) / 2.0);
+        painter.text(
+            text_pos,
+            egui::Align2::LEFT_TOP,
+            &text,
+            FontId::proportional(11.0),
+            theme::TEXT_MUTED,
+        );
     }
+}
 
-    /// Render content match rows with virtual scrolling via show_rows().
-    fn show_content_matches(
-        &mut self,
-        ui: &mut egui::Ui,
-        file_offset: usize,
-        content_matches: &[ContentMatch],
-        query: &str,
-    ) {
-        let total_rows = content_matches.len();
-        egui::ScrollArea::vertical()
-            .id_salt("content_matches_scroll")
-            .max_height(CONTENT_ROW_HEIGHT * total_rows.min(200) as f32)
-            .auto_shrink([false, true])
-            .show_rows(ui, CONTENT_ROW_HEIGHT, total_rows, |ui, row_range| {
-                for row in row_range {
-                    let global_index = file_offset + row;
-                    let is_selected = global_index == self.selected_index;
-                    let cm = &content_matches[row];
+/// Render a single file match row with abbreviated path and query highlighting.
+fn render_file_row(
+    ui: &mut egui::Ui,
+    fm: &FileMatch,
+    query: &str,
+    is_selected: bool,
+    search_root: &Path,
+) -> egui::Response {
+    let desired_size = Vec2::new(ui.available_width(), MATCH_ROW_COMPACT);
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
 
-                    if self.scroll_to_selected && is_selected {
-                        ui.scroll_to_cursor(Some(egui::Align::Center));
-                    }
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
 
-                    let response = self.render_content_row(ui, cm, query, is_selected);
-                    if response.clicked() {
-                        self.selected_index = global_index;
-                    }
-                }
-            });
-    }
-
-    /// Render a single file match row with optional selection highlight.
-    fn render_file_row(
-        &self,
-        ui: &mut egui::Ui,
-        fm: &FileMatch,
-        query: &str,
-        is_selected: bool,
-        search_root: &Path,
-    ) -> egui::Response {
-        let desired_size = Vec2::new(ui.available_width(), FILE_ROW_HEIGHT);
-        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter_at(rect);
-
-            // Selected item: background highlight + left accent border
-            if is_selected {
-                let bg_color = Color32::from_rgba_premultiplied(
-                    theme::ACCENT.r(),
-                    theme::ACCENT.g(),
-                    theme::ACCENT.b(),
-                    SELECTED_BG_ALPHA,
-                );
-                painter.rect_filled(rect, 2.0, bg_color);
-
-                // Left accent border
-                let border_rect = egui::Rect::from_min_size(
-                    rect.left_top(),
-                    Vec2::new(ACCENT_BORDER_WIDTH, rect.height()),
-                );
-                painter.rect_filled(border_rect, 1.0, theme::ACCENT);
-            }
-
-            // Render: abbreviated dimmed directory + highlighted filename
-            let (dir_part, name_part) = abbreviate_path(&fm.path, search_root);
-
-            let text_pos = rect.left_top() + Vec2::new(
-                if is_selected { ACCENT_BORDER_WIDTH + 8.0 } else { 8.0 },
-                (FILE_ROW_HEIGHT - 14.0) / 2.0,
-            );
-
-            // Draw directory portion (dimmed, no highlighting)
-            let dir_galley = painter.layout_no_wrap(
-                dir_part,
-                FontId::proportional(14.0),
-                theme::TEXT_MUTED,
-            );
-            let dir_width = dir_galley.rect.width();
-            painter.galley(text_pos, dir_galley, Color32::TRANSPARENT);
-
-            // Draw filename portion with query highlighting
-            let name_pos = text_pos + Vec2::new(dir_width, 0.0);
-            render_highlighted_text(
-                &painter,
-                name_pos,
-                &name_part,
-                query,
-                theme::TEXT_PRIMARY,
-                theme::ACCENT,
-                14.0,
-            );
+        if is_selected {
+            paint_selected_bg(&painter, rect);
         }
 
-        response
+        let (dir_part, name_part) = abbreviate_path(&fm.path, search_root);
+
+        let text_pos = rect.left_top() + Vec2::new(
+            if is_selected { ACCENT_BORDER_WIDTH + 8.0 } else { 8.0 },
+            (MATCH_ROW_COMPACT - 14.0) / 2.0,
+        );
+
+        // Draw directory portion (dimmed)
+        let dir_galley = painter.layout_no_wrap(
+            dir_part,
+            FontId::proportional(14.0),
+            theme::TEXT_MUTED,
+        );
+        let dir_width = dir_galley.rect.width();
+        painter.galley(text_pos, dir_galley, Color32::TRANSPARENT);
+
+        // Draw filename portion with query highlighting
+        let name_pos = text_pos + Vec2::new(dir_width, 0.0);
+        render_highlighted_text(
+            &painter,
+            name_pos,
+            &name_part,
+            query,
+            theme::TEXT_PRIMARY,
+            theme::ACCENT,
+            14.0,
+        );
     }
 
-    /// Render a single content match row: file:line header + context lines.
-    fn render_content_row(
-        &self,
-        ui: &mut egui::Ui,
-        cm: &ContentMatch,
-        query: &str,
-        is_selected: bool,
-    ) -> egui::Response {
-        let desired_size = Vec2::new(ui.available_width(), CONTENT_ROW_HEIGHT);
-        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+    response
+}
 
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter_at(rect);
+/// Render a content group header: 6px colored dot + bold filename + " -- N matches" + dir path.
+fn render_group_header(
+    ui: &mut egui::Ui,
+    group: &ContentGroup,
+) {
+    let desired_size = Vec2::new(ui.available_width(), GROUP_HEADER_HEIGHT);
+    let (rect, _response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
-            // Selected item: background highlight + left accent border
-            if is_selected {
-                let bg_color = Color32::from_rgba_premultiplied(
-                    theme::ACCENT.r(),
-                    theme::ACCENT.g(),
-                    theme::ACCENT.b(),
-                    SELECTED_BG_ALPHA,
-                );
-                painter.rect_filled(rect, 2.0, bg_color);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
+        let left_pad = 8.0;
+        let y_center = rect.center().y;
 
-                // Left accent border
-                let border_rect = egui::Rect::from_min_size(
-                    rect.left_top(),
-                    Vec2::new(ACCENT_BORDER_WIDTH, rect.height()),
-                );
-                painter.rect_filled(border_rect, 1.0, theme::ACCENT);
-            }
+        // 6px colored dot for file type
+        let dot_color = theme::extension_dot_color(&group.extension);
+        let dot_center = egui::pos2(rect.left() + left_pad + 3.0, y_center);
+        painter.circle_filled(dot_center, 3.0, dot_color);
 
-            let left_pad = if is_selected { ACCENT_BORDER_WIDTH + 8.0 } else { 8.0 };
-            let mut y_offset = 4.0;
+        // Bold filename
+        let name_x = rect.left() + left_pad + 12.0;
+        let name_galley = painter.layout_no_wrap(
+            group.filename.clone(),
+            FontId::proportional(13.0),
+            theme::TEXT_PRIMARY,
+        );
+        let name_width = name_galley.rect.width();
+        let text_y = y_center - name_galley.rect.height() / 2.0;
+        painter.galley(egui::pos2(name_x, text_y), name_galley, Color32::TRANSPARENT);
 
-            // Header: file:line
-            let header = format!("{}:{}", cm.path.display(), cm.line_number);
-            let header_pos = rect.left_top() + Vec2::new(left_pad, y_offset);
-            painter.text(
-                header_pos,
-                egui::Align2::LEFT_TOP,
-                &header,
-                egui::FontId::monospace(11.0),
+        // " -- N matches" muted
+        let count_text = format!(" -- {} matches", group.match_indices.len());
+        let count_galley = painter.layout_no_wrap(
+            count_text,
+            FontId::proportional(12.0),
+            theme::TEXT_MUTED,
+        );
+        let count_x = name_x + name_width;
+        let count_width = count_galley.rect.width();
+        painter.galley(egui::pos2(count_x, text_y), count_galley, Color32::TRANSPARENT);
+
+        // Abbreviated dir path (muted, smaller)
+        if !group.dir_display.is_empty() {
+            let dir_text = format!("  {}", group.dir_display);
+            let dir_galley = painter.layout_no_wrap(
+                dir_text,
+                FontId::proportional(11.0),
                 theme::TEXT_MUTED,
             );
-            y_offset += 16.0;
+            let dir_x = count_x + count_width;
+            painter.galley(egui::pos2(dir_x, text_y + 1.0), dir_galley, Color32::TRANSPARENT);
+        }
+    }
+}
 
-            // Context before (up to 1 line to fit in row height)
+/// Render a content match row.
+///
+/// Compact (24px): `:line_number` in ACCENT + line content with syntax + match_range overlay.
+/// Expanded (52px): context_before + match line + context_after.
+fn render_match_row(
+    ui: &mut egui::Ui,
+    cm: &ContentMatch,
+    extension: &str,
+    is_selected: bool,
+    highlighter: &mut SyntaxHighlighter,
+) -> egui::Response {
+    let row_height = if is_selected { MATCH_ROW_EXPANDED } else { MATCH_ROW_COMPACT };
+    let desired_size = Vec2::new(ui.available_width(), row_height);
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
+
+        if is_selected {
+            paint_selected_bg(&painter, rect);
+        }
+
+        let left_pad = if is_selected { ACCENT_BORDER_WIDTH + 8.0 } else { 8.0 };
+
+        if is_selected {
+            // Expanded: context_before + match + context_after
+            let mut y_offset = 2.0;
+
+            // Context before (up to 1 line)
             for ctx_line in cm.context_before.iter().rev().take(1).rev() {
                 let line_pos = rect.left_top() + Vec2::new(left_pad + 12.0, y_offset);
                 let trimmed = truncate_line(ctx_line, 100);
@@ -557,24 +600,28 @@ impl ResultsList {
                     line_pos,
                     egui::Align2::LEFT_TOP,
                     &trimmed,
-                    egui::FontId::monospace(12.0),
+                    egui::FontId::monospace(11.0),
                     theme::TEXT_MUTED,
                 );
                 y_offset += 14.0;
             }
 
-            // Matched line with highlighted match range
-            let match_pos = rect.left_top() + Vec2::new(left_pad + 12.0, y_offset);
-            let line_content = truncate_line(&cm.line_content, 100);
-            render_highlighted_text(
-                &painter,
-                match_pos,
-                &line_content,
-                query,
-                theme::TEXT_PRIMARY,
+            // Line number in ACCENT
+            let line_num_text = format!(":{}", cm.line_number);
+            let line_num_pos = rect.left_top() + Vec2::new(left_pad, y_offset);
+            let line_num_galley = painter.layout_no_wrap(
+                line_num_text,
+                FontId::monospace(12.0),
                 theme::ACCENT,
-                12.0,
             );
+            let line_num_width = line_num_galley.rect.width();
+            painter.galley(line_num_pos, line_num_galley, Color32::TRANSPARENT);
+
+            // Match line with syntax + match_range highlighting
+            let match_pos = rect.left_top() + Vec2::new(left_pad + line_num_width + 4.0, y_offset);
+            let spans = highlighter.highlight_line(&cm.line_content, extension, None);
+            let spans = apply_match_range_overlay(spans, cm.match_range.clone());
+            render_styled_spans(&painter, match_pos, &spans, 12.0);
             y_offset += 14.0;
 
             // Context after (up to 1 line)
@@ -585,13 +632,90 @@ impl ResultsList {
                     line_pos,
                     egui::Align2::LEFT_TOP,
                     &trimmed,
-                    egui::FontId::monospace(12.0),
+                    egui::FontId::monospace(11.0),
                     theme::TEXT_MUTED,
                 );
             }
+        } else {
+            // Compact: :line_number + line content
+            let y_center = (MATCH_ROW_COMPACT - 12.0) / 2.0;
+
+            // Line number in ACCENT
+            let line_num_text = format!(":{}", cm.line_number);
+            let line_num_pos = rect.left_top() + Vec2::new(left_pad, y_center);
+            let line_num_galley = painter.layout_no_wrap(
+                line_num_text,
+                FontId::monospace(12.0),
+                theme::ACCENT,
+            );
+            let line_num_width = line_num_galley.rect.width();
+            painter.galley(line_num_pos, line_num_galley, Color32::TRANSPARENT);
+
+            // Line content with syntax + match_range highlighting
+            let content_pos = rect.left_top() + Vec2::new(left_pad + line_num_width + 4.0, y_center);
+            let spans = highlighter.highlight_line(&cm.line_content, extension, None);
+            let spans = apply_match_range_overlay(spans, cm.match_range.clone());
+            render_styled_spans(&painter, content_pos, &spans, 12.0);
+        }
+    }
+
+    response
+}
+
+/// Paint selected item background highlight + left accent border.
+fn paint_selected_bg(painter: &egui::Painter, rect: Rect) {
+    let bg_color = Color32::from_rgba_premultiplied(
+        theme::ACCENT.r(),
+        theme::ACCENT.g(),
+        theme::ACCENT.b(),
+        SELECTED_BG_ALPHA,
+    );
+    painter.rect_filled(rect, 2.0, bg_color);
+
+    let border_rect = egui::Rect::from_min_size(
+        rect.left_top(),
+        Vec2::new(ACCENT_BORDER_WIDTH, rect.height()),
+    );
+    painter.rect_filled(border_rect, 1.0, theme::ACCENT);
+}
+
+/// Render a sequence of styled spans using the egui painter.
+///
+/// Each span carries its own foreground color, optional background, and bold flag.
+/// Uses monospace font for consistent character width.
+fn render_styled_spans(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    spans: &[StyledSpan],
+    font_size: f32,
+) {
+    let font_id = FontId::monospace(font_size);
+    let char_width = font_size * 0.6;
+    let mut x_offset = 0.0;
+
+    for span in spans {
+        let fg = Color32::from_rgba_premultiplied(span.fg.0, span.fg.1, span.fg.2, span.fg.3);
+        let span_width = span.text.len() as f32 * char_width;
+
+        // Draw background if present
+        if let Some(bg) = span.bg {
+            let bg_color = Color32::from_rgba_premultiplied(bg.0, bg.1, bg.2, bg.3);
+            let bg_rect = Rect::from_min_size(
+                pos + Vec2::new(x_offset, -1.0),
+                Vec2::new(span_width, font_size + 2.0),
+            );
+            painter.rect_filled(bg_rect, 2.0, bg_color);
         }
 
-        response
+        painter.text(
+            pos + Vec2::new(x_offset, 0.0),
+            egui::Align2::LEFT_TOP,
+            &span.text,
+            font_id.clone(),
+            fg,
+        );
+
+        x_offset += span_width;
     }
 }
 

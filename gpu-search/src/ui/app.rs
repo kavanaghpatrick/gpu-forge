@@ -24,7 +24,7 @@ use super::filters::FilterBar;
 use super::highlight::SyntaxHighlighter;
 use super::keybinds::{self, KeyAction};
 use super::path_utils::abbreviate_path;
-use super::results_list::{ContentGroup, ResultsList};
+use super::results_list::{ContentGroup, FlatRowModel, ResultsList};
 use super::search_bar::{SearchBar, SearchMode};
 use super::status_bar::StatusBar;
 use super::theme;
@@ -78,7 +78,10 @@ pub struct GpuSearchApp {
     filter_bar: FilterBar,
 
     /// Syntax highlighter (cached per extension).
-    _highlighter: SyntaxHighlighter,
+    highlighter: SyntaxHighlighter,
+
+    /// Flat row model for grouped virtual scroll rendering.
+    flat_row_model: FlatRowModel,
 
     /// Channel to send commands to the orchestrator background thread.
     cmd_tx: Sender<OrchestratorCommand>,
@@ -123,7 +126,8 @@ impl Default for GpuSearchApp {
             results_list: ResultsList::new(),
             status_bar: StatusBar::default(),
             filter_bar: FilterBar::new(),
-            _highlighter: SyntaxHighlighter::new(),
+            highlighter: SyntaxHighlighter::new(),
+            flat_row_model: FlatRowModel::default(),
             cmd_tx,
             update_rx,
             search_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -169,7 +173,8 @@ impl GpuSearchApp {
             results_list: ResultsList::new(),
             status_bar,
             filter_bar: FilterBar::new(),
-            _highlighter: SyntaxHighlighter::new(),
+            highlighter: SyntaxHighlighter::new(),
+            flat_row_model: FlatRowModel::default(),
             cmd_tx,
             update_rx,
             search_root,
@@ -200,6 +205,7 @@ impl GpuSearchApp {
             self.file_matches.clear();
             self.content_matches.clear();
             self.clear_groups();
+            self.flat_row_model = FlatRowModel::default();
             self.is_searching = false;
             self.results_list.selected_index = 0;
             self.status_bar.update(0, Duration::ZERO, self.filter_bar.count());
@@ -246,12 +252,14 @@ impl GpuSearchApp {
                 SearchUpdate::FileMatches(matches) => {
                     self.file_matches = matches;
                     self.results_list.selected_index = 0;
+                    self.rebuild_flat_model();
                 }
                 SearchUpdate::ContentMatches(matches) => {
                     // Accumulate progressive content match batches from
                     // the streaming pipeline (each GPU batch sends one update)
                     self.content_matches.extend(matches);
                     self.recompute_groups();
+                    self.rebuild_flat_model();
                 }
                 SearchUpdate::Complete(response) => {
                     self.file_matches = response.file_matches;
@@ -260,6 +268,7 @@ impl GpuSearchApp {
                     self.clear_groups();
                     self.recompute_groups();
                     self.sort_groups_by_count();
+                    self.rebuild_flat_model();
                     self.is_searching = false;
                     self.last_elapsed = response.elapsed;
                     self.status_bar.update(
@@ -342,6 +351,23 @@ impl GpuSearchApp {
         self.last_grouped_index = 0;
     }
 
+    /// Rebuild the flat row model from current file_matches and content_groups.
+    ///
+    /// Called after any change to results or groups so the virtual scroll
+    /// layout stays in sync.
+    fn rebuild_flat_model(&mut self) {
+        let selected = if self.results_list.selected_index < usize::MAX {
+            Some(self.results_list.selected_index)
+        } else {
+            None
+        };
+        self.flat_row_model = FlatRowModel::rebuild(
+            &self.file_matches,
+            &self.content_groups,
+            selected,
+        );
+    }
+
     /// Handle a keyboard action.
     fn handle_key_action(&mut self, action: KeyAction, ctx: &egui::Context) {
         match action {
@@ -361,6 +387,7 @@ impl GpuSearchApp {
                 self.file_matches.clear();
                 self.content_matches.clear();
                 self.clear_groups();
+                self.flat_row_model = FlatRowModel::default();
                 self.is_searching = false;
                 self.results_list.selected_index = 0;
                 self.selected_index = 0;
@@ -463,13 +490,22 @@ impl eframe::App for GpuSearchApp {
                         ui.colored_label(theme::TEXT_MUTED, "No results");
                     });
                 } else {
-                    // Results list with virtual scroll
+                    // Results list with grouped virtual scroll
+                    let file_matches = &self.file_matches;
+                    let content_matches = &self.content_matches;
+                    let content_groups = &self.content_groups;
+                    let flat_row_model = &self.flat_row_model;
+                    let search_input = &self.search_input;
+                    let search_root = &self.search_root;
                     self.results_list.show(
                         ui,
-                        &self.file_matches,
-                        &self.content_matches,
-                        &self.search_input,
-                        &self.search_root,
+                        file_matches,
+                        content_matches,
+                        content_groups,
+                        flat_row_model,
+                        search_input,
+                        search_root,
+                        &mut self.highlighter,
                     );
                 }
 
