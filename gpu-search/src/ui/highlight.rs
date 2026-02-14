@@ -876,4 +876,195 @@ mod tests {
         assert_eq!(result[1].text, "world");
         assert!(is_match_styled(&result[1]));
     }
+
+    // ── U-MRO match_range overlay unit tests ──────────────────────────────
+
+    /// Helper: create a span with specific color (simulating syntax highlighting).
+    fn colored_span(text: &str, r: u8, g: u8, b: u8) -> StyledSpan {
+        StyledSpan {
+            text: text.to_string(),
+            fg: (r, g, b, 0xFF),
+            bg: None,
+            bold: false,
+        }
+    }
+
+    #[test]
+    fn u_mro_1_basic_overlay_mid_line() {
+        // Basic overlay in the middle of a multi-span line
+        // Syntax: "let " (keyword) + "x" (default) + " = " (default) + "42" (number) + ";" (default)
+        let spans = vec![
+            colored_span("let ", KW_COLOR.r, KW_COLOR.g, KW_COLOR.b),
+            plain_span("x = "),
+            colored_span("42", TYPE_COLOR.r, TYPE_COLOR.g, TYPE_COLOR.b),
+            plain_span(";"),
+        ];
+        // Match range covers "x = 4" (4..9)
+        let result = apply_match_range_overlay(spans, 4..9);
+
+        let combined: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, "let x = 42;");
+
+        let matched: String = result.iter().filter(|s| is_match_styled(s)).map(|s| s.text.as_str()).collect();
+        assert_eq!(matched, "x = 4");
+
+        // Non-match spans retain original styling
+        assert_eq!(result[0].fg.0, KW_COLOR.r, "keyword span keeps its color");
+    }
+
+    #[test]
+    fn u_mro_2_at_start_preserves_trailing_style() {
+        // Match at position 0 with styled spans after
+        let spans = vec![
+            colored_span("fn", KW_COLOR.r, KW_COLOR.g, KW_COLOR.b),
+            plain_span(" "),
+            colored_span("main", FN_COLOR.r, FN_COLOR.g, FN_COLOR.b),
+            plain_span("()"),
+        ];
+        let result = apply_match_range_overlay(spans, 0..2);
+
+        assert!(is_match_styled(&result[0]), "first span should be match-styled");
+        assert_eq!(result[0].text, "fn");
+
+        // Remaining spans keep original styles
+        let non_match: Vec<&StyledSpan> = result.iter().filter(|s| !is_match_styled(s)).collect();
+        let trailing: String = non_match.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(trailing, " main()");
+    }
+
+    #[test]
+    fn u_mro_3_at_end_preserves_leading_style() {
+        // Match at the very last bytes of the line
+        let spans = vec![
+            colored_span("use ", KW_COLOR.r, KW_COLOR.g, KW_COLOR.b),
+            plain_span("std::io"),
+            plain_span(";"),
+        ];
+        // Match the semicolon at position 11..12
+        let result = apply_match_range_overlay(spans, 11..12);
+
+        let combined: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, "use std::io;");
+
+        // Only ";" is match-styled
+        let matched: Vec<&StyledSpan> = result.iter().filter(|s| is_match_styled(s)).collect();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].text, ";");
+    }
+
+    #[test]
+    fn u_mro_4_full_line_multi_span() {
+        // Full line match across multiple styled spans
+        let spans = vec![
+            colored_span("pub ", KW_COLOR.r, KW_COLOR.g, KW_COLOR.b),
+            colored_span("fn", KW_COLOR.r, KW_COLOR.g, KW_COLOR.b),
+            plain_span(" "),
+            colored_span("run", FN_COLOR.r, FN_COLOR.g, FN_COLOR.b),
+        ];
+        let total_len: usize = spans.iter().map(|s| s.text.len()).sum();
+        let result = apply_match_range_overlay(spans, 0..total_len);
+
+        // Every span should be match-styled
+        for span in &result {
+            assert!(is_match_styled(span), "span '{}' should be match-styled", span.text);
+        }
+        let combined: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, "pub fn run");
+    }
+
+    #[test]
+    fn u_mro_5_span_boundary_split_preserves_all_styles() {
+        // Match range that splits exactly at a span boundary (no partial spans)
+        // "abc" (red) + "def" (green) + "ghi" (blue) -- match "def" exactly (3..6)
+        let spans = vec![
+            colored_span("abc", 0xFF, 0x00, 0x00),
+            colored_span("def", 0x00, 0xFF, 0x00),
+            colored_span("ghi", 0x00, 0x00, 0xFF),
+        ];
+        let result = apply_match_range_overlay(spans, 3..6);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].text, "abc");
+        assert_eq!(result[0].fg.0, 0xFF, "first span keeps red");
+        assert!(!is_match_styled(&result[0]));
+
+        assert_eq!(result[1].text, "def");
+        assert!(is_match_styled(&result[1]));
+
+        assert_eq!(result[2].text, "ghi");
+        assert_eq!(result[2].fg.2, 0xFF, "third span keeps blue");
+        assert!(!is_match_styled(&result[2]));
+    }
+
+    #[test]
+    fn u_mro_6_empty_range_various_positions() {
+        // Empty ranges at various positions should all return unchanged
+        let spans = vec![plain_span("hello"), colored_span(" world", STR_COLOR.r, STR_COLOR.g, STR_COLOR.b)];
+        let original_len = spans.len();
+
+        // Empty range at start
+        let r1 = apply_match_range_overlay(spans.clone(), 0..0);
+        assert_eq!(r1.len(), original_len);
+
+        // Empty range in middle
+        let r2 = apply_match_range_overlay(spans.clone(), 5..5);
+        assert_eq!(r2.len(), original_len);
+
+        // Inverted range (start > end) -- also treated as empty
+        let r3 = apply_match_range_overlay(spans.clone(), 7..3);
+        assert_eq!(r3.len(), original_len);
+    }
+
+    #[test]
+    fn u_mro_7_clamped_to_line_preserves_all_text() {
+        // Range starts inside text but extends far past -- verify no panic, all text preserved
+        let spans = vec![
+            colored_span("struct ", KW_COLOR.r, KW_COLOR.g, KW_COLOR.b),
+            colored_span("Foo", TYPE_COLOR.r, TYPE_COLOR.g, TYPE_COLOR.b),
+        ];
+        let result = apply_match_range_overlay(spans, 5..1000);
+
+        let combined: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, "struct Foo");
+
+        // "struc" unchanged, "t Foo" match-styled (clamped to len 9)
+        let matched: String = result.iter().filter(|s| is_match_styled(s)).map(|s| s.text.as_str()).collect();
+        assert_eq!(matched, "t Foo");
+    }
+
+    #[test]
+    fn u_mro_8_match_range_vs_query_search_same_result() {
+        // Compare: apply_match_range_overlay with explicit range vs
+        // apply_match_overlay with query string -- both should produce
+        // identical styled output for the same match position.
+        let line = "fn search_query() {}";
+        let query = "search";
+        let query_start = line.find(query).unwrap();
+        let query_end = query_start + query.len();
+
+        let base_spans = vec![plain_span(line)];
+
+        // Method 1: query-based overlay (finds "search" by string matching)
+        let by_query = apply_match_overlay(base_spans.clone(), line, query);
+
+        // Method 2: match_range overlay (uses explicit byte range)
+        let by_range = apply_match_range_overlay(base_spans, query_start..query_end);
+
+        // Both should produce the same number of spans with same text
+        assert_eq!(by_query.len(), by_range.len(),
+            "query overlay and range overlay should produce same span count");
+
+        for (q_span, r_span) in by_query.iter().zip(by_range.iter()) {
+            assert_eq!(q_span.text, r_span.text,
+                "span text should match: query='{}' vs range='{}'", q_span.text, r_span.text);
+            assert_eq!(is_match_styled(q_span), is_match_styled(r_span),
+                "match styling should agree for span '{}'", q_span.text);
+        }
+
+        // Verify the match span specifically
+        let q_match = by_query.iter().find(|s| s.text == "search").unwrap();
+        let r_match = by_range.iter().find(|s| s.text == "search").unwrap();
+        assert!(is_match_styled(q_match));
+        assert!(is_match_styled(r_match));
+    }
 }

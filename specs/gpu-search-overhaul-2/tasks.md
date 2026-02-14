@@ -269,7 +269,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-5.1, AC-5.2, AC-5.3_
   - _Design: Component F_
 
-- [ ] 3.6 Unit tests for match_range overlay
+- [x] 3.6 Unit tests for match_range overlay
   - **Do**:
     1. Add tests U-MRO-1 through U-MRO-8 in `highlight.rs` tests module.
     2. Cover: basic overlay, at-start, at-end, full line, span boundary split, empty range, clamped to line, compare match_range vs query search results.
