@@ -365,7 +365,7 @@ Focus: CI pipeline, benchmark hard gate, clippy, full regression.
 
 Focus: Push branch, create PR, verify CI green.
 
-- [ ] 5.1 Create PR and verify CI
+- [x] 5.1 Create PR and verify CI
   - **Do**:
     1. Ensure all changes are committed on `feat/gpu-query` branch (or create new branch if needed).
     2. Push branch to remote: `git push -u origin feat/gpu-query`.
