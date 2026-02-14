@@ -1268,4 +1268,376 @@ mod tests {
         assert_eq!(groups.len(), groups_after_first.len());
         assert_eq!(groups[0].match_indices, groups_after_first[0].match_indices);
     }
+
+    // -----------------------------------------------------------------------
+    // RowKind flattening tests (U-ROW-1 through U-ROW-9)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build ContentGroups from content matches grouped by path.
+    fn make_groups(paths_and_counts: &[(&str, usize)]) -> (Vec<ContentMatch>, Vec<ContentGroup>) {
+        let mut cms = Vec::new();
+        let mut groups = Vec::new();
+        let mut idx = 0;
+        for &(path, count) in paths_and_counts {
+            let mut match_indices = Vec::new();
+            for line in 0..count {
+                cms.push(ContentMatch {
+                    path: PathBuf::from(path),
+                    line_number: (line as u32) + 1,
+                    line_content: format!("match line {}", line),
+                    context_before: vec![],
+                    context_after: vec![],
+                    match_range: 0..5,
+                });
+                match_indices.push(idx);
+                idx += 1;
+            }
+            let ext = Path::new(path)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            groups.push(ContentGroup {
+                path: PathBuf::from(path),
+                dir_display: "src/".to_string(),
+                filename: Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                extension: ext,
+                match_indices,
+            });
+        }
+        (cms, groups)
+    }
+
+    #[test]
+    fn test_row_1_empty_model() {
+        // U-ROW-1: Empty inputs produce empty model with zero total height.
+        let model = FlatRowModel::rebuild(&[], &[], None);
+        assert!(model.rows.is_empty());
+        assert!(model.cum_heights.is_empty());
+        assert_eq!(model.total_height, 0.0);
+    }
+
+    #[test]
+    fn test_row_2_file_matches_only() {
+        // U-ROW-2: File matches only produce SectionHeader + FileMatchRow entries.
+        let fm = make_file_matches(3);
+        let model = FlatRowModel::rebuild(&fm, &[], None);
+
+        assert_eq!(model.rows.len(), 4); // 1 header + 3 rows
+        assert_eq!(model.rows[0], RowKind::SectionHeader(SectionType::FileMatches));
+        assert_eq!(model.rows[1], RowKind::FileMatchRow(0));
+        assert_eq!(model.rows[2], RowKind::FileMatchRow(1));
+        assert_eq!(model.rows[3], RowKind::FileMatchRow(2));
+
+        let expected = SECTION_HEADER_HEIGHT + 3.0 * MATCH_ROW_COMPACT;
+        assert!((model.total_height - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_row_3_content_groups_only() {
+        // U-ROW-3: Content groups produce SectionHeader + GroupHeader + MatchRow entries.
+        let (_cms, groups) = make_groups(&[("src/a.rs", 2)]);
+        let model = FlatRowModel::rebuild(&[], &groups, None);
+
+        // 1 section header + 1 group header + 2 match rows = 4
+        assert_eq!(model.rows.len(), 4);
+        assert_eq!(model.rows[0], RowKind::SectionHeader(SectionType::ContentMatches));
+        assert_eq!(model.rows[1], RowKind::GroupHeader(0));
+        assert_eq!(model.rows[2], RowKind::MatchRow { group_idx: 0, local_idx: 0 });
+        assert_eq!(model.rows[3], RowKind::MatchRow { group_idx: 0, local_idx: 1 });
+
+        let expected = SECTION_HEADER_HEIGHT + GROUP_HEADER_HEIGHT + 2.0 * MATCH_ROW_COMPACT;
+        assert!((model.total_height - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_row_4_both_sections() {
+        // U-ROW-4: Both file matches and content groups produce two section headers.
+        let fm = make_file_matches(2);
+        let (_cms, groups) = make_groups(&[("src/x.rs", 1)]);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // File section: 1 header + 2 FileMatchRow = 3
+        // Content section: 1 header + 1 GroupHeader + 1 MatchRow = 3
+        assert_eq!(model.rows.len(), 6);
+        assert_eq!(model.rows[0], RowKind::SectionHeader(SectionType::FileMatches));
+        assert_eq!(model.rows[3], RowKind::SectionHeader(SectionType::ContentMatches));
+    }
+
+    #[test]
+    fn test_row_5_selected_match_row_expanded() {
+        // U-ROW-5: Selected MatchRow gets MATCH_ROW_EXPANDED height.
+        let (_cms, groups) = make_groups(&[("src/a.rs", 3)]);
+        // Row indices: 0=SectionHeader, 1=GroupHeader, 2=MatchRow0, 3=MatchRow1, 4=MatchRow2
+        let model = FlatRowModel::rebuild(&[], &groups, Some(3)); // select MatchRow1
+
+        let height_row3 = model.cum_heights[3] - model.cum_heights[2];
+        assert!((height_row3 - MATCH_ROW_EXPANDED).abs() < 0.01,
+            "selected MatchRow should be expanded, got {}", height_row3);
+
+        // Non-selected match rows should be compact
+        let height_row2 = model.cum_heights[2] - model.cum_heights[1];
+        assert!((height_row2 - MATCH_ROW_COMPACT).abs() < 0.01,
+            "non-selected MatchRow should be compact, got {}", height_row2);
+    }
+
+    #[test]
+    fn test_row_6_selected_file_match_not_expanded() {
+        // U-ROW-6: Selected FileMatchRow always uses MATCH_ROW_COMPACT (no expanded state).
+        let fm = make_file_matches(2);
+        // Row indices: 0=SectionHeader, 1=FileMatchRow(0), 2=FileMatchRow(1)
+        let model = FlatRowModel::rebuild(&fm, &[], Some(1));
+
+        let height_row1 = model.cum_heights[1] - model.cum_heights[0];
+        assert!((height_row1 - MATCH_ROW_COMPACT).abs() < 0.01,
+            "FileMatchRow should always be compact, got {}", height_row1);
+    }
+
+    #[test]
+    fn test_row_7_multiple_groups_ordering() {
+        // U-ROW-7: Multiple content groups produce GroupHeader + MatchRow sequences in order.
+        let (_cms, groups) = make_groups(&[("src/a.rs", 2), ("src/b.rs", 1)]);
+        let model = FlatRowModel::rebuild(&[], &groups, None);
+
+        // SectionHeader, GroupHeader(0), MatchRow{0,0}, MatchRow{0,1},
+        // GroupHeader(1), MatchRow{1,0}
+        assert_eq!(model.rows.len(), 6);
+        assert_eq!(model.rows[1], RowKind::GroupHeader(0));
+        assert_eq!(model.rows[4], RowKind::GroupHeader(1));
+        assert_eq!(model.rows[5], RowKind::MatchRow { group_idx: 1, local_idx: 0 });
+    }
+
+    #[test]
+    fn test_row_8_is_selectable() {
+        // U-ROW-8: Only FileMatchRow and MatchRow are selectable.
+        let fm = make_file_matches(1);
+        let (_cms, groups) = make_groups(&[("src/a.rs", 1)]);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // rows: SectionHeader(FM), FileMatchRow(0), SectionHeader(CM), GroupHeader(0), MatchRow{0,0}
+        assert!(!model.is_selectable(0), "SectionHeader not selectable");
+        assert!(model.is_selectable(1), "FileMatchRow selectable");
+        assert!(!model.is_selectable(2), "SectionHeader not selectable");
+        assert!(!model.is_selectable(3), "GroupHeader not selectable");
+        assert!(model.is_selectable(4), "MatchRow selectable");
+        assert!(!model.is_selectable(999), "out of bounds not selectable");
+    }
+
+    #[test]
+    fn test_row_9_selectable_navigation_skips_headers() {
+        // U-ROW-9: next/prev_selectable_row skip headers.
+        let fm = make_file_matches(1);
+        let (_cms, groups) = make_groups(&[("src/a.rs", 1)]);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // rows: 0=SH(FM), 1=FMR(0), 2=SH(CM), 3=GH(0), 4=MR{0,0}
+        // From FileMatchRow(1), next selectable should skip SH(CM) and GH(0) to reach MR(4)
+        assert_eq!(model.next_selectable_row(1), Some(4));
+        // From MatchRow(4), next selectable wraps to FileMatchRow(1)
+        assert_eq!(model.next_selectable_row(4), Some(1));
+        // From MatchRow(4), prev selectable wraps backwards skipping headers to FileMatchRow(1)
+        assert_eq!(model.prev_selectable_row(4), Some(1));
+        // From FileMatchRow(1), prev selectable wraps to MatchRow(4)
+        assert_eq!(model.prev_selectable_row(1), Some(4));
+    }
+
+    // -----------------------------------------------------------------------
+    // Prefix-sum invariant tests (U-PFX-1 through U-PFX-8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pfx_1_cum_heights_len_equals_rows_len() {
+        // U-PFX-1: cum_heights always has same length as rows.
+        let fm = make_file_matches(5);
+        let (_cms, groups) = make_groups(&[("src/a.rs", 3), ("src/b.rs", 2)]);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        assert_eq!(model.cum_heights.len(), model.rows.len());
+    }
+
+    #[test]
+    fn test_pfx_2_cum_heights_monotonically_increasing() {
+        // U-PFX-2: cum_heights is strictly monotonically increasing.
+        let fm = make_file_matches(3);
+        let (_cms, groups) = make_groups(&[("src/a.rs", 2), ("src/b.rs", 4)]);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        for i in 1..model.cum_heights.len() {
+            assert!(
+                model.cum_heights[i] > model.cum_heights[i - 1],
+                "cum_heights not strictly increasing at index {}: {} <= {}",
+                i, model.cum_heights[i], model.cum_heights[i - 1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_pfx_3_total_height_equals_last_cum_height() {
+        // U-PFX-3: total_height equals the last element of cum_heights.
+        let fm = make_file_matches(2);
+        let (_cms, groups) = make_groups(&[("src/a.rs", 3)]);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        assert!(!model.cum_heights.is_empty());
+        assert!((model.total_height - *model.cum_heights.last().unwrap()).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_pfx_4_first_visible_row_at_zero() {
+        // U-PFX-4: first_visible_row(0.0) returns 0.
+        let fm = make_file_matches(3);
+        let model = FlatRowModel::rebuild(&fm, &[], None);
+
+        assert_eq!(model.first_visible_row(0.0), 0);
+    }
+
+    #[test]
+    fn test_pfx_5_first_visible_row_past_total() {
+        // U-PFX-5: first_visible_row beyond total_height returns last row index + 1.
+        let fm = make_file_matches(3);
+        let model = FlatRowModel::rebuild(&fm, &[], None);
+
+        let result = model.first_visible_row(model.total_height + 100.0);
+        assert_eq!(result, model.rows.len());
+    }
+
+    #[test]
+    fn test_pfx_6_first_visible_row_binary_search_accuracy() {
+        // U-PFX-6: first_visible_row returns correct row for midpoint viewport positions.
+        let fm = make_file_matches(10);
+        let model = FlatRowModel::rebuild(&fm, &[], None);
+
+        // After SectionHeader (24px), first FileMatchRow starts
+        // first_visible_row(24.0) should return row 1 (since cum_heights[0]=24.0 <= 24.0)
+        assert_eq!(model.first_visible_row(SECTION_HEADER_HEIGHT), 1);
+
+        // After SectionHeader + 1 FileMatchRow (24 + 24 = 48px)
+        assert_eq!(model.first_visible_row(SECTION_HEADER_HEIGHT + MATCH_ROW_COMPACT), 2);
+    }
+
+    #[test]
+    fn test_pfx_7_first_visible_row_empty_model() {
+        // U-PFX-7: first_visible_row on empty model returns 0.
+        let model = FlatRowModel::rebuild(&[], &[], None);
+        assert_eq!(model.first_visible_row(100.0), 0);
+    }
+
+    // U-PFX-8 is broken into 3 proptest property tests below.
+
+    // -----------------------------------------------------------------------
+    // Proptest property tests (counted as part of U-PFX-8a, U-PFX-8b, U-PFX-8c)
+    // -----------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    /// Strategy: generate (n_file_matches, vec of group sizes, optional selected row).
+    fn model_strategy() -> impl Strategy<Value = (usize, Vec<usize>, Option<usize>)> {
+        (0..20usize, proptest::collection::vec(1..10usize, 0..8))
+            .prop_flat_map(|(n_fm, group_sizes)| {
+                // Calculate total row count to bound selected_row_idx
+                let mut total_rows = 0;
+                if n_fm > 0 {
+                    total_rows += 1 + n_fm; // section header + file match rows
+                }
+                if !group_sizes.is_empty() {
+                    total_rows += 1; // section header
+                    for &gs in &group_sizes {
+                        total_rows += 1 + gs; // group header + match rows
+                    }
+                }
+                let sel_strategy = if total_rows > 0 {
+                    proptest::option::of(0..total_rows).boxed()
+                } else {
+                    Just(None).boxed()
+                };
+                (Just(n_fm), Just(group_sizes), sel_strategy)
+            })
+    }
+
+    /// Build a FlatRowModel from the strategy parameters.
+    fn build_model_from_params(n_fm: usize, group_sizes: &[usize], selected: Option<usize>) -> FlatRowModel {
+        let fm = make_file_matches(n_fm);
+        let group_specs: Vec<(&str, usize)> = group_sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &count)| {
+                // Use leaked strings for stable references (test only)
+                let s: &'static str = Box::leak(format!("src/file_{}.rs", i).into_boxed_str());
+                (s, count)
+            })
+            .collect();
+        let (_cms, groups) = make_groups(&group_specs);
+        FlatRowModel::rebuild(&fm, &groups, selected)
+    }
+
+    proptest! {
+        #[test]
+        fn test_pfx_8a_cum_heights_monotonic(
+            (n_fm, group_sizes, selected) in model_strategy()
+        ) {
+            // Property: cum_heights is always strictly monotonically increasing.
+            let model = build_model_from_params(n_fm, &group_sizes, selected);
+            for i in 1..model.cum_heights.len() {
+                prop_assert!(
+                    model.cum_heights[i] > model.cum_heights[i - 1],
+                    "Monotonicity violated at {}: {} <= {}",
+                    i, model.cum_heights[i], model.cum_heights[i - 1]
+                );
+            }
+        }
+
+        #[test]
+        fn test_pfx_8b_partition_point_correctness(
+            (n_fm, group_sizes, selected) in model_strategy()
+        ) {
+            // Property: for every valid row index, first_visible_row at
+            // that row's top y-position returns that row's index.
+            let model = build_model_from_params(n_fm, &group_sizes, selected);
+            if model.rows.is_empty() {
+                return Ok(());
+            }
+            for idx in 0..model.rows.len() {
+                let row_top = if idx == 0 { 0.0 } else { model.cum_heights[idx - 1] };
+                let found = model.first_visible_row(row_top);
+                prop_assert!(
+                    found <= idx,
+                    "first_visible_row({}) = {} but expected <= {} (row_top = {})",
+                    row_top, found, idx, row_top
+                );
+                // The row we found should start at or before row_top
+                let found_top = if found == 0 { 0.0 } else { model.cum_heights[found - 1] };
+                prop_assert!(
+                    found_top <= row_top + 0.01,
+                    "found row {} starts at {} which is after viewport_top {}",
+                    found, found_top, row_top
+                );
+            }
+        }
+
+        #[test]
+        fn test_pfx_8c_round_trip_height_row_height(
+            (n_fm, group_sizes, selected) in model_strategy()
+        ) {
+            // Property: sum of individual row heights equals total_height.
+            let model = build_model_from_params(n_fm, &group_sizes, selected);
+            let sum: f32 = (0..model.rows.len())
+                .map(|i| {
+                    if i == 0 {
+                        model.cum_heights[0]
+                    } else {
+                        model.cum_heights[i] - model.cum_heights[i - 1]
+                    }
+                })
+                .sum();
+            let diff = (sum - model.total_height).abs();
+            prop_assert!(
+                diff < 0.01,
+                "Sum of row heights ({}) != total_height ({}), diff={}",
+                sum, model.total_height, diff
+            );
+        }
+    }
 }
