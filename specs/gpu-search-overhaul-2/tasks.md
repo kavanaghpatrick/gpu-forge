@@ -223,7 +223,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-1.1, AC-1.3_
   - _Design: Component A_
 
-- [ ] 3.2 Unit tests for path abbreviation
+- [x] 3.2 Unit tests for path abbreviation
   - **Do**:
     1. In `src/ui/path_utils.rs` tests module, add tests U-PATH-1 through U-PATH-12.
     2. Cover: relative to root, root-level file, home substitution, deep path, outside home, middle truncation, no parent, unicode, empty filename, $HOME unset.

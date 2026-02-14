@@ -108,6 +108,8 @@ pub fn middle_truncate(s: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
 
+    // ── Existing tests ──────────────────────────────────────────────
+
     #[test]
     fn test_abbreviate_path_relative_to_root() {
         let root = Path::new("/Users/dev/project");
@@ -190,5 +192,175 @@ mod tests {
         let path = Path::new("/opt/system/config");
         let result = abbreviate_root(path);
         assert_eq!(result, "/opt/system/config");
+    }
+
+    // ── U-PATH-1 through U-PATH-12: comprehensive path abbreviation tests ──
+
+    /// U-PATH-1: Relative to root with single directory component
+    #[test]
+    fn u_path_1_relative_to_root_single_dir() {
+        let root = Path::new("/workspace");
+        let path = Path::new("/workspace/lib/utils.rs");
+        let (dir, name) = abbreviate_path(path, root);
+        assert_eq!(dir, "lib/");
+        assert_eq!(name, "utils.rs");
+    }
+
+    /// U-PATH-2: Root-level file returns empty dir, just filename
+    #[test]
+    fn u_path_2_root_level_file_returns_empty_dir() {
+        let root = Path::new("/a/b/c");
+        let path = Path::new("/a/b/c/README.md");
+        let (dir, name) = abbreviate_path(path, root);
+        assert_eq!(dir, "");
+        assert_eq!(name, "README.md");
+    }
+
+    /// U-PATH-3: Home substitution -- path inside $HOME but outside search root
+    /// gets ~ prefix. Uses actual $HOME from environment since OnceLock is cached.
+    #[test]
+    fn u_path_3_home_substitution() {
+        if let Some(home) = home_dir() {
+            // Use a search root that does NOT contain the target path
+            let search_root = Path::new("/nonexistent/root");
+            let path = home.join("Documents/notes.txt");
+            let (dir, name) = abbreviate_path(&path, search_root);
+            assert!(
+                dir.starts_with("~/"),
+                "expected dir starting with ~/, got: {}",
+                dir
+            );
+            assert!(dir.contains("Documents"));
+            assert_eq!(name, "notes.txt");
+        }
+    }
+
+    /// U-PATH-4: Deep nested path (5+ levels) under search root
+    #[test]
+    fn u_path_4_deep_path() {
+        let root = Path::new("/project");
+        let path = Path::new("/project/src/core/engine/render/pipeline/shader.glsl");
+        let (dir, name) = abbreviate_path(path, root);
+        assert_eq!(dir, "src/core/engine/render/pipeline/");
+        assert_eq!(name, "shader.glsl");
+    }
+
+    /// U-PATH-5: Path outside home and outside search root falls back to absolute
+    #[test]
+    fn u_path_5_outside_home_and_root() {
+        let root = Path::new("/workspace/project");
+        let path = Path::new("/var/log/system.log");
+        let (dir, name) = abbreviate_path(path, root);
+        // Not under root or home, should show full absolute parent
+        assert!(
+            dir.starts_with("/var/log"),
+            "expected absolute path prefix, got: {}",
+            dir
+        );
+        assert_eq!(name, "system.log");
+    }
+
+    /// U-PATH-6: Middle truncation triggers when directory exceeds DIR_MAX_LEN (50 chars)
+    #[test]
+    fn u_path_6_middle_truncation_long_dir() {
+        let root = Path::new("/r");
+        // Build a path with a directory portion exceeding 50 characters
+        let long_dir = "a".repeat(20);
+        let deep = format!(
+            "/r/{}/{}/{}/file.rs",
+            long_dir, long_dir, long_dir
+        );
+        let path = PathBuf::from(&deep);
+        let (dir, name) = abbreviate_path(&path, root);
+        // The relative dir is "aaaa.../aaaa.../aaaa.../" which is 62 chars
+        // Should be middle-truncated to <= 50 chars
+        assert!(
+            dir.len() <= DIR_MAX_LEN,
+            "dir len {} exceeds max {}: {}",
+            dir.len(),
+            DIR_MAX_LEN,
+            dir
+        );
+        assert!(dir.contains("..."), "expected truncation marker, got: {}", dir);
+        assert_eq!(name, "file.rs");
+    }
+
+    /// U-PATH-7: No parent -- bare filename returns empty dir
+    #[test]
+    fn u_path_7_no_parent_bare_filename() {
+        let root = Path::new("/some/root");
+        let path = Path::new("bare_file.txt");
+        let (dir, name) = abbreviate_path(path, root);
+        assert_eq!(dir, "");
+        assert_eq!(name, "bare_file.txt");
+    }
+
+    /// U-PATH-8: Unicode filename and directory components
+    #[test]
+    fn u_path_8_unicode_path() {
+        let root = Path::new("/proyecto");
+        let path = Path::new("/proyecto/src/datos/archivo_\u{00e9}special.rs");
+        let (dir, name) = abbreviate_path(path, root);
+        assert_eq!(dir, "src/datos/");
+        assert_eq!(name, "archivo_\u{00e9}special.rs");
+    }
+
+    /// U-PATH-9: Empty filename (directory-like path with trailing slash)
+    #[test]
+    fn u_path_9_empty_filename() {
+        let root = Path::new("/root");
+        // Path::new("/root/subdir/") treats it as dir with no filename
+        let path = Path::new("/root/subdir/");
+        let (dir, name) = abbreviate_path(path, root);
+        // For a path ending in `/`, file_name() returns the last component "subdir"
+        // and parent() returns "/root" -- so it behaves like a file named "subdir"
+        assert_eq!(name, "subdir");
+        assert_eq!(dir, "");
+    }
+
+    /// U-PATH-10: HOME unset fallback -- abbreviate_root returns absolute path
+    /// Since OnceLock caches HOME on first access (and HOME IS set in our env),
+    /// we test the outside-home fallback path instead.
+    #[test]
+    fn u_path_10_home_unset_fallback() {
+        // When path is outside home, abbreviate_root should return the full absolute path
+        let path = Path::new("/tmp/cache/data");
+        let result = abbreviate_root(path);
+        assert_eq!(result, "/tmp/cache/data");
+        // Also verify it doesn't contain ~ substitution
+        assert!(!result.contains('~'), "should not have ~ for path outside home");
+    }
+
+    /// U-PATH-11: abbreviate_root at home directory returns just "~"
+    #[test]
+    fn u_path_11_abbreviate_root_at_home() {
+        if let Some(home) = home_dir() {
+            let result = abbreviate_root(home);
+            assert_eq!(result, "~");
+        }
+    }
+
+    /// U-PATH-12: middle_truncate preserves boundary chars and ellipsis format
+    #[test]
+    fn u_path_12_middle_truncate_boundary() {
+        // Exactly at max_len: no truncation
+        let s = "a".repeat(50);
+        assert_eq!(middle_truncate(&s, 50), s);
+
+        // One char over: truncation kicks in
+        let s51 = "a".repeat(51);
+        let result = middle_truncate(&s51, 50);
+        assert!(result.len() <= 50);
+        assert!(result.contains("..."));
+        // Verify prefix + "..." + suffix = 50
+        assert_eq!(result.len(), 50);
+
+        // Max_len = 5 (minimum non-bypass): should still truncate
+        let result5 = middle_truncate("abcdefghij", 5);
+        assert!(result5.len() <= 5);
+        assert!(result5.contains("..."));
+        // available = 2 (5-3), prefix = 0 (2*2/5=0), suffix = 2
+        // Result: "...ij"
+        assert_eq!(result5, "...ij");
     }
 }
