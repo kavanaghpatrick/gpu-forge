@@ -303,6 +303,31 @@ mod tests {
         assert!(status.contains("/project"));
     }
 
+    // U-SB-3: Root abbreviation -- HOME path should be substituted with ~
+    #[test]
+    fn test_status_bar_root_abbreviation() {
+        // Use the actual HOME env var to construct a path under it
+        if let Ok(home) = std::env::var("HOME") {
+            let root = format!("{}/projects/my-app", home);
+            let bar = StatusBar::new(10, Duration::from_millis(5), &root, 0);
+            let status = bar.format_status();
+            // Should contain ~ substitution, not the full home path
+            assert!(
+                status.contains("~/projects/my-app"),
+                "Expected ~ substitution in status: {status}"
+            );
+            assert!(
+                !status.contains(&home),
+                "Should not contain raw HOME path in status: {status}"
+            );
+        } else {
+            // If HOME is not set, the path should appear as-is
+            let bar = StatusBar::new(10, Duration::from_millis(5), "/some/path", 0);
+            let status = bar.format_status();
+            assert!(status.contains("/some/path"));
+        }
+    }
+
     #[test]
     fn test_status_bar_searching_without_start() {
         let mut bar = StatusBar::default();

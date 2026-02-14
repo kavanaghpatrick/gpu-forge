@@ -396,6 +396,18 @@ mod tests {
         }
     }
 
+    // U-DOT-5: Case sensitivity -- uppercase extensions should fall through to muted
+    #[test]
+    fn ext_case_sensitive_uppercase_is_muted() {
+        // Extensions are matched case-sensitively (lowercase expected per doc comment)
+        assert_eq!(extension_dot_color("RS"), EXT_MUTED);
+        assert_eq!(extension_dot_color("Py"), EXT_MUTED);
+        assert_eq!(extension_dot_color("Js"), EXT_MUTED);
+        assert_eq!(extension_dot_color("TS"), EXT_MUTED);
+        assert_eq!(extension_dot_color("Go"), EXT_MUTED);
+        assert_eq!(extension_dot_color("HTML"), EXT_MUTED);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
     /// Relative luminance per WCAG 2.1 (sRGB -> linear -> luminance).

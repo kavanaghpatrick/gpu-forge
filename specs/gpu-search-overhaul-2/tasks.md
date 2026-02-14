@@ -246,7 +246,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-3.1, AC-3.3_
   - _Design: Component B_
 
-- [ ] 3.4 Unit tests for RowKind flattening and prefix-sum heights
+- [x] 3.4 Unit tests for RowKind flattening and prefix-sum heights
   - **Do**:
     1. Add tests U-ROW-1 through U-ROW-9 for flat row model construction.
     2. Add tests U-PFX-1 through U-PFX-8 for prefix-sum invariants and binary search.
@@ -307,7 +307,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-3.5, AC-6.4_
   - _Design: Component C_
 
-- [ ] 3.9 Unit tests for extension dot colors and status bar
+- [x] 3.9 Unit tests for extension dot colors and status bar
   - **Do**:
     1. Add tests U-DOT-1 through U-DOT-5 in `theme.rs` tests: rs=purple, py=green, unknown=muted, all known non-muted, case sensitivity.
     2. Add tests U-SB-1 through U-SB-4 in `status_bar.rs` tests: count from displayed, searching state, root abbreviation, zero matches.
