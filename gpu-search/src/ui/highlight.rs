@@ -366,22 +366,16 @@ impl Default for SyntaxHighlighter {
 
 // ── Query match overlay ────────────────────────────────────────────────────
 
-/// Apply amber match overlay to spans where the query appears in the original line.
+/// Split styled spans at the given byte ranges, applying amber match overlay
+/// to portions inside any range. Spans outside ranges keep their original style.
 ///
-/// Case-insensitive matching. Match spans get bold + amber foreground + amber background,
-/// overriding whatever syntax color was underneath.
-fn apply_match_overlay(
-    spans: Vec<StyledSpan>,
-    original_line: &str,
-    query: &str,
-) -> Vec<StyledSpan> {
-    // Find all match ranges in the original line (case-insensitive)
-    let match_ranges = find_match_ranges(original_line, query);
-    if match_ranges.is_empty() {
+/// Ranges must be sorted and non-overlapping. Ranges are clamped to the total
+/// text length of the input spans.
+fn split_spans_at_ranges(spans: Vec<StyledSpan>, ranges: &[Range<usize>]) -> Vec<StyledSpan> {
+    if ranges.is_empty() {
         return spans;
     }
 
-    // Flatten spans into (byte_offset, span) pairs
     let mut result: Vec<StyledSpan> = Vec::new();
     let mut byte_offset = 0usize;
 
@@ -391,7 +385,7 @@ fn apply_match_overlay(
 
         // Split this span at match boundaries
         let mut cursor = span_start;
-        for range in &match_ranges {
+        for range in ranges {
             // Skip ranges entirely before this span
             if range.end <= cursor {
                 continue;
@@ -404,7 +398,7 @@ fn apply_match_overlay(
             // Portion before the match range (syntax-colored)
             if cursor < range.start && range.start < span_end {
                 let before_end = range.start.min(span_end);
-                let text = &original_line[cursor..before_end];
+                let text = &span.text[(cursor - span_start)..(before_end - span_start)];
                 if !text.is_empty() {
                     result.push(StyledSpan {
                         text: text.to_string(),
@@ -420,7 +414,7 @@ fn apply_match_overlay(
             let match_start = range.start.max(cursor);
             let match_end = range.end.min(span_end);
             if match_start < match_end {
-                let text = &original_line[match_start..match_end];
+                let text = &span.text[(match_start - span_start)..(match_end - span_start)];
                 if !text.is_empty() {
                     result.push(StyledSpan::with_match_overlay(text));
                 }
@@ -430,7 +424,7 @@ fn apply_match_overlay(
 
         // Remainder after all match ranges (syntax-colored)
         if cursor < span_end {
-            let text = &original_line[cursor..span_end];
+            let text = &span.text[(cursor - span_start)..(span_end - span_start)];
             if !text.is_empty() {
                 result.push(StyledSpan {
                     text: text.to_string(),
@@ -445,6 +439,56 @@ fn apply_match_overlay(
     }
 
     result
+}
+
+/// Apply amber match overlay to spans where the query appears in the original line.
+///
+/// Case-insensitive matching. Match spans get bold + amber foreground + amber background,
+/// overriding whatever syntax color was underneath.
+fn apply_match_overlay(
+    spans: Vec<StyledSpan>,
+    original_line: &str,
+    query: &str,
+) -> Vec<StyledSpan> {
+    // Find all match ranges in the original line (case-insensitive)
+    let match_ranges = find_match_ranges(original_line, query);
+    if match_ranges.is_empty() {
+        return spans;
+    }
+
+    split_spans_at_ranges(spans, &match_ranges)
+}
+
+/// Apply amber match overlay at a specific byte range from the GPU match result.
+///
+/// This uses the GPU-reported `match_range` directly instead of re-searching
+/// the line for query text, providing precise highlighting at the exact match
+/// position reported by the GPU kernel.
+///
+/// The range is clamped to the total span text length. If `start >= total_len`,
+/// spans are returned unchanged.
+pub fn apply_match_range_overlay(
+    spans: Vec<StyledSpan>,
+    match_range: Range<usize>,
+) -> Vec<StyledSpan> {
+    // Compute total text length from spans
+    let total_len: usize = spans.iter().map(|s| s.text.len()).sum();
+
+    // If start is beyond the text, return unchanged
+    if match_range.start >= total_len {
+        return spans;
+    }
+
+    // Empty range: return unchanged
+    if match_range.start >= match_range.end {
+        return spans;
+    }
+
+    // Clamp end to total text length
+    let clamped_end = match_range.end.min(total_len);
+    let clamped_range = match_range.start..clamped_end;
+
+    split_spans_at_ranges(spans, &[clamped_range])
 }
 
 /// Find all case-insensitive occurrences of `query` in `text`, returning byte ranges.
@@ -672,5 +716,164 @@ mod tests {
         let spans = hl.highlight_line("const x = 42;", "js", None);
         let combined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(combined, "const x = 42;");
+    }
+
+    // ── apply_match_range_overlay tests ────────────────────────────────────
+
+    /// Helper: create a plain span with default fg, no bg, not bold.
+    fn plain_span(text: &str) -> StyledSpan {
+        StyledSpan {
+            text: text.to_string(),
+            fg: (FG_DEFAULT.r, FG_DEFAULT.g, FG_DEFAULT.b, FG_DEFAULT.a),
+            bg: None,
+            bold: false,
+        }
+    }
+
+    /// Helper: check if a span has match overlay styling (amber bold).
+    fn is_match_styled(span: &StyledSpan) -> bool {
+        span.bold && span.fg.0 == MATCH_FG.r && span.bg.is_some()
+    }
+
+    #[test]
+    fn test_match_range_overlay_basic() {
+        // "hello world" with match_range covering "world" (6..11)
+        let spans = vec![plain_span("hello world")];
+        let result = apply_match_range_overlay(spans, 6..11);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "hello ");
+        assert!(!is_match_styled(&result[0]));
+        assert_eq!(result[1].text, "world");
+        assert!(is_match_styled(&result[1]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_at_start() {
+        // Match at start of line: "fn" in "fn main()"
+        let spans = vec![plain_span("fn main()")];
+        let result = apply_match_range_overlay(spans, 0..2);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "fn");
+        assert!(is_match_styled(&result[0]));
+        assert_eq!(result[1].text, " main()");
+        assert!(!is_match_styled(&result[1]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_at_end() {
+        // Match at end of line: "()" in "fn main()"
+        let spans = vec![plain_span("fn main()")];
+        let result = apply_match_range_overlay(spans, 7..9);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "fn main");
+        assert!(!is_match_styled(&result[0]));
+        assert_eq!(result[1].text, "()");
+        assert!(is_match_styled(&result[1]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_full_line() {
+        // Match covers entire line
+        let spans = vec![plain_span("hello")];
+        let result = apply_match_range_overlay(spans, 0..5);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "hello");
+        assert!(is_match_styled(&result[0]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_empty_range() {
+        // Empty range (start == end) should return spans unchanged
+        let spans = vec![plain_span("hello world")];
+        let result = apply_match_range_overlay(spans.clone(), 3..3);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "hello world");
+        assert!(!is_match_styled(&result[0]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_clamped() {
+        // Range extends past end of text -- should clamp to text length
+        let spans = vec![plain_span("hello")];
+        let result = apply_match_range_overlay(spans, 3..100);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "hel");
+        assert!(!is_match_styled(&result[0]));
+        assert_eq!(result[1].text, "lo");
+        assert!(is_match_styled(&result[1]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_start_beyond_text() {
+        // start >= total_len: should return spans unchanged
+        let spans = vec![plain_span("hello")];
+        let result = apply_match_range_overlay(spans.clone(), 10..15);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "hello");
+        assert!(!is_match_styled(&result[0]));
+    }
+
+    #[test]
+    fn test_match_range_overlay_multi_span_split() {
+        // Multiple input spans, match range crosses a span boundary
+        // "hel" + "lo wor" + "ld" -> match "lo wo" (3..8)
+        let spans = vec![
+            plain_span("hel"),
+            StyledSpan {
+                text: "lo wor".to_string(),
+                fg: (STR_COLOR.r, STR_COLOR.g, STR_COLOR.b, STR_COLOR.a),
+                bg: None,
+                bold: false,
+            },
+            plain_span("ld"),
+        ];
+        let result = apply_match_range_overlay(spans, 3..8);
+
+        // Combined text should be preserved
+        let combined: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, "hello world");
+
+        // "hel" unchanged, "lo wo" match-styled, "r" original, "ld" unchanged
+        assert_eq!(result[0].text, "hel");
+        assert!(!is_match_styled(&result[0]));
+
+        // "lo wo" should be match-styled (spans 1..2 split)
+        let matched: String = result.iter().filter(|s| is_match_styled(s)).map(|s| s.text.as_str()).collect();
+        assert_eq!(matched, "lo wo");
+    }
+
+    #[test]
+    fn test_split_spans_at_ranges_preserves_text() {
+        // Verify that split_spans_at_ranges always preserves the full text
+        let spans = vec![
+            plain_span("abc"),
+            plain_span("def"),
+            plain_span("ghi"),
+        ];
+        let result = split_spans_at_ranges(spans, &[2..7]);
+
+        let combined: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, "abcdefghi");
+    }
+
+    #[test]
+    fn test_apply_match_overlay_uses_split_spans() {
+        // Verify the refactored apply_match_overlay still works correctly
+        // by comparing with known output
+        let spans = vec![plain_span("hello world")];
+        let result = apply_match_overlay(spans, "hello world", "world");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "hello ");
+        assert!(!is_match_styled(&result[0]));
+        assert_eq!(result[1].text, "world");
+        assert!(is_match_styled(&result[1]));
     }
 }

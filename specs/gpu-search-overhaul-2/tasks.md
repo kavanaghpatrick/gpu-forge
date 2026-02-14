@@ -115,7 +115,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-12_
   - _Design: Component C, Section 10_
 
-- [ ] 2.3 Add apply_match_range_overlay() to highlight.rs
+- [x] 2.3 Add apply_match_range_overlay() to highlight.rs
   - **Do**:
     1. In `src/ui/highlight.rs`, extract the span-splitting logic from existing `apply_match_overlay()` into a shared `fn split_spans_at_ranges(spans: Vec<StyledSpan>, ranges: &[Range<usize>]) -> Vec<StyledSpan>`.
     2. Add `pub fn apply_match_range_overlay(spans: Vec<StyledSpan>, match_range: Range<usize>) -> Vec<StyledSpan>` that calls `split_spans_at_ranges` with `vec![match_range]`.
