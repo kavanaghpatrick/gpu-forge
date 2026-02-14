@@ -74,7 +74,7 @@ Focus: Fix the P0 stale results bug and prove the generation-stamped architectur
   - _Requirements: FR-11_
   - _Design: Section 7.2_
 
-- [ ] 1.6 POC Checkpoint: verify stale results fix works end-to-end
+- [x] 1.6 POC Checkpoint: verify stale results fix works end-to-end
   - **Do**:
     1. Run `cargo test -p gpu-search` -- all existing tests pass (with debounce + verify default updates).
     2. Run the app: `cargo run -p gpu-search -- --root ~/gpu_kernel/gpu-search`.
