@@ -348,7 +348,7 @@ Focus: CI pipeline, benchmark hard gate, clippy, full regression.
   - **Commit**: `perf(gpu-search): add grouped scroll performance benchmarks`
   - _Requirements: NFR-1, NFR-2, NFR-7_
 
-- [ ] 4.3 Visual verification of all 5 issues
+- [x] 4.3 Visual verification of all 5 issues
   - **Do**:
     1. Run `cargo run -p gpu-search -- --root ~/gpu_kernel/gpu-search`.
     2. **Issue 1 (Stale)**: Type "orchestrator" rapidly -- no stale results, status bar matches.
