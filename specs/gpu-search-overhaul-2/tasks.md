@@ -322,7 +322,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
 
 Focus: CI pipeline, benchmark hard gate, clippy, full regression.
 
-- [ ] 4.1 Run full regression test suite
+- [x] 4.1 Run full regression test suite
   - **Do**:
     1. Run `cargo test -p gpu-search` -- all existing + new tests must pass.
     2. Run `cargo clippy -p gpu-search -- -D warnings` -- zero warnings.

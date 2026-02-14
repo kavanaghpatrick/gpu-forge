@@ -231,12 +231,7 @@ impl FlatRowModel {
             matches!(r, RowKind::SectionHeader(SectionType::ContentMatches))
         })?;
         // Find first selectable row after the header
-        for idx in (header_idx + 1)..self.rows.len() {
-            if self.is_selectable(idx) {
-                return Some(idx);
-            }
-        }
-        None
+        ((header_idx + 1)..self.rows.len()).find(|&idx| self.is_selectable(idx))
     }
 
     /// Find the first selectable row in the file matches section.
@@ -250,12 +245,7 @@ impl FlatRowModel {
             matches!(r, RowKind::SectionHeader(SectionType::FileMatches))
         })?;
         // Find first selectable row after the header
-        for idx in (header_idx + 1)..self.rows.len() {
-            if self.is_selectable(idx) {
-                return Some(idx);
-            }
-        }
-        None
+        ((header_idx + 1)..self.rows.len()).find(|&idx| self.is_selectable(idx))
     }
 }
 
@@ -357,6 +347,7 @@ impl ResultsList {
     ///    and match_range overlay
     ///
     /// Only visible rows are rendered for O(1) frame cost regardless of total count.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
