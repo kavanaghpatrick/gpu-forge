@@ -491,7 +491,7 @@ Focus: Backfill, validation, backward compat, final quality.
   - **Verify**: `gh pr checks` still passing after fixes
   - **Done when**: All review comments addressed
 
-- [ ] V5 [VERIFY] AC checklist: all 22 acceptance criteria verified
+- [x] V5 [VERIFY] AC checklist: all 22 acceptance criteria verified
   - **Do**: Programmatically verify each acceptance criteria:
     1. AC-1.1: `kb search "register allocation" --gen m4` returns results
     2. AC-1.2: Search --gen m5 excludes m1-m4 specific benchmarks
