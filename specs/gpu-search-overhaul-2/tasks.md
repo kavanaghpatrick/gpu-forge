@@ -211,7 +211,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
 
 Focus: Comprehensive unit tests, integration tests, property tests, and visual snapshots per QA.md strategy.
 
-- [ ] 3.1 Unit tests for StampedUpdate generation filtering
+- [x] 3.1 Unit tests for StampedUpdate generation filtering
   - **Do**:
     1. In `src/search/types.rs` or `src/ui/app.rs` tests module, add tests U-GEN-1 through U-GEN-7.
     2. Create a test helper that mimics `poll_updates()` logic: takes a vec of `StampedUpdate`, a current_gen, and returns the filtered results.
@@ -258,7 +258,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: NFR-2_
   - _Design: Component C_
 
-- [ ] 3.5 Unit tests for adaptive VerifyMode
+- [x] 3.5 Unit tests for adaptive VerifyMode
   - **Do**:
     1. Add tests U-VFY-1 through U-VFY-10 in `verify.rs` tests module.
     2. Cover: default is Sample, env off/full, effective() upgrades below 100, stays at 100, stays above, Full ignores count, Off ignores count, boundary 99, zero.

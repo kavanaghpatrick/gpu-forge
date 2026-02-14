@@ -251,6 +251,87 @@ mod tests {
         assert_eq!(VerifyMode::Off.effective(200), VerifyMode::Off);
     }
 
+    // ---- Adaptive VerifyMode unit tests (U-VFY-1 through U-VFY-10) ----
+
+    /// U-VFY-1: Default mode (no env var) is Sample.
+    #[test]
+    fn u_vfy_1_default_is_sample() {
+        std::env::remove_var("GPU_SEARCH_VERIFY");
+        assert_eq!(VerifyMode::from_env(), VerifyMode::Sample);
+    }
+
+    /// U-VFY-2: Env "off" → Off.
+    #[test]
+    fn u_vfy_2_env_off() {
+        std::env::set_var("GPU_SEARCH_VERIFY", "off");
+        assert_eq!(VerifyMode::from_env(), VerifyMode::Off);
+        std::env::remove_var("GPU_SEARCH_VERIFY");
+    }
+
+    /// U-VFY-3: Env "full" → Full.
+    #[test]
+    fn u_vfy_3_env_full() {
+        std::env::set_var("GPU_SEARCH_VERIFY", "full");
+        assert_eq!(VerifyMode::from_env(), VerifyMode::Full);
+        std::env::remove_var("GPU_SEARCH_VERIFY");
+    }
+
+    /// U-VFY-4: effective() upgrades Sample to Full when count < 100.
+    #[test]
+    fn u_vfy_4_effective_upgrades_below_100() {
+        assert_eq!(VerifyMode::Sample.effective(50), VerifyMode::Full);
+        assert_eq!(VerifyMode::Sample.effective(1), VerifyMode::Full);
+        assert_eq!(VerifyMode::Sample.effective(10), VerifyMode::Full);
+    }
+
+    /// U-VFY-5: effective() keeps Sample at exactly 100.
+    #[test]
+    fn u_vfy_5_effective_stays_at_100() {
+        assert_eq!(VerifyMode::Sample.effective(100), VerifyMode::Sample);
+    }
+
+    /// U-VFY-6: effective() keeps Sample above 100.
+    #[test]
+    fn u_vfy_6_effective_stays_above_100() {
+        assert_eq!(VerifyMode::Sample.effective(101), VerifyMode::Sample);
+        assert_eq!(VerifyMode::Sample.effective(500), VerifyMode::Sample);
+        assert_eq!(VerifyMode::Sample.effective(10_000), VerifyMode::Sample);
+    }
+
+    /// U-VFY-7: Full ignores result count — stays Full always.
+    #[test]
+    fn u_vfy_7_full_ignores_count() {
+        assert_eq!(VerifyMode::Full.effective(0), VerifyMode::Full);
+        assert_eq!(VerifyMode::Full.effective(50), VerifyMode::Full);
+        assert_eq!(VerifyMode::Full.effective(99), VerifyMode::Full);
+        assert_eq!(VerifyMode::Full.effective(100), VerifyMode::Full);
+        assert_eq!(VerifyMode::Full.effective(1_000), VerifyMode::Full);
+    }
+
+    /// U-VFY-8: Off ignores result count — stays Off always.
+    #[test]
+    fn u_vfy_8_off_ignores_count() {
+        assert_eq!(VerifyMode::Off.effective(0), VerifyMode::Off);
+        assert_eq!(VerifyMode::Off.effective(50), VerifyMode::Off);
+        assert_eq!(VerifyMode::Off.effective(99), VerifyMode::Off);
+        assert_eq!(VerifyMode::Off.effective(100), VerifyMode::Off);
+        assert_eq!(VerifyMode::Off.effective(1_000), VerifyMode::Off);
+    }
+
+    /// U-VFY-9: Boundary 99 — Sample upgrades to Full at 99.
+    #[test]
+    fn u_vfy_9_boundary_99() {
+        assert_eq!(VerifyMode::Sample.effective(99), VerifyMode::Full);
+        // And 100 does NOT upgrade
+        assert_eq!(VerifyMode::Sample.effective(100), VerifyMode::Sample);
+    }
+
+    /// U-VFY-10: Zero results — Sample upgrades to Full.
+    #[test]
+    fn u_vfy_10_zero_results() {
+        assert_eq!(VerifyMode::Sample.effective(0), VerifyMode::Full);
+    }
+
     #[test]
     fn test_overlapping_pattern() {
         let content = b"aaaa";
