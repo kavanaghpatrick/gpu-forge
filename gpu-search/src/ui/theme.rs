@@ -59,7 +59,51 @@ const CODE_BG: Color32 = Color32::from_rgb(0x20, 0x22, 0x34);
 /// Hyperlink blue (Tokyo Night blue)
 const LINK_BLUE: Color32 = Color32::from_rgb(0x7A, 0xA2, 0xF7);
 
+// ── Extension dot colors ───────────────────────────────────────────────────
+
+/// Tokyo Night purple (#BB9AF7) -- Rust, etc.
+const EXT_PURPLE: Color32 = Color32::from_rgb(0xBB, 0x9A, 0xF7);
+
+/// Tokyo Night green (#9ECE6A) -- Python, shell scripts
+const EXT_GREEN: Color32 = Color32::from_rgb(0x9E, 0xCE, 0x6A);
+
+/// Tokyo Night amber (#E0AF68) -- JavaScript, Swift
+const EXT_AMBER: Color32 = Color32::from_rgb(0xE0, 0xAF, 0x68);
+
+/// Tokyo Night blue (#7AA2F7) -- TypeScript, C/C++, config
+const EXT_BLUE: Color32 = Color32::from_rgb(0x7A, 0xA2, 0xF7);
+
+/// Tokyo Night cyan (#2AC3DE) -- Markdown, Go
+const EXT_CYAN: Color32 = Color32::from_rgb(0x2A, 0xC3, 0xDE);
+
+/// Tokyo Night red (#F7768E) -- HTML
+const EXT_RED: Color32 = Color32::from_rgb(0xF7, 0x76, 0x8E);
+
+/// Muted (#565F89) -- unknown/default extensions
+const EXT_MUTED: Color32 = Color32::from_rgb(0x56, 0x5F, 0x89);
+
 // ── Public API ───────────────────────────────────────────────────────────────
+
+/// Return a color for the file-type indicator dot based on file extension.
+///
+/// Uses the Tokyo Night palette to visually distinguish file types at a glance.
+/// Extensions are matched case-sensitively (lowercase expected).
+pub fn extension_dot_color(ext: &str) -> Color32 {
+    match ext {
+        "rs" => EXT_PURPLE,
+        "py" => EXT_GREEN,
+        "js" | "jsx" => EXT_AMBER,
+        "ts" | "tsx" => EXT_BLUE,
+        "md" | "txt" => EXT_CYAN,
+        "toml" | "yaml" | "json" => EXT_BLUE,
+        "sh" | "bash" | "zsh" => EXT_GREEN,
+        "c" | "cpp" | "h" => EXT_BLUE,
+        "go" => EXT_CYAN,
+        "swift" => EXT_AMBER,
+        "html" => EXT_RED,
+        _ => EXT_MUTED,
+    }
+}
 
 /// Apply the Tokyo Night dark theme to the given egui context.
 ///
@@ -261,6 +305,95 @@ mod tests {
         assert_eq!(v.window_fill, BG_BASE);
         assert_eq!(v.panel_fill, BG_BASE);
         assert!(v.override_text_color.is_none());
+    }
+
+    // ── extension_dot_color tests ─────────────────────────────────────────
+
+    #[test]
+    fn ext_rs_is_purple() {
+        assert_eq!(extension_dot_color("rs"), EXT_PURPLE);
+    }
+
+    #[test]
+    fn ext_py_is_green() {
+        assert_eq!(extension_dot_color("py"), EXT_GREEN);
+    }
+
+    #[test]
+    fn ext_js_jsx_are_amber() {
+        assert_eq!(extension_dot_color("js"), EXT_AMBER);
+        assert_eq!(extension_dot_color("jsx"), EXT_AMBER);
+    }
+
+    #[test]
+    fn ext_ts_tsx_are_blue() {
+        assert_eq!(extension_dot_color("ts"), EXT_BLUE);
+        assert_eq!(extension_dot_color("tsx"), EXT_BLUE);
+    }
+
+    #[test]
+    fn ext_md_txt_are_cyan() {
+        assert_eq!(extension_dot_color("md"), EXT_CYAN);
+        assert_eq!(extension_dot_color("txt"), EXT_CYAN);
+    }
+
+    #[test]
+    fn ext_config_formats_are_blue() {
+        assert_eq!(extension_dot_color("toml"), EXT_BLUE);
+        assert_eq!(extension_dot_color("yaml"), EXT_BLUE);
+        assert_eq!(extension_dot_color("json"), EXT_BLUE);
+    }
+
+    #[test]
+    fn ext_shell_scripts_are_green() {
+        assert_eq!(extension_dot_color("sh"), EXT_GREEN);
+        assert_eq!(extension_dot_color("bash"), EXT_GREEN);
+        assert_eq!(extension_dot_color("zsh"), EXT_GREEN);
+    }
+
+    #[test]
+    fn ext_c_cpp_h_are_blue() {
+        assert_eq!(extension_dot_color("c"), EXT_BLUE);
+        assert_eq!(extension_dot_color("cpp"), EXT_BLUE);
+        assert_eq!(extension_dot_color("h"), EXT_BLUE);
+    }
+
+    #[test]
+    fn ext_go_is_cyan() {
+        assert_eq!(extension_dot_color("go"), EXT_CYAN);
+    }
+
+    #[test]
+    fn ext_swift_is_amber() {
+        assert_eq!(extension_dot_color("swift"), EXT_AMBER);
+    }
+
+    #[test]
+    fn ext_html_is_red() {
+        assert_eq!(extension_dot_color("html"), EXT_RED);
+    }
+
+    #[test]
+    fn ext_unknown_is_muted() {
+        assert_eq!(extension_dot_color("xyz"), EXT_MUTED);
+        assert_eq!(extension_dot_color(""), EXT_MUTED);
+        assert_eq!(extension_dot_color("pdf"), EXT_MUTED);
+        assert_eq!(extension_dot_color("doc"), EXT_MUTED);
+    }
+
+    #[test]
+    fn ext_all_known_are_not_muted() {
+        let known = [
+            "rs", "py", "js", "jsx", "ts", "tsx", "md", "txt",
+            "toml", "yaml", "json", "sh", "bash", "zsh",
+            "c", "cpp", "h", "go", "swift", "html",
+        ];
+        for ext in known {
+            assert_ne!(
+                extension_dot_color(ext), EXT_MUTED,
+                "Extension '{ext}' should not be muted"
+            );
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────

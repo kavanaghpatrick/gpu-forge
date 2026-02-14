@@ -104,7 +104,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-3_
   - _Design: Component D_
 
-- [ ] 2.2 Add extension_dot_color() to theme.rs
+- [x] 2.2 Add extension_dot_color() to theme.rs
   - **Do**:
     1. In `src/ui/theme.rs`, add `pub fn extension_dot_color(ext: &str) -> Color32` mapping: rs -> purple (#BB9AF7), py -> green (#9ECE6A), js/jsx -> amber (#E0AF68), ts/tsx -> blue (#7AA2F7), md/txt -> cyan (#2AC3DE), toml/yaml/json -> blue, sh/bash/zsh -> green, c/cpp/h -> blue, go -> cyan, swift -> amber, html -> red (#F7768E), default -> muted (#565F89).
     2. Add unit tests for known extensions and default fallback.
