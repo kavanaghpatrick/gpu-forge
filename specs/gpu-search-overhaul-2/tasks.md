@@ -235,7 +235,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-2.1, AC-2.2, AC-2.3_
   - _Design: Component D_
 
-- [ ] 3.3 Unit tests for ContentGroup building and sorting
+- [x] 3.3 Unit tests for ContentGroup building and sorting
   - **Do**:
     1. Add tests U-GRP-1 through U-GRP-10 testing incremental grouping logic.
     2. Cover: single file/match, single file/multiple matches, multiple files, incremental add, sort by count desc, stable sort, empty input, dir_display, extension extraction, idempotent recompute.

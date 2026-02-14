@@ -1009,4 +1009,263 @@ mod tests {
         assert_eq!(rl.selected_index, 0);
         assert!(rl.scroll_to_selected);
     }
+
+    // -----------------------------------------------------------------------
+    // ContentGroup incremental grouping tests (U-GRP-1 through U-GRP-10)
+    // -----------------------------------------------------------------------
+    //
+    // These tests replicate the grouping logic from GpuSearchApp::recompute_groups()
+    // and sort_groups_by_count() in a standalone manner, operating directly on
+    // ContentGroup, HashMap<PathBuf, usize>, and last_grouped_index.
+
+    use std::collections::HashMap;
+    use crate::ui::path_utils::abbreviate_path;
+
+    /// Standalone helper that mirrors GpuSearchApp::recompute_groups().
+    /// Incrementally groups content_matches[last_grouped_index..] by file path.
+    fn recompute_groups(
+        content_matches: &[ContentMatch],
+        content_groups: &mut Vec<ContentGroup>,
+        group_index_map: &mut HashMap<PathBuf, usize>,
+        last_grouped_index: &mut usize,
+        search_root: &Path,
+    ) {
+        for i in *last_grouped_index..content_matches.len() {
+            let cm = &content_matches[i];
+            if let Some(&group_idx) = group_index_map.get(&cm.path) {
+                content_groups[group_idx].match_indices.push(i);
+            } else {
+                let (dir_display, filename) = abbreviate_path(&cm.path, search_root);
+                let extension = cm
+                    .path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let group_idx = content_groups.len();
+                group_index_map.insert(cm.path.clone(), group_idx);
+                content_groups.push(ContentGroup {
+                    path: cm.path.clone(),
+                    dir_display,
+                    filename,
+                    extension,
+                    match_indices: vec![i],
+                });
+            }
+        }
+        *last_grouped_index = content_matches.len();
+    }
+
+    /// Standalone helper that mirrors GpuSearchApp::sort_groups_by_count().
+    fn sort_groups_by_count(
+        content_groups: &mut Vec<ContentGroup>,
+        group_index_map: &mut HashMap<PathBuf, usize>,
+    ) {
+        content_groups.sort_by(|a, b| b.match_indices.len().cmp(&a.match_indices.len()));
+        group_index_map.clear();
+        for (idx, group) in content_groups.iter().enumerate() {
+            group_index_map.insert(group.path.clone(), idx);
+        }
+    }
+
+    /// Helper to create a ContentMatch with a specific file path and line number.
+    fn make_cm(path: &str, line: u32) -> ContentMatch {
+        ContentMatch {
+            path: PathBuf::from(path),
+            line_number: line,
+            line_content: format!("line content at {}", line),
+            context_before: vec![],
+            context_after: vec![],
+            match_range: 0..4,
+        }
+    }
+
+    #[test]
+    fn test_group_1_single_file_single_match() {
+        // U-GRP-1: A single match produces exactly one group with one match_index.
+        let matches = vec![make_cm("src/foo.rs", 10)];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].match_indices, vec![0]);
+        assert_eq!(groups[0].path, PathBuf::from("src/foo.rs"));
+        assert_eq!(last, 1);
+    }
+
+    #[test]
+    fn test_group_2_single_file_multiple_matches() {
+        // U-GRP-2: Multiple matches in the same file collapse into one group.
+        let matches = vec![
+            make_cm("src/foo.rs", 10),
+            make_cm("src/foo.rs", 20),
+            make_cm("src/foo.rs", 30),
+        ];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), 1, "should be one group for one file");
+        assert_eq!(groups[0].match_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_group_3_multiple_files() {
+        // U-GRP-3: Matches in different files produce separate groups.
+        let matches = vec![
+            make_cm("src/a.rs", 1),
+            make_cm("src/b.rs", 2),
+            make_cm("src/c.py", 3),
+        ];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].path, PathBuf::from("src/a.rs"));
+        assert_eq!(groups[1].path, PathBuf::from("src/b.rs"));
+        assert_eq!(groups[2].path, PathBuf::from("src/c.py"));
+    }
+
+    #[test]
+    fn test_group_4_incremental_add() {
+        // U-GRP-4: Calling recompute_groups twice with growing content_matches
+        // processes only the new matches the second time.
+        let mut matches = vec![
+            make_cm("src/a.rs", 1),
+            make_cm("src/b.rs", 2),
+        ];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(last, 2);
+
+        // Add more matches (simulating a new streaming batch)
+        matches.push(make_cm("src/a.rs", 10)); // existing group
+        matches.push(make_cm("src/c.rs", 5));  // new group
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), 3, "should add one new group for src/c.rs");
+        assert_eq!(groups[0].match_indices, vec![0, 2], "src/a.rs should have 2 matches");
+        assert_eq!(groups[2].match_indices, vec![3], "src/c.rs should have 1 match");
+        assert_eq!(last, 4);
+    }
+
+    #[test]
+    fn test_group_5_sort_by_count_desc() {
+        // U-GRP-5: sort_groups_by_count orders groups by match_indices.len() descending.
+        let matches = vec![
+            make_cm("src/few.rs", 1),
+            make_cm("src/many.rs", 1),
+            make_cm("src/many.rs", 2),
+            make_cm("src/many.rs", 3),
+            make_cm("src/mid.rs", 1),
+            make_cm("src/mid.rs", 2),
+        ];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), 3);
+        sort_groups_by_count(&mut groups, &mut map);
+
+        assert_eq!(groups[0].path, PathBuf::from("src/many.rs"), "most matches first");
+        assert_eq!(groups[0].match_indices.len(), 3);
+        assert_eq!(groups[1].path, PathBuf::from("src/mid.rs"));
+        assert_eq!(groups[1].match_indices.len(), 2);
+        assert_eq!(groups[2].path, PathBuf::from("src/few.rs"));
+        assert_eq!(groups[2].match_indices.len(), 1);
+    }
+
+    #[test]
+    fn test_group_6_stable_sort() {
+        // U-GRP-6: Groups with equal match counts preserve insertion order
+        // (Rust's sort_by is stable).
+        let matches = vec![
+            make_cm("src/alpha.rs", 1),
+            make_cm("src/beta.rs", 1),
+            make_cm("src/gamma.rs", 1),
+        ];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        sort_groups_by_count(&mut groups, &mut map);
+
+        // All have 1 match, so insertion order should be preserved
+        assert_eq!(groups[0].path, PathBuf::from("src/alpha.rs"));
+        assert_eq!(groups[1].path, PathBuf::from("src/beta.rs"));
+        assert_eq!(groups[2].path, PathBuf::from("src/gamma.rs"));
+    }
+
+    #[test]
+    fn test_group_7_empty_input() {
+        // U-GRP-7: Empty content_matches produces no groups.
+        let matches: Vec<ContentMatch> = vec![];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert!(groups.is_empty());
+        assert!(map.is_empty());
+        assert_eq!(last, 0);
+    }
+
+    #[test]
+    fn test_group_8_dir_display() {
+        // U-GRP-8: dir_display is populated from abbreviate_path.
+        let matches = vec![make_cm("/root/src/search/foo.rs", 1)];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups[0].dir_display, "src/search/");
+        assert_eq!(groups[0].filename, "foo.rs");
+    }
+
+    #[test]
+    fn test_group_9_extension_extraction() {
+        // U-GRP-9: Extension is extracted correctly, lowercased, without dot.
+        let matches = vec![
+            make_cm("file.RS", 1),
+            make_cm("file.py", 2),
+            make_cm("Makefile", 3), // no extension
+        ];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups[0].extension, "rs", "should be lowercased");
+        assert_eq!(groups[1].extension, "py");
+        assert_eq!(groups[2].extension, "", "no extension -> empty string");
+    }
+
+    #[test]
+    fn test_group_10_idempotent_recompute() {
+        // U-GRP-10: Calling recompute_groups when last_grouped_index == len
+        // is a no-op (idempotent).
+        let matches = vec![make_cm("src/a.rs", 1)];
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        let groups_after_first = groups.clone();
+        // Call again with no new matches
+        recompute_groups(&matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+
+        assert_eq!(groups.len(), groups_after_first.len());
+        assert_eq!(groups[0].match_indices, groups_after_first[0].match_indices);
+    }
 }
