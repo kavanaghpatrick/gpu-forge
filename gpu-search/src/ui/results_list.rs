@@ -1640,4 +1640,295 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Navigation integration tests (I-NAV-1 through I-NAV-7)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build groups from content matches for navigation tests.
+    fn build_groups_for_nav(
+        content_matches: &[ContentMatch],
+    ) -> Vec<ContentGroup> {
+        let mut groups = Vec::new();
+        let mut map = HashMap::new();
+        let mut last = 0;
+        recompute_groups(content_matches, &mut groups, &mut map, &mut last, Path::new("/root"));
+        groups
+    }
+
+    #[test]
+    fn test_i_nav_1_next_skips_section_header() {
+        // I-NAV-1: next_selectable_row from a FileMatchRow skips SectionHeader(ContentMatches)
+        // and GroupHeader, landing on the first MatchRow.
+        let fm = make_file_matches(2);
+        let cm = vec![make_cm("src/a.rs", 10)];
+        let groups = build_groups_for_nav(&cm);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // Layout: [SectionHeader(FM), FileMatchRow(0), FileMatchRow(1),
+        //          SectionHeader(CM), GroupHeader(0), MatchRow{0,0}]
+        assert_eq!(model.rows.len(), 6);
+
+        // From last FileMatchRow (idx=2), next should skip SectionHeader(CM) at idx=3
+        // and GroupHeader at idx=4, landing on MatchRow at idx=5
+        let next = model.next_selectable_row(2);
+        assert_eq!(next, Some(5), "should skip section header and group header");
+    }
+
+    #[test]
+    fn test_i_nav_2_next_skips_group_header() {
+        // I-NAV-2: next_selectable_row skips GroupHeader between two groups.
+        let cm = vec![
+            make_cm("src/a.rs", 10),
+            make_cm("src/b.rs", 20),
+        ];
+        let groups = build_groups_for_nav(&cm);
+        let fm: Vec<FileMatch> = vec![];
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // Layout: [SectionHeader(CM), GroupHeader(0), MatchRow{0,0},
+        //          GroupHeader(1), MatchRow{1,0}]
+        assert_eq!(model.rows.len(), 5);
+
+        // From MatchRow{0,0} at idx=2, next should skip GroupHeader(1) at idx=3
+        let next = model.next_selectable_row(2);
+        assert_eq!(next, Some(4), "should skip group header between groups");
+    }
+
+    #[test]
+    fn test_i_nav_3_prev_skips_headers() {
+        // I-NAV-3: prev_selectable_row skips GroupHeader and SectionHeader.
+        let fm = make_file_matches(1);
+        let cm = vec![make_cm("src/a.rs", 10)];
+        let groups = build_groups_for_nav(&cm);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // Layout: [SectionHeader(FM), FileMatchRow(0),
+        //          SectionHeader(CM), GroupHeader(0), MatchRow{0,0}]
+        assert_eq!(model.rows.len(), 5);
+
+        // From MatchRow at idx=4, prev should skip GroupHeader(idx=3) and
+        // SectionHeader(CM)(idx=2), landing on FileMatchRow(idx=1)
+        let prev = model.prev_selectable_row(4);
+        assert_eq!(prev, Some(1), "should skip group header and section header backwards");
+    }
+
+    #[test]
+    fn test_i_nav_4_wrap_around() {
+        // I-NAV-4: Navigation wraps from last selectable to first selectable and vice versa.
+        let fm = make_file_matches(1);
+        let cm = vec![make_cm("src/a.rs", 10)];
+        let groups = build_groups_for_nav(&cm);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // Layout: [SectionHeader(FM), FileMatchRow(0),
+        //          SectionHeader(CM), GroupHeader(0), MatchRow{0,0}]
+
+        // Forward wrap: from MatchRow(4), next wraps to FileMatchRow(1)
+        let next = model.next_selectable_row(4);
+        assert_eq!(next, Some(1), "should wrap from last to first selectable");
+
+        // Backward wrap: from FileMatchRow(1), prev wraps to MatchRow(4)
+        let prev = model.prev_selectable_row(1);
+        assert_eq!(prev, Some(4), "should wrap from first to last selectable");
+    }
+
+    #[test]
+    fn test_i_nav_5_tab_section_jump() {
+        // I-NAV-5: first_selectable_in_content_section and first_selectable_in_file_section
+        // implement Tab/Shift+Tab section jumping.
+        let fm = make_file_matches(2);
+        let cm = vec![
+            make_cm("src/a.rs", 10),
+            make_cm("src/a.rs", 20),
+        ];
+        let groups = build_groups_for_nav(&cm);
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // Layout: [SectionHeader(FM), FileMatchRow(0), FileMatchRow(1),
+        //          SectionHeader(CM), GroupHeader(0), MatchRow{0,0}, MatchRow{0,1}]
+
+        // Tab: jump to first content match (should be MatchRow at idx=5)
+        let content_first = model.first_selectable_in_content_section();
+        assert_eq!(content_first, Some(5), "Tab should jump to first content match row");
+
+        // Shift+Tab: jump to first file match (should be FileMatchRow at idx=1)
+        let file_first = model.first_selectable_in_file_section();
+        assert_eq!(file_first, Some(1), "Shift+Tab should jump to first file match row");
+    }
+
+    #[test]
+    fn test_i_nav_6_empty_results() {
+        // I-NAV-6: Navigation on empty model returns None for all operations.
+        let fm: Vec<FileMatch> = vec![];
+        let groups: Vec<ContentGroup> = vec![];
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        assert!(model.rows.is_empty());
+        assert_eq!(model.next_selectable_row(0), None);
+        assert_eq!(model.prev_selectable_row(0), None);
+        assert_eq!(model.first_selectable_in_content_section(), None);
+        assert_eq!(model.first_selectable_in_file_section(), None);
+    }
+
+    #[test]
+    fn test_i_nav_7_only_headers_edge_case() {
+        // I-NAV-7: When only one section exists, the other section's jump returns None.
+        // rebuild() always pairs headers with data, so we test cross-section absence.
+
+        // File matches only -- no content section
+        let fm = make_file_matches(1);
+        let groups: Vec<ContentGroup> = vec![];
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        assert_eq!(model.first_selectable_in_content_section(), None,
+            "no content section -> None");
+
+        // Content matches only -- no file section
+        let fm_empty: Vec<FileMatch> = vec![];
+        let cm = vec![make_cm("src/a.rs", 1)];
+        let groups2 = build_groups_for_nav(&cm);
+        let model2 = FlatRowModel::rebuild(&fm_empty, &groups2, None);
+
+        assert_eq!(model2.first_selectable_in_file_section(), None,
+            "no file section -> None");
+    }
+
+    // -----------------------------------------------------------------------
+    // Row expansion integration tests (I-EXP-1 through I-EXP-5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_i_exp_1_selected_match_row_gets_expanded_height() {
+        // I-EXP-1: Selected MatchRow gets MATCH_ROW_EXPANDED (52.0) height.
+        let cm = vec![make_cm("src/a.rs", 10), make_cm("src/a.rs", 20)];
+        let groups = build_groups_for_nav(&cm);
+        let fm: Vec<FileMatch> = vec![];
+
+        // Layout: [SectionHeader(CM), GroupHeader(0), MatchRow{0,0}, MatchRow{0,1}]
+        // Select MatchRow{0,0} at idx=2
+        let model = FlatRowModel::rebuild(&fm, &groups, Some(2));
+
+        // Height of row 2 (selected): cum_heights[2] - cum_heights[1]
+        let h_selected = model.cum_heights[2] - model.cum_heights[1];
+        assert!(
+            (h_selected - MATCH_ROW_EXPANDED).abs() < f32::EPSILON,
+            "selected MatchRow should have expanded height (52.0), got {}",
+            h_selected
+        );
+
+        // Height of row 3 (not selected): cum_heights[3] - cum_heights[2]
+        let h_compact = model.cum_heights[3] - model.cum_heights[2];
+        assert!(
+            (h_compact - MATCH_ROW_COMPACT).abs() < f32::EPSILON,
+            "unselected MatchRow should have compact height (24.0), got {}",
+            h_compact
+        );
+    }
+
+    #[test]
+    fn test_i_exp_2_no_selection_all_compact() {
+        // I-EXP-2: Without selection, all MatchRows get compact height (24.0).
+        let cm = vec![
+            make_cm("src/a.rs", 10),
+            make_cm("src/a.rs", 20),
+            make_cm("src/a.rs", 30),
+        ];
+        let groups = build_groups_for_nav(&cm);
+        let fm: Vec<FileMatch> = vec![];
+        let model = FlatRowModel::rebuild(&fm, &groups, None);
+
+        // Layout: [SectionHeader(CM), GroupHeader(0), MatchRow{0,0}, MatchRow{0,1}, MatchRow{0,2}]
+        for idx in 2..5 {
+            let h = model.cum_heights[idx] - model.cum_heights[idx - 1];
+            assert!(
+                (h - MATCH_ROW_COMPACT).abs() < f32::EPSILON,
+                "row {} should have compact height, got {}",
+                idx, h
+            );
+        }
+    }
+
+    #[test]
+    fn test_i_exp_3_changing_selection_changes_heights() {
+        // I-EXP-3: Rebuilding with a different selected_row_idx changes which row is expanded.
+        let cm = vec![make_cm("src/a.rs", 10), make_cm("src/a.rs", 20)];
+        let groups = build_groups_for_nav(&cm);
+        let fm: Vec<FileMatch> = vec![];
+
+        // Select first MatchRow (idx=2)
+        let model_a = FlatRowModel::rebuild(&fm, &groups, Some(2));
+        // Select second MatchRow (idx=3)
+        let model_b = FlatRowModel::rebuild(&fm, &groups, Some(3));
+
+        // model_a: row 2 expanded, row 3 compact
+        let h_a2 = model_a.cum_heights[2] - model_a.cum_heights[1];
+        let h_a3 = model_a.cum_heights[3] - model_a.cum_heights[2];
+        assert!((h_a2 - MATCH_ROW_EXPANDED).abs() < f32::EPSILON);
+        assert!((h_a3 - MATCH_ROW_COMPACT).abs() < f32::EPSILON);
+
+        // model_b: row 2 compact, row 3 expanded
+        let h_b2 = model_b.cum_heights[2] - model_b.cum_heights[1];
+        let h_b3 = model_b.cum_heights[3] - model_b.cum_heights[2];
+        assert!((h_b2 - MATCH_ROW_COMPACT).abs() < f32::EPSILON);
+        assert!((h_b3 - MATCH_ROW_EXPANDED).abs() < f32::EPSILON);
+
+        // Total heights should be equal (same count of expanded rows)
+        assert!(
+            (model_a.total_height - model_b.total_height).abs() < f32::EPSILON,
+            "total height should be same when same count of expanded rows"
+        );
+    }
+
+    #[test]
+    fn test_i_exp_4_total_height_with_expansion() {
+        // I-EXP-4: Total height correctly accounts for expanded row.
+        let cm = vec![make_cm("src/a.rs", 10)];
+        let groups = build_groups_for_nav(&cm);
+        let fm: Vec<FileMatch> = vec![];
+
+        // Layout: [SectionHeader(CM)=24, GroupHeader(0)=28, MatchRow{0,0}]
+        let model_compact = FlatRowModel::rebuild(&fm, &groups, None);
+        let model_expanded = FlatRowModel::rebuild(&fm, &groups, Some(2));
+
+        let expected_compact = SECTION_HEADER_HEIGHT + GROUP_HEADER_HEIGHT + MATCH_ROW_COMPACT;
+        let expected_expanded = SECTION_HEADER_HEIGHT + GROUP_HEADER_HEIGHT + MATCH_ROW_EXPANDED;
+
+        assert!(
+            (model_compact.total_height - expected_compact).abs() < f32::EPSILON,
+            "compact total: expected {}, got {}",
+            expected_compact, model_compact.total_height
+        );
+        assert!(
+            (model_expanded.total_height - expected_expanded).abs() < f32::EPSILON,
+            "expanded total: expected {}, got {}",
+            expected_expanded, model_expanded.total_height
+        );
+
+        // Difference should be exactly MATCH_ROW_EXPANDED - MATCH_ROW_COMPACT = 28.0
+        let diff = model_expanded.total_height - model_compact.total_height;
+        assert!(
+            (diff - (MATCH_ROW_EXPANDED - MATCH_ROW_COMPACT)).abs() < f32::EPSILON,
+            "height difference should be 28.0, got {}",
+            diff
+        );
+    }
+
+    #[test]
+    fn test_i_exp_5_file_match_row_always_compact() {
+        // I-EXP-5: FileMatchRow always uses MATCH_ROW_COMPACT even when selected.
+        let fm = make_file_matches(2);
+        let groups: Vec<ContentGroup> = vec![];
+
+        // Layout: [SectionHeader(FM), FileMatchRow(0), FileMatchRow(1)]
+        // Select FileMatchRow(0) at idx=1
+        let model = FlatRowModel::rebuild(&fm, &groups, Some(1));
+
+        let h_selected = model.cum_heights[1] - model.cum_heights[0];
+        assert!(
+            (h_selected - MATCH_ROW_COMPACT).abs() < f32::EPSILON,
+            "FileMatchRow should always be compact (24.0) even when selected, got {}",
+            h_selected
+        );
+    }
 }

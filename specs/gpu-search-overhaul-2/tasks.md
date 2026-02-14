@@ -295,7 +295,7 @@ Focus: Comprehensive unit tests, integration tests, property tests, and visual s
   - _Requirements: AC-1.1, AC-1.2, AC-1.3_
   - _Design: Component A_
 
-- [ ] 3.8 Integration tests for navigation and row expansion
+- [x] 3.8 Integration tests for navigation and row expansion
   - **Do**:
     1. In `results_list.rs` tests module, add I-NAV-1 through I-NAV-7 for header-skipping navigation.
     2. Add I-EXP-1 through I-EXP-5 for selected row expansion/collapse and height changes.
