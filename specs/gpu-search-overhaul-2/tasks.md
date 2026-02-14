@@ -144,7 +144,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-4, FR-17_
   - _Design: Component B_
 
-- [ ] 2.5 Add RowKind enum, FlatRowModel, and rebuild logic
+- [x] 2.5 Add RowKind enum, FlatRowModel, and rebuild logic
   - **Do**:
     1. In `src/ui/results_list.rs`, add `RowKind` enum: `SectionHeader(SectionType)`, `FileMatchRow(usize)`, `GroupHeader(usize)`, `MatchRow { group_idx: usize, local_idx: usize }`.
     2. Add `SectionType` enum: `FileMatches`, `ContentMatches`.

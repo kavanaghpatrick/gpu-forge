@@ -35,6 +35,190 @@ pub struct ContentGroup {
     pub match_indices: Vec<usize>,
 }
 
+// ---------------------------------------------------------------------------
+// Row model types for grouped virtual scroll
+// ---------------------------------------------------------------------------
+
+/// Section type for top-level headers in the results list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionType {
+    FileMatches,
+    ContentMatches,
+}
+
+/// A single row in the flattened results list.
+///
+/// The flat row model converts the hierarchical (sections -> groups -> matches)
+/// structure into a linear sequence of rows, each with a known height.
+/// This enables efficient virtual scroll via prefix-sum binary search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// Top-level section header ("FILENAME MATCHES", "CONTENT MATCHES").
+    SectionHeader(SectionType),
+    /// A file match row, indexed into `file_matches`.
+    FileMatchRow(usize),
+    /// A content group header, indexed into `content_groups`.
+    GroupHeader(usize),
+    /// A content match row within a group.
+    MatchRow {
+        /// Index into `content_groups`.
+        group_idx: usize,
+        /// Index within the group's `match_indices` vec.
+        local_idx: usize,
+    },
+}
+
+/// Height constants for the grouped layout (in logical pixels).
+pub const SECTION_HEADER_HEIGHT: f32 = 24.0;
+pub const GROUP_HEADER_HEIGHT: f32 = 28.0;
+pub const MATCH_ROW_COMPACT: f32 = 24.0;
+pub const MATCH_ROW_EXPANDED: f32 = 52.0;
+
+/// A flattened representation of the grouped results list.
+///
+/// Rows are laid out linearly with variable heights. `cum_heights[i]` stores
+/// the cumulative height up to (and including) row `i`, enabling O(log n)
+/// viewport-to-row lookup via `partition_point`.
+#[derive(Debug, Clone)]
+pub struct FlatRowModel {
+    /// The ordered sequence of rows.
+    pub rows: Vec<RowKind>,
+    /// Cumulative heights: `cum_heights[i]` = sum of heights for rows 0..=i.
+    pub cum_heights: Vec<f32>,
+    /// Total height of all rows combined.
+    pub total_height: f32,
+}
+
+impl Default for FlatRowModel {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            cum_heights: Vec::new(),
+            total_height: 0.0,
+        }
+    }
+}
+
+impl FlatRowModel {
+    /// Build the flat row model from file_matches and content_groups.
+    ///
+    /// `selected_row_idx` is the index in this flat model (not `selected_index`)
+    /// of the currently selected row. Selected `MatchRow` entries get
+    /// `MATCH_ROW_EXPANDED` height; all others get `MATCH_ROW_COMPACT`.
+    pub fn rebuild(
+        file_matches: &[FileMatch],
+        content_groups: &[ContentGroup],
+        selected_row_idx: Option<usize>,
+    ) -> Self {
+        let mut rows = Vec::new();
+        let mut cum_heights = Vec::new();
+        let mut running_height: f32 = 0.0;
+
+        // --- File matches section ---
+        if !file_matches.is_empty() {
+            rows.push(RowKind::SectionHeader(SectionType::FileMatches));
+            running_height += SECTION_HEADER_HEIGHT;
+            cum_heights.push(running_height);
+
+            for i in 0..file_matches.len() {
+                rows.push(RowKind::FileMatchRow(i));
+                // FileMatchRow always uses compact height (no expanded state)
+                running_height += MATCH_ROW_COMPACT;
+                cum_heights.push(running_height);
+            }
+        }
+
+        // --- Content matches section ---
+        if !content_groups.is_empty() {
+            rows.push(RowKind::SectionHeader(SectionType::ContentMatches));
+            running_height += SECTION_HEADER_HEIGHT;
+            cum_heights.push(running_height);
+
+            for (g_idx, group) in content_groups.iter().enumerate() {
+                rows.push(RowKind::GroupHeader(g_idx));
+                running_height += GROUP_HEADER_HEIGHT;
+                cum_heights.push(running_height);
+
+                for local_idx in 0..group.match_indices.len() {
+                    rows.push(RowKind::MatchRow {
+                        group_idx: g_idx,
+                        local_idx,
+                    });
+                    let row_idx = rows.len() - 1;
+                    let height = if selected_row_idx == Some(row_idx) {
+                        MATCH_ROW_EXPANDED
+                    } else {
+                        MATCH_ROW_COMPACT
+                    };
+                    running_height += height;
+                    cum_heights.push(running_height);
+                }
+            }
+        }
+
+        let total_height = running_height;
+        Self {
+            rows,
+            cum_heights,
+            total_height,
+        }
+    }
+
+    /// Find the index of the first row whose bottom edge is below `viewport_top`.
+    ///
+    /// Uses binary search on the prefix-sum `cum_heights` array for O(log n).
+    /// Returns 0 if the viewport is at or above the top.
+    pub fn first_visible_row(&self, viewport_top: f32) -> usize {
+        if self.cum_heights.is_empty() {
+            return 0;
+        }
+        // partition_point returns the first index where cum_heights[i] > viewport_top
+        self.cum_heights
+            .partition_point(|&h| h <= viewport_top)
+    }
+
+    /// Returns true if the row at `idx` is selectable (FileMatchRow or MatchRow).
+    /// Section headers and group headers are not selectable.
+    pub fn is_selectable(&self, idx: usize) -> bool {
+        matches!(
+            self.rows.get(idx),
+            Some(RowKind::FileMatchRow(_)) | Some(RowKind::MatchRow { .. })
+        )
+    }
+
+    /// Find the next selectable row after `from`, wrapping around.
+    /// Returns `None` if there are no selectable rows.
+    pub fn next_selectable_row(&self, from: usize) -> Option<usize> {
+        let len = self.rows.len();
+        if len == 0 {
+            return None;
+        }
+        for offset in 1..=len {
+            let idx = (from + offset) % len;
+            if self.is_selectable(idx) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Find the previous selectable row before `from`, wrapping around.
+    /// Returns `None` if there are no selectable rows.
+    pub fn prev_selectable_row(&self, from: usize) -> Option<usize> {
+        let len = self.rows.len();
+        if len == 0 {
+            return None;
+        }
+        for offset in 1..=len {
+            let idx = (from + len - offset) % len;
+            if self.is_selectable(idx) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+}
+
 /// Height of a single filename match row in pixels.
 const FILE_ROW_HEIGHT: f32 = 28.0;
 /// Height of a single content match row in pixels (header + up to 3 context lines).
