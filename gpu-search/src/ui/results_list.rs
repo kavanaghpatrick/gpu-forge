@@ -13,6 +13,7 @@ use std::path::Path;
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Vec2};
 
 use crate::search::types::{ContentMatch, FileMatch};
+use super::path_utils::abbreviate_path;
 use super::theme;
 
 /// Height of a single filename match row in pixels.
@@ -122,6 +123,7 @@ impl ResultsList {
         file_matches: &[FileMatch],
         content_matches: &[ContentMatch],
         query: &str,
+        search_root: &Path,
     ) {
         let total = Self::total_items(file_matches, content_matches);
         if total == 0 {
@@ -147,7 +149,7 @@ impl ResultsList {
                     );
                     ui.add_space(2.0);
 
-                    self.show_file_matches(ui, file_matches, query);
+                    self.show_file_matches(ui, file_matches, query, search_root);
                 }
 
                 // --- CONTENT MATCHES section ---
@@ -175,6 +177,7 @@ impl ResultsList {
         ui: &mut egui::Ui,
         file_matches: &[FileMatch],
         query: &str,
+        search_root: &Path,
     ) {
         let total_rows = file_matches.len();
         // Use show_rows for virtual scrolling -- only renders visible rows
@@ -191,7 +194,7 @@ impl ResultsList {
                         ui.scroll_to_cursor(Some(egui::Align::Center));
                     }
 
-                    let response = self.render_file_row(ui, fm, query, is_selected);
+                    let response = self.render_file_row(ui, fm, query, is_selected, search_root);
                     if response.clicked() {
                         self.selected_index = row;
                     }
@@ -237,6 +240,7 @@ impl ResultsList {
         fm: &FileMatch,
         query: &str,
         is_selected: bool,
+        search_root: &Path,
     ) -> egui::Response {
         let desired_size = Vec2::new(ui.available_width(), FILE_ROW_HEIGHT);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
@@ -262,12 +266,8 @@ impl ResultsList {
                 painter.rect_filled(border_rect, 1.0, theme::ACCENT);
             }
 
-            // Render: dimmed directory + highlighted filename
-            let path_str = fm.path.display().to_string();
-            let (dir_part, name_part) = match path_str.rfind('/') {
-                Some(idx) => (&path_str[..=idx], &path_str[idx + 1..]),
-                None => ("", path_str.as_str()),
-            };
+            // Render: abbreviated dimmed directory + highlighted filename
+            let (dir_part, name_part) = abbreviate_path(&fm.path, search_root);
 
             let text_pos = rect.left_top() + Vec2::new(
                 if is_selected { ACCENT_BORDER_WIDTH + 8.0 } else { 8.0 },
@@ -276,7 +276,7 @@ impl ResultsList {
 
             // Draw directory portion (dimmed, no highlighting)
             let dir_galley = painter.layout_no_wrap(
-                dir_part.to_string(),
+                dir_part,
                 FontId::proportional(14.0),
                 theme::TEXT_MUTED,
             );
@@ -288,7 +288,7 @@ impl ResultsList {
             render_highlighted_text(
                 &painter,
                 name_pos,
-                name_part,
+                &name_part,
                 query,
                 theme::TEXT_PRIMARY,
                 theme::ACCENT,

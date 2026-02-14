@@ -5,6 +5,7 @@ pub mod app;
 pub mod filters;
 pub mod highlight;
 pub mod keybinds;
+pub mod path_utils;
 pub mod results_list;
 pub mod search_bar;
 pub mod status_bar;

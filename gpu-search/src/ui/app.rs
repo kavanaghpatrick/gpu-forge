@@ -389,6 +389,7 @@ impl eframe::App for GpuSearchApp {
                         &self.file_matches,
                         &self.content_matches,
                         &self.search_input,
+                        &self.search_root,
                     );
                 }
 

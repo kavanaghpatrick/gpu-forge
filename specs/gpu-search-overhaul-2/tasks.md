@@ -89,7 +89,7 @@ Focus: Fix the P0 stale results bug and prove the generation-stamped architectur
 
 Focus: Path abbreviation, grouped results, match highlighting, status bar improvements. This is the core layout rewrite.
 
-- [ ] 2.1 Create path_utils.rs module with abbreviate_path()
+- [x] 2.1 Create path_utils.rs module with abbreviate_path()
   - **Do**:
     1. Create `gpu-search/src/ui/path_utils.rs` with: `pub fn abbreviate_path(path: &Path, search_root: &Path) -> (String, String)` returning (dir_display, filename).
     2. Implementation: (a) try `path.parent().strip_prefix(search_root)` for relative, (b) try `$HOME` substitution via `std::env::var_os("HOME")` cached in `OnceLock<Option<PathBuf>>`, (c) middle-truncate if dir > 50 chars.

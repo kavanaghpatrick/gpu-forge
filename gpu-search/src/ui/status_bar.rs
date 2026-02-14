@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use super::path_utils::abbreviate_root;
 use super::theme;
 
 /// Status bar displaying search statistics.
@@ -94,10 +95,10 @@ impl StatusBar {
             // Separator
             ui.colored_label(theme::BORDER, "|");
 
-            // Search root (truncated if too long)
+            // Search root (with ~ substitution, truncated if too long)
             ui.colored_label(theme::TEXT_MUTED, "Root:");
-            let root_str = self.search_root.display().to_string();
-            let display_root = truncate_path(&root_str, 40);
+            let abbreviated = abbreviate_root(&self.search_root);
+            let display_root = truncate_path(&abbreviated, 40);
             ui.colored_label(theme::TEXT_PRIMARY, display_root);
 
             // Active filters (only show if > 0)
@@ -118,8 +119,8 @@ impl StatusBar {
 
     /// Format the status bar as a string (for testing).
     pub fn format_status(&self) -> String {
-        let root_str = self.search_root.display().to_string();
-        let display_root = truncate_path(&root_str, 40);
+        let abbreviated = abbreviate_root(&self.search_root);
+        let display_root = truncate_path(&abbreviated, 40);
         let mut status = format!(
             "{} matches in {}ms | {}",
             self.match_count,
