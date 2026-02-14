@@ -4,7 +4,7 @@
 //! filter count in a horizontal bar at the bottom of the search panel.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 
@@ -13,7 +13,8 @@ use super::theme;
 
 /// Status bar displaying search statistics.
 ///
-/// Shows: "N matches in Xms | /path/to/root | 2 filters"
+/// When searching: "Searching... | N matches | X.Xs | ~root | 2 filters"
+/// When idle:      "N matches in X.Xms | ~root | 2 filters"
 /// Uses TEXT_MUTED for labels and TEXT_PRIMARY for values.
 pub struct StatusBar {
     /// Number of matches found.
@@ -24,6 +25,10 @@ pub struct StatusBar {
     pub search_root: PathBuf,
     /// Number of active filters.
     pub active_filter_count: usize,
+    /// Whether a search is currently in progress.
+    pub is_searching: bool,
+    /// When the current search started (for live elapsed display).
+    pub search_start: Option<Instant>,
 }
 
 impl Default for StatusBar {
@@ -33,6 +38,8 @@ impl Default for StatusBar {
             elapsed: Duration::ZERO,
             search_root: PathBuf::from("."),
             active_filter_count: 0,
+            is_searching: false,
+            search_start: None,
         }
     }
 }
@@ -50,6 +57,8 @@ impl StatusBar {
             elapsed,
             search_root: search_root.into(),
             active_filter_count,
+            is_searching: false,
+            search_start: None,
         }
     }
 
@@ -66,6 +75,9 @@ impl StatusBar {
     }
 
     /// Render the status bar as a horizontal row.
+    ///
+    /// When searching: "Searching... | N matches | X.Xs | ~root | filters"
+    /// When idle:      "N matches in X.Xms | ~root | filters"
     pub fn render(&self, ui: &mut egui::Ui) {
         let bar_rect = ui.available_rect_before_wrap();
         // Draw separator line at top of status bar
@@ -78,25 +90,46 @@ impl StatusBar {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
 
-            // Match count
-            ui.colored_label(theme::TEXT_MUTED, "Matches:");
-            ui.colored_label(
-                theme::TEXT_PRIMARY,
-                format!("{}", self.match_count),
-            );
+            if self.is_searching {
+                // Live searching state
+                ui.colored_label(theme::ACCENT, "Searching...");
+                ui.colored_label(theme::BORDER, "|");
 
-            // Elapsed time
-            ui.colored_label(theme::TEXT_MUTED, "in");
-            ui.colored_label(
-                theme::TEXT_PRIMARY,
-                format!("{}ms", self.elapsed.as_millis()),
-            );
+                // Live match count
+                ui.colored_label(
+                    theme::TEXT_PRIMARY,
+                    format!("{}", self.match_count),
+                );
+                ui.colored_label(theme::TEXT_MUTED, "matches");
+                ui.colored_label(theme::BORDER, "|");
+
+                // Live elapsed time from search_start
+                let live_elapsed = self
+                    .search_start
+                    .map(|start| start.elapsed())
+                    .unwrap_or(Duration::ZERO);
+                let secs = live_elapsed.as_secs_f64();
+                ui.colored_label(
+                    theme::TEXT_PRIMARY,
+                    format!("{:.1}s", secs),
+                );
+            } else {
+                // Final results state
+                ui.colored_label(
+                    theme::TEXT_PRIMARY,
+                    format!("{}", self.match_count),
+                );
+                ui.colored_label(theme::TEXT_MUTED, "matches in");
+                ui.colored_label(
+                    theme::TEXT_PRIMARY,
+                    format!("{:.1}ms", self.elapsed.as_secs_f64() * 1000.0),
+                );
+            }
 
             // Separator
             ui.colored_label(theme::BORDER, "|");
 
             // Search root (with ~ substitution, truncated if too long)
-            ui.colored_label(theme::TEXT_MUTED, "Root:");
             let abbreviated = abbreviate_root(&self.search_root);
             let display_root = truncate_path(&abbreviated, 40);
             ui.colored_label(theme::TEXT_PRIMARY, display_root);
@@ -121,12 +154,25 @@ impl StatusBar {
     pub fn format_status(&self) -> String {
         let abbreviated = abbreviate_root(&self.search_root);
         let display_root = truncate_path(&abbreviated, 40);
-        let mut status = format!(
-            "{} matches in {}ms | {}",
-            self.match_count,
-            self.elapsed.as_millis(),
-            display_root,
-        );
+        let mut status = if self.is_searching {
+            let live_elapsed = self
+                .search_start
+                .map(|start| start.elapsed())
+                .unwrap_or(Duration::ZERO);
+            format!(
+                "Searching... | {} matches | {:.1}s | {}",
+                self.match_count,
+                live_elapsed.as_secs_f64(),
+                display_root,
+            )
+        } else {
+            format!(
+                "{} matches in {:.1}ms | {}",
+                self.match_count,
+                self.elapsed.as_secs_f64() * 1000.0,
+                display_root,
+            )
+        };
         if self.active_filter_count > 0 {
             status.push_str(&format!(
                 " | {} filter{}",
@@ -158,6 +204,8 @@ mod tests {
         assert_eq!(bar.elapsed, Duration::ZERO);
         assert_eq!(bar.search_root, PathBuf::from("."));
         assert_eq!(bar.active_filter_count, 0);
+        assert!(!bar.is_searching);
+        assert!(bar.search_start.is_none());
     }
 
     #[test]
@@ -185,7 +233,7 @@ mod tests {
         let bar = StatusBar::new(256, Duration::from_millis(12), "/src", 0);
         let status = bar.format_status();
         assert!(status.contains("256 matches"));
-        assert!(status.contains("12ms"));
+        assert!(status.contains("12.0ms"));
         assert!(status.contains("/src"));
         assert!(!status.contains("filter"));
     }
@@ -195,7 +243,7 @@ mod tests {
         let bar = StatusBar::new(42, Duration::from_millis(5), "/project", 2);
         let status = bar.format_status();
         assert!(status.contains("42 matches"));
-        assert!(status.contains("5ms"));
+        assert!(status.contains("5.0ms"));
         assert!(status.contains("/project"));
         assert!(status.contains("2 filters"));
     }
@@ -232,7 +280,7 @@ mod tests {
         let bar = StatusBar::new(0, Duration::from_millis(1), ".", 0);
         let status = bar.format_status();
         assert!(status.contains("0 matches"));
-        assert!(status.contains("1ms"));
+        assert!(status.contains("1.0ms"));
     }
 
     #[test]
@@ -240,7 +288,27 @@ mod tests {
         let bar = StatusBar::new(10_000, Duration::from_millis(2500), "/big/project", 5);
         let status = bar.format_status();
         assert!(status.contains("10000 matches"));
-        assert!(status.contains("2500ms"));
+        assert!(status.contains("2500.0ms"));
         assert!(status.contains("5 filters"));
+    }
+
+    #[test]
+    fn test_status_bar_searching_state() {
+        let mut bar = StatusBar::new(50, Duration::ZERO, "/project", 0);
+        bar.is_searching = true;
+        bar.search_start = Some(Instant::now());
+        let status = bar.format_status();
+        assert!(status.contains("Searching..."));
+        assert!(status.contains("50 matches"));
+        assert!(status.contains("/project"));
+    }
+
+    #[test]
+    fn test_status_bar_searching_without_start() {
+        let mut bar = StatusBar::default();
+        bar.is_searching = true;
+        let status = bar.format_status();
+        assert!(status.contains("Searching..."));
+        assert!(status.contains("0.0s"));
     }
 }

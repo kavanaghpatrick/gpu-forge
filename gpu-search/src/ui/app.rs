@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
@@ -207,6 +207,8 @@ impl GpuSearchApp {
             self.clear_groups();
             self.flat_row_model = FlatRowModel::default();
             self.is_searching = false;
+            self.status_bar.is_searching = false;
+            self.status_bar.search_start = None;
             self.results_list.selected_index = 0;
             self.status_bar.update(0, Duration::ZERO, self.filter_bar.count());
             return;
@@ -222,6 +224,8 @@ impl GpuSearchApp {
         self.current_cancel_handle = Some(handle);
 
         self.is_searching = true;
+        self.status_bar.is_searching = true;
+        self.status_bar.search_start = Some(Instant::now());
         self.file_matches.clear();
         self.content_matches.clear();
         self.clear_groups();
@@ -271,6 +275,8 @@ impl GpuSearchApp {
                     self.rebuild_flat_model();
                     self.is_searching = false;
                     self.last_elapsed = response.elapsed;
+                    self.status_bar.is_searching = false;
+                    self.status_bar.search_start = None;
                     self.status_bar.update(
                         self.file_matches.len() + self.content_matches.len(),
                         response.elapsed,

@@ -180,7 +180,7 @@ Focus: Path abbreviation, grouped results, match highlighting, status bar improv
   - _Requirements: FR-5, FR-6, FR-8, FR-9, FR-13, FR-16_
   - _Design: Components B, C, E_
 
-- [ ] 2.7 Update status bar with searching state and live count
+- [x] 2.7 Update status bar with searching state and live count
   - **Do**:
     1. In `src/ui/status_bar.rs`, add `pub is_searching: bool` and `pub search_start: Option<Instant>` fields.
     2. Update render: when `is_searching`, show "Searching... | N matches | X.Xs | ~root | filters". When not searching, show "N matches in X.Xms | ~root | filters".
