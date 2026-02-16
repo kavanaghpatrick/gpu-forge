@@ -30,7 +30,7 @@ Focus: Native Q6_K matvec kernel + integration. Proves Q6_K works, eliminates 40
   - _Requirements: FR-2_
   - _Design: Component 1_
 
-- [ ] 1.3 Add lm_head_q6k field to GpuWeightStore
+- [x] 1.3 Add lm_head_q6k field to GpuWeightStore
   - **Do**: In `gpu_weight_store.rs`: (1) Add `lm_head_q6k: Option<Retained<ProtocolObject<dyn MTLBuffer>>>` field. (2) Add `lm_head_q6k()` accessor returning `Option<&ProtocolObject<dyn MTLBuffer>>`. (3) In `from_gguf()`, when `output.weight` is Q6_K, create raw Q6_K buffer via `make_weight_buffer()` and store in `lm_head_q6k`. Keep existing F32 dequant path for lm_head fallback. Update struct constructor.
   - **Files**: `crates/metal-attention/src/gpu_weight_store.rs`
   - **Done when**: `cargo build -p metal-attention` succeeds; lm_head_q6k populated when loading Mistral-7B
@@ -39,7 +39,7 @@ Focus: Native Q6_K matvec kernel + integration. Proves Q6_K works, eliminates 40
   - _Requirements: FR-3_
   - _Design: Component 1_
 
-- [ ] 1.4 Add encode_matvec_q6_k to GpuForwardPass
+- [x] 1.4 Add encode_matvec_q6_k to GpuForwardPass
   - **Do**: In `gpu_forward_pass.rs`: (1) Add `encode_matvec_q6_k()` method following `encode_matvec_q8_0()` pattern -- set_buffer for weight/input/output/out_dim/in_dim, dispatch with threadgroups=ceil(out_dim/8). (2) Add `encode_multi_token_matvec_q6_k()` for batched variant with batch_size param. (3) Add PSO prewarm for `matvec_q6_k` and `multi_token_matvec_q6_k` in `from_gguf()`. (4) Update lm_head dispatch chain in `forward_token()`: add Q6_K check before Q8_0 check. (5) Update lm_head dispatch in `forward_prompt()` similarly.
   - **Files**: `crates/metal-attention/src/gpu_forward_pass.rs`
   - **Done when**: `cargo build -p metal-attention` succeeds; forward_token with Mistral-7B uses Q6_K kernel (visible in GPU_DEBUG=1 output)
@@ -48,7 +48,7 @@ Focus: Native Q6_K matvec kernel + integration. Proves Q6_K works, eliminates 40
   - _Requirements: FR-7_
   - _Design: Component 1_
 
-- [ ] 1.5 Q6_K kernel correctness test
+- [x] 1.5 Q6_K kernel correctness test
   - **Do**: Add test `test_matvec_q6_k_gpu_vs_cpu` in `tests/gpu_correctness.rs`. Create synthetic Q6_K blocks with known values, run through GPU kernel, compare against Rust `dequantize_q6_k_to_f32` + F32 dot product. Test dimensions: (256, 256) small case and (4096, 32000) Mistral lm_head dims. Tolerance: atol=5e-2 for matvec output (quantization error).
   - **Files**: `crates/metal-attention/tests/gpu_correctness.rs`
   - **Done when**: Test passes with `cargo test --test gpu_correctness -- test_matvec_q6_k --test-threads=1`
