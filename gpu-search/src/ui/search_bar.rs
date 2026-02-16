@@ -157,6 +157,18 @@ impl SearchBar {
         self.pending_search
     }
 
+    /// Suppress the next debounce trigger after programmatic query changes.
+    ///
+    /// When code sets `self.query` directly (e.g., auto-search from CLI args),
+    /// `show()` would detect `query != prev_query` and set a 100ms debounce
+    /// timer, causing a duplicate dispatch. Call this after setting `query`
+    /// to sync `prev_query` and prevent that.
+    pub fn suppress_next_debounce(&mut self) {
+        self.prev_query = self.query.clone();
+        self.pending_search = false;
+        self.last_change = None;
+    }
+
     /// Clear the search bar state.
     pub fn clear(&mut self) {
         self.query.clear();

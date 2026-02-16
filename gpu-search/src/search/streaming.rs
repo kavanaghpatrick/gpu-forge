@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use objc2::rc::autoreleasepool;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLDevice;
 
@@ -239,6 +240,14 @@ impl StreamingSearchEngine {
         self.chunks.len()
     }
 
+    /// Get mutable access to the inner ContentSearchEngine.
+    ///
+    /// Used by the content store fast-path in SearchOrchestrator to call
+    /// `search_with_buffer()` directly against in-memory content.
+    pub fn content_engine_mut(&mut self) -> &mut ContentSearchEngine {
+        &mut self.search_engine
+    }
+
     /// Reset all chunks for a new search.
     fn reset_chunks(&mut self) {
         for chunk in &mut self.chunks {
@@ -369,56 +378,69 @@ impl StreamingSearchEngine {
             let search_start = Instant::now();
 
             for sub_batch in file_contents.chunks(SUB_BATCH_SIZE) {
-                self.search_engine.reset();
+                // Wrap each sub-batch in autoreleasepool to drain Metal objects
+                // (command buffers, encoders) created during GPU dispatch.
+                autoreleasepool(|_| {
+                    self.search_engine.reset();
 
-                // Track mapping: engine_file_index -> (chunk_local_idx, start_chunk_offset)
-                // start_chunk_offset = engine chunk index where this file's data begins,
-                // used to convert engine-global byte_offset to file-relative byte_offset.
-                let mut loaded_files: Vec<(u32, usize, usize)> = Vec::new();
+                    // Track mapping: engine_file_index -> (chunk_local_idx, start_chunk_offset)
+                    // start_chunk_offset = engine chunk index where this file's data begins,
+                    // used to convert engine-global byte_offset to file-relative byte_offset.
+                    let mut loaded_files: Vec<(u32, usize, usize)> = Vec::new();
 
-                for (local_idx, content) in sub_batch {
-                    let file_index = loaded_files.len() as u32;
-                    let start_chunk = self.search_engine.chunk_count();
-                    let chunks_loaded = self.search_engine.load_content(content, file_index);
-                    if chunks_loaded > 0 {
-                        loaded_files.push((file_index, *local_idx, start_chunk));
-                        profile.bytes_processed += content.len() as u64;
-                        profile.files_processed += 1;
-                    }
-                }
-
-                if loaded_files.is_empty() {
-                    continue;
-                }
-
-                // Dispatch GPU search for this sub-batch
-                let gpu_results = self.search_engine.search(pattern, options);
-
-                // Map results back to file paths
-                for m in &gpu_results {
-                    let engine_file_idx = m.file_index;
-
-                    let file_info = loaded_files
-                        .iter()
-                        .find(|(fi, _, _)| *fi as usize == engine_file_idx);
-
-                    if let Some((_, local_idx, start_chunk)) = file_info {
-                        if let Some(path) = chunk.file_paths.get(*local_idx) {
-                            // Convert engine-global byte_offset to file-relative:
-                            // byte_offset from GPU = global_chunk_index * 4096 + context_start
-                            // file-relative = byte_offset - (start_chunk * 4096)
-                            let file_byte_offset = m.byte_offset
-                                .saturating_sub((*start_chunk as u32) * 4096);
-                            all_results.push(StreamingMatch {
-                                file_path: path.clone(),
-                                line_number: m.line_number,
-                                column: m.column,
-                                byte_offset: file_byte_offset,
-                                match_length: m.match_length,
-                            });
+                    for (local_idx, content) in sub_batch {
+                        let file_index = loaded_files.len() as u32;
+                        let start_chunk = self.search_engine.chunk_count();
+                        let chunks_loaded = self.search_engine.load_content(content, file_index);
+                        if chunks_loaded > 0 {
+                            loaded_files.push((file_index, *local_idx, start_chunk));
+                            profile.bytes_processed += content.len() as u64;
+                            profile.files_processed += 1;
                         }
                     }
-                }
+
+                    if loaded_files.is_empty() {
+                        return;
+                    }
+
+                    // Dispatch GPU search for this sub-batch
+                    let gpu_results = self.search_engine.search(pattern, options);
+
+                    // Map results back to file paths
+                    for m in &gpu_results {
+                        let engine_file_idx = m.file_index;
+
+                        let file_info = loaded_files
+                            .iter()
+                            .find(|(fi, _, _)| *fi as usize == engine_file_idx);
+
+                        if let Some((_, local_idx, start_chunk)) = file_info {
+                            if let Some(path) = chunk.file_paths.get(*local_idx) {
+                                // Convert engine-global byte_offset to file-relative:
+                                // byte_offset from GPU = global_chunk_index * 4096 + context_start
+                                // file-relative = byte_offset - (start_chunk * 4096)
+                                let file_byte_offset = m.byte_offset
+                                    .saturating_sub((*start_chunk as u32) * 4096);
+
+                                // Validate: engine byte_offset should be >= start_chunk * 4096.
+                                // If saturating_sub would have underflowed, the byte_offset chain is broken.
+                                debug_assert!(
+                                    m.byte_offset >= (*start_chunk as u32) * 4096,
+                                    "byte_offset {} < start_chunk offset {} (start_chunk={}): file_byte_offset would underflow",
+                                    m.byte_offset, (*start_chunk as u32) * 4096, start_chunk,
+                                );
+
+                                all_results.push(StreamingMatch {
+                                    file_path: path.clone(),
+                                    line_number: m.line_number,
+                                    column: m.column,
+                                    byte_offset: file_byte_offset,
+                                    match_length: m.match_length,
+                                });
+                            }
+                        }
+                    }
+                });
             }
             profile.search_us += search_start.elapsed().as_micros() as u64;
 

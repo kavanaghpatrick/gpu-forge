@@ -1,25 +1,31 @@
 //! Binary Index Cache with mmap-based Loading
 //!
 //! Provides fast index persistence and loading using memory-mapped I/O.
-//! Wraps the binary format from `shared_index.rs` (64B header + packed GpuPathEntry array)
-//! but loads via mmap instead of `fs::read()` for zero-copy access.
+//! Loads GSIX v2 files (16KB page-aligned header + packed GpuPathEntry array)
+//! via mmap for zero-copy access suitable for Metal bytesNoCopy GPU dispatch.
 //!
-//! # Binary Format
+//! # Binary Format (v2)
 //!
 //! ```text
-//! [IndexHeader: 64 bytes]   - magic "GSIX", version, entry_count, root_hash, timestamp
+//! [GsixHeaderV2: 16384 bytes]  - magic "GSIX", version=2, entry_count, root_hash, CRC32, etc.
 //! [GpuPathEntry[0]: 256 B]
 //! [GpuPathEntry[1]: 256 B]
 //! ...
 //! [GpuPathEntry[N-1]: 256 B]
 //! ```
 //!
+//! # Version Handling
+//!
+//! - v2 files are loaded normally via mmap with zero-copy entry access
+//! - v1 files (64B header) are detected and rejected with `CacheError::InvalidFormat`,
+//!   signaling the caller to rebuild the index in v2 format
+//!
 //! # Loading Path
 //!
 //! Uses `MmapBuffer::from_file()` to memory-map the index file, then validates
-//! the header and reinterprets the entry region as `&[GpuPathEntry]` with zero copies.
-//! This is significantly faster than `SharedIndexManager::load()` which reads the
-//! entire file into a Vec and copies each entry individually.
+//! the v2 header (including CRC32 checksum) and reinterprets the entry region
+//! as `&[GpuPathEntry]` with zero copies. The 16KB header ensures the entry
+//! region starts at a page boundary on Apple Silicon (16KB pages).
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -27,20 +33,8 @@ use std::path::{Path, PathBuf};
 
 use crate::gpu::types::GpuPathEntry;
 use crate::index::gpu_index::GpuResidentIndex;
+use crate::index::gsix_v2::{self, GsixHeaderV2, HEADER_SIZE_V2};
 use crate::io::mmap::MmapBuffer;
-
-// ============================================================================
-// Constants (must match shared_index.rs)
-// ============================================================================
-
-/// Magic bytes: "GSIX" (Gpu Search IndeX) in little-endian
-const INDEX_MAGIC: u32 = 0x58495347;
-
-/// Current binary format version
-const INDEX_VERSION: u32 = 1;
-
-/// Header size in bytes
-const HEADER_SIZE: usize = 64;
 
 // ============================================================================
 // Errors
@@ -129,34 +123,21 @@ impl MmapIndexCache {
 
         let data = mmap.as_slice();
 
-        // Validate minimum size (header)
-        if data.len() < HEADER_SIZE {
-            return Err(CacheError::InvalidFormat(format!(
-                "File too small for header: {} < {}",
-                data.len(),
-                HEADER_SIZE
-            )));
+        // Detect format version (needs at least 8 bytes for magic + version)
+        let version = gsix_v2::detect_version(data)?;
+
+        // Reject v1 files — caller should rebuild in v2 format
+        if version == gsix_v2::INDEX_VERSION_V1 {
+            return Err(CacheError::InvalidFormat(
+                "v1 index detected, rebuild required".to_string(),
+            ));
         }
 
-        // Parse and validate header fields
-        let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        if magic != INDEX_MAGIC {
-            return Err(CacheError::InvalidFormat(format!(
-                "Bad magic: 0x{:08X} (expected 0x{:08X})",
-                magic, INDEX_MAGIC
-            )));
-        }
+        // v2: validate 16KB header (magic, version, CRC32 checksum)
+        let header = GsixHeaderV2::from_bytes(data)?;
 
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        if version != INDEX_VERSION {
-            return Err(CacheError::InvalidFormat(format!(
-                "Unsupported version: {} (expected {})",
-                version, INDEX_VERSION
-            )));
-        }
-
-        let entry_count = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
-        let root_hash = u32::from_le_bytes(data[12..16].try_into().unwrap());
+        let entry_count = header.entry_count as usize;
+        let root_hash = header.root_hash;
 
         // Verify root hash if requested
         if let Some(expected) = expected_root_hash {
@@ -168,8 +149,8 @@ impl MmapIndexCache {
             }
         }
 
-        // Verify data length covers all entries
-        let expected_len = HEADER_SIZE + entry_count * GpuPathEntry::SIZE;
+        // Verify data length covers all entries (entries start at offset 16384)
+        let expected_len = HEADER_SIZE_V2 + entry_count * GpuPathEntry::SIZE;
         if data.len() < expected_len {
             return Err(CacheError::InvalidFormat(format!(
                 "File too short: {} < {} ({} entries expected)",
@@ -179,13 +160,13 @@ impl MmapIndexCache {
             )));
         }
 
-        // Get pointer to the entries region
-        // SAFETY: We verified data.len() >= HEADER_SIZE + entry_count * 256.
+        // Get pointer to the entries region (offset 16384 = page-aligned)
+        // SAFETY: We verified data.len() >= HEADER_SIZE_V2 + entry_count * 256.
         // GpuPathEntry is #[repr(C)], 256 bytes, alignment 4.
-        // The mmap region is page-aligned (16KB) so the entries start at offset 64
-        // which is aligned to 4 bytes.
+        // The mmap region is page-aligned and HEADER_SIZE_V2 (16384) is a full
+        // page on Apple Silicon, so entries start at a page boundary.
         let entries_ptr = unsafe {
-            data.as_ptr().add(HEADER_SIZE) as *const GpuPathEntry
+            data.as_ptr().add(HEADER_SIZE_V2) as *const GpuPathEntry
         };
 
         // Advise kernel we'll read sequentially
@@ -297,6 +278,7 @@ pub fn load_cached_index(root: &Path) -> Result<MmapIndexCache, CacheError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::gsix_v2;
     use crate::index::shared_index::SharedIndexManager;
     use std::fs;
     use tempfile::TempDir;
@@ -317,21 +299,27 @@ mod tests {
         dir
     }
 
+    /// Helper: build entries from test dir and save as v2 format.
+    /// Returns (GpuResidentIndex, saved_path).
+    fn save_v2_from_dir(test_dir: &Path, cache_dir: &Path) -> (GpuResidentIndex, PathBuf) {
+        let index = GpuResidentIndex::build_from_directory(test_dir)
+            .expect("Failed to build index");
+        let root_hash = cache_key(test_dir);
+        let idx_path = cache_dir.join(format!("{:08x}.idx", root_hash));
+        gsix_v2::save_v2(index.entries(), root_hash, &idx_path, 0, 0)
+            .expect("Failed to save v2 index");
+        (index, idx_path)
+    }
+
     #[test]
     fn test_index_cache_save_and_mmap_load() {
         let test_dir = make_test_dir();
         let cache_dir = TempDir::new().expect("Failed to create cache dir");
-        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
 
-        // Build and save an index using SharedIndexManager
-        let index = GpuResidentIndex::build_from_directory(test_dir.path())
-            .expect("Failed to build index");
+        // Build and save as v2
+        let (index, saved_path) = save_v2_from_dir(test_dir.path(), cache_dir.path());
         let original_count = index.entry_count();
         assert!(original_count > 0, "Index should have entries");
-
-        let saved_path = manager
-            .save(&index, test_dir.path())
-            .expect("Failed to save index");
         assert!(saved_path.exists());
 
         // Load via mmap cache
@@ -372,16 +360,10 @@ mod tests {
     fn test_index_cache_into_resident_index() {
         let test_dir = make_test_dir();
         let cache_dir = TempDir::new().expect("Failed to create cache dir");
-        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
 
-        // Build and save
-        let index = GpuResidentIndex::build_from_directory(test_dir.path())
-            .expect("Failed to build index");
+        // Build and save as v2
+        let (index, saved_path) = save_v2_from_dir(test_dir.path(), cache_dir.path());
         let original_count = index.entry_count();
-
-        let saved_path = manager
-            .save(&index, test_dir.path())
-            .expect("Failed to save");
 
         // Load via mmap and convert to resident index
         let cache = MmapIndexCache::load_mmap(&saved_path, None)
@@ -439,14 +421,9 @@ mod tests {
     fn test_index_cache_wrong_root_hash() {
         let test_dir = make_test_dir();
         let cache_dir = TempDir::new().expect("Failed to create cache dir");
-        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
 
-        // Save with real root hash
-        let index = GpuResidentIndex::build_from_directory(test_dir.path())
-            .expect("Failed to build index");
-        let saved_path = manager
-            .save(&index, test_dir.path())
-            .expect("Failed to save");
+        // Save as v2 with real root hash
+        let (_, saved_path) = save_v2_from_dir(test_dir.path(), cache_dir.path());
 
         // Try to load with wrong root hash
         let result = MmapIndexCache::load_mmap(&saved_path, Some(0xDEADBEEF));
@@ -463,13 +440,8 @@ mod tests {
     fn test_index_cache_get_entry() {
         let test_dir = make_test_dir();
         let cache_dir = TempDir::new().expect("Failed to create cache dir");
-        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
 
-        let index = GpuResidentIndex::build_from_directory(test_dir.path())
-            .expect("Failed to build index");
-        let saved_path = manager
-            .save(&index, test_dir.path())
-            .expect("Failed to save");
+        let (_, saved_path) = save_v2_from_dir(test_dir.path(), cache_dir.path());
 
         let cache = MmapIndexCache::load_mmap(&saved_path, None)
             .expect("Failed to load");
@@ -485,10 +457,9 @@ mod tests {
 
     #[test]
     fn test_index_cache_roundtrip_fidelity() {
-        // Full roundtrip: build index -> save -> mmap load -> verify byte-identical -> convert back
+        // Full roundtrip: build index -> save v2 -> mmap load -> verify byte-identical -> convert back
         let test_dir = make_test_dir();
         let cache_dir = TempDir::new().expect("Failed to create cache dir");
-        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
 
         // Build from known paths
         let paths: Vec<PathBuf> = vec![
@@ -502,13 +473,14 @@ mod tests {
         let index = GpuResidentIndex::build_from_paths(&paths);
         let original_count = index.entry_count();
 
-        // Save
-        let saved_path = manager
-            .save(&index, test_dir.path())
-            .expect("Failed to save");
+        // Save as v2
+        let idx_path = cache_dir.path().join("roundtrip.idx");
+        let root_hash = cache_key(test_dir.path());
+        gsix_v2::save_v2(index.entries(), root_hash, &idx_path, 0, 0)
+            .expect("Failed to save v2");
 
         // Mmap load
-        let cache = MmapIndexCache::load_mmap(&saved_path, None)
+        let cache = MmapIndexCache::load_mmap(&idx_path, None)
             .expect("Failed to load");
         assert_eq!(cache.entry_count(), original_count);
 
@@ -530,7 +502,7 @@ mod tests {
         }
 
         // Convert back to GpuResidentIndex and verify
-        let cache2 = MmapIndexCache::load_mmap(&saved_path, None)
+        let cache2 = MmapIndexCache::load_mmap(&idx_path, None)
             .expect("Failed to reload");
         let reloaded = cache2.into_resident_index();
         assert_eq!(reloaded.entry_count(), original_count);
@@ -566,13 +538,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_index_cache_rejects_v1_file() {
+        let cache_dir = TempDir::new().expect("Failed to create cache dir");
+        let test_dir = make_test_dir();
+        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
+
+        // Save as v1 using SharedIndexManager
+        let index = GpuResidentIndex::build_from_directory(test_dir.path())
+            .expect("Failed to build index");
+        let saved_path = manager
+            .save(&index, test_dir.path())
+            .expect("Failed to save v1");
+
+        // Attempt to load via mmap — should reject v1
+        let result = MmapIndexCache::load_mmap(&saved_path, None);
+        assert!(result.is_err(), "v1 file should be rejected");
+        match result {
+            Err(CacheError::InvalidFormat(msg)) => {
+                assert!(
+                    msg.contains("v1") && msg.contains("rebuild"),
+                    "Error should mention v1 rebuild: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected InvalidFormat for v1, got: {:?}", other.map(|_| ())),
+        }
+    }
+
     /// Integration test matching the verify command name: test_index_cache
     #[test]
     fn test_index_cache() {
-        // Build index, save, load via mmap, verify identical entries
+        // Build index, save as v2, load via mmap, verify identical entries
         let test_dir = make_test_dir();
         let cache_dir = TempDir::new().expect("Failed to create cache dir");
-        let manager = SharedIndexManager::with_base_dir(cache_dir.path().to_path_buf());
 
         // Build
         let index = GpuResidentIndex::build_from_directory(test_dir.path())
@@ -580,15 +579,15 @@ mod tests {
         let original_count = index.entry_count();
         assert!(original_count >= 5, "Should have at least 5 entries (3 files + src dir + 2 src files)");
 
-        // Save to disk
-        let saved_path = manager
-            .save(&index, test_dir.path())
-            .expect("Failed to save");
-        assert!(saved_path.exists(), "Index file should exist on disk");
+        // Save as v2
+        let root_hash = cache_key(test_dir.path());
+        let idx_path = cache_dir.path().join(format!("{:08x}.idx", root_hash));
+        gsix_v2::save_v2(index.entries(), root_hash, &idx_path, 0, 0)
+            .expect("Failed to save v2");
+        assert!(idx_path.exists(), "Index file should exist on disk");
 
         // "Restart" -- load from disk via mmap (simulates process restart)
-        let root_hash = cache_key(test_dir.path());
-        let cache = MmapIndexCache::load_mmap(&saved_path, Some(root_hash))
+        let cache = MmapIndexCache::load_mmap(&idx_path, Some(root_hash))
             .expect("Failed to load cached index via mmap");
 
         // Verify identical entry count
@@ -621,7 +620,7 @@ mod tests {
         }
 
         // Also verify we can convert back to a GpuResidentIndex
-        let cache2 = MmapIndexCache::load_mmap(&saved_path, Some(root_hash))
+        let cache2 = MmapIndexCache::load_mmap(&idx_path, Some(root_hash))
             .expect("Failed to reload");
         let resident = cache2.into_resident_index();
         assert_eq!(resident.entry_count(), original_count);

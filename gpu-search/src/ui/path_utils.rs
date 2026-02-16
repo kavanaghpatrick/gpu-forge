@@ -42,18 +42,9 @@ pub fn abbreviate_path(path: &Path, search_root: &Path) -> (String, String) {
         _ => return (String::new(), filename),
     };
 
-    // Strategy (a): strip search_root prefix for relative display
-    if let Ok(relative) = parent.strip_prefix(search_root) {
-        let rel_str = relative.to_string_lossy();
-        if rel_str.is_empty() {
-            return (String::new(), filename);
-        }
-        let dir_display = format!("{}/", rel_str);
-        let dir_display = middle_truncate(&dir_display, DIR_MAX_LEN);
-        return (dir_display, filename);
-    }
-
-    // Strategy (b): substitute $HOME with ~
+    // Strategy (a): substitute $HOME with ~ (try first for best UX)
+    // This must come before search_root stripping, because when search_root
+    // is "/" every path matches but we still want ~/... display.
     if let Some(home) = home_dir() {
         if let Ok(relative) = parent.strip_prefix(home) {
             let rel_str = relative.to_string_lossy();
@@ -65,6 +56,17 @@ pub fn abbreviate_path(path: &Path, search_root: &Path) -> (String, String) {
             let dir_display = middle_truncate(&dir_display, DIR_MAX_LEN);
             return (dir_display, filename);
         }
+    }
+
+    // Strategy (b): strip search_root prefix for relative display
+    if let Ok(relative) = parent.strip_prefix(search_root) {
+        let rel_str = relative.to_string_lossy();
+        if rel_str.is_empty() {
+            return (String::new(), filename);
+        }
+        let dir_display = format!("{}/", rel_str);
+        let dir_display = middle_truncate(&dir_display, DIR_MAX_LEN);
+        return (dir_display, filename);
     }
 
     // Strategy (c): use full path, middle-truncate if needed

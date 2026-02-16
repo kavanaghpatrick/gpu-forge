@@ -84,6 +84,13 @@ struct DataBufferDescriptor {
 // Path Filter Structures (path_filter_kernel)
 // ============================================================================
 
+// Path flag constants
+#define PATH_FLAG_IS_DIR       (1u << 0)
+#define PATH_FLAG_IS_HIDDEN    (1u << 1)
+#define PATH_FLAG_IS_SYMLINK   (1u << 2)
+#define PATH_FLAG_IS_EXECUTABLE (1u << 3)
+#define PATH_FLAG_IS_DELETED   (1u << 4)
+
 // A filesystem path entry for the GPU-resident index (256 bytes)
 struct GpuPathEntry {
     uchar path[224];        // UTF-8 encoded path bytes

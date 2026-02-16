@@ -55,6 +55,10 @@ kernel void path_filter_kernel(
     if (gid >= params.entry_count) return;
 
     GpuPathEntry entry = entries[gid];
+
+    // Skip tombstoned (deleted) entries
+    if (entry.flags & PATH_FLAG_IS_DELETED) return;
+
     uint path_len = entry.path_len;
 
     if (path_len == 0) return;

@@ -363,6 +363,9 @@ impl ResultsList {
             return;
         }
 
+        // Reset per-frame time budget so syntect doesn't exceed 4ms/frame.
+        highlighter.begin_frame();
+
         let total_height = flat_row_model.total_height;
 
         egui::ScrollArea::vertical()

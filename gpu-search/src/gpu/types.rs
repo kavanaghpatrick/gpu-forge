@@ -153,6 +153,7 @@ pub mod path_flags {
     pub const IS_HIDDEN: u32 = 1 << 1;
     pub const IS_SYMLINK: u32 = 1 << 2;
     pub const IS_EXECUTABLE: u32 = 1 << 3;
+    pub const IS_DELETED: u32 = 1 << 4;
 }
 
 // ============================================================================

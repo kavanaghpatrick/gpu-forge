@@ -1,3 +1,4 @@
+#![cfg(not(target_os = "macos"))]
 //! FSEvents-based index watcher using notify v7 + debouncer-mini.
 //!
 //! Watches a root directory for filesystem changes (create/modify/delete) via

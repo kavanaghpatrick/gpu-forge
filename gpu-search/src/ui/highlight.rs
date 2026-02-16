@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use syntect::highlighting::{
     Color as SynColor, FontStyle, HighlightState, Highlighter, Style, StyleModifier, ThemeSettings,
@@ -228,16 +229,38 @@ pub struct SyntaxHighlighter {
     /// Cache: file extension -> (ParseState, HighlightState) after last highlighted line.
     /// This allows incremental parsing when highlighting sequential lines of the same file.
     parse_cache: HashMap<String, (ParseState, HighlightState)>,
+    /// Per-line result cache: (line_content, extension) -> syntax spans (without query overlay).
+    /// Prevents re-highlighting pathological lines on every frame repaint.
+    line_cache: HashMap<(String, String), Vec<StyledSpan>>,
+    /// Cumulative time spent in syntect parsing this frame.
+    frame_time_spent: Duration,
+    /// Maximum time budget for syntect parsing per frame (excess falls back to plain text).
+    frame_budget: Duration,
 }
 
 impl SyntaxHighlighter {
+    /// Per-frame time budget for syntect parsing (4ms = ~25% of a 16ms frame).
+    const FRAME_BUDGET: Duration = Duration::from_millis(4);
+
+    /// Maximum cached highlighted lines before eviction.
+    const MAX_LINE_CACHE_SIZE: usize = 2000;
+
     /// Create a new highlighter with the built-in Tokyo Night theme.
     pub fn new() -> Self {
         Self {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme: build_tokyo_night_theme(),
             parse_cache: HashMap::new(),
+            line_cache: HashMap::new(),
+            frame_time_spent: Duration::ZERO,
+            frame_budget: Self::FRAME_BUDGET,
         }
+    }
+
+    /// Reset per-frame time budget. Call at the start of each render frame
+    /// so that the time budget applies per-frame, not cumulatively.
+    pub fn begin_frame(&mut self) {
+        self.frame_time_spent = Duration::ZERO;
     }
 
     /// Get the syntect SyntaxReference for a file extension, falling back to plain text.
@@ -247,10 +270,20 @@ impl SyntaxHighlighter {
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text())
     }
 
+    /// Maximum line length for syntax highlighting. Lines longer than this
+    /// skip syntect parsing (which uses Oniguruma regex and can trigger
+    /// catastrophic backtracking on pathological content like minified JS,
+    /// base64 data, HTML attributes, or long strings). Lowered to 200 from
+    /// 500 because HTML lines under 500 chars still triggered multi-second
+    /// Oniguruma stalls.
+    const MAX_HIGHLIGHT_LINE_LEN: usize = 200;
+
     /// Highlight a single line of code, returning styled spans.
     ///
-    /// Uses the file extension to select the grammar and caches parse state
-    /// for efficient sequential highlighting.
+    /// Uses the file extension to select the grammar. Results are cached
+    /// per (line_content, extension) so pathological lines only block once.
+    /// A per-frame time budget ensures that even uncached pathological
+    /// lines cannot freeze the UI.
     ///
     /// # Arguments
     /// * `line` - The source line (may or may not include trailing newline)
@@ -262,6 +295,59 @@ impl SyntaxHighlighter {
         ext: &str,
         query: Option<&str>,
     ) -> Vec<StyledSpan> {
+        if line.is_empty() {
+            return Vec::new();
+        }
+
+        // Guard 1: skip syntect for long lines.
+        if line.len() > Self::MAX_HIGHLIGHT_LINE_LEN {
+            return Self::plain_spans(line, query);
+        }
+
+        // Check the per-line result cache FIRST (cache hits are instant,
+        // no need to check time budget for cached results).
+        let cache_key = (line.to_string(), ext.to_string());
+        if let Some(cached) = self.line_cache.get(&cache_key) {
+            let mut spans = cached.clone();
+            if let Some(q) = query {
+                if !q.is_empty() {
+                    spans = apply_match_overlay(spans, line, q);
+                }
+            }
+            return spans;
+        }
+
+        // Guard 2: skip syntect if per-frame time budget is exhausted.
+        // Only applies to uncached lines that need fresh parsing.
+        if self.frame_time_spent >= self.frame_budget {
+            return Self::plain_spans(line, query);
+        }
+
+        // --- Syntect parsing (timed) ---
+        let parse_start = Instant::now();
+        let syntax_spans = self.parse_with_syntect(line, ext);
+        let elapsed = parse_start.elapsed();
+        self.frame_time_spent += elapsed;
+
+        // Cache the result (without query overlay, since query changes).
+        if self.line_cache.len() >= Self::MAX_LINE_CACHE_SIZE {
+            self.line_cache.clear();
+        }
+        self.line_cache.insert(cache_key, syntax_spans.clone());
+
+        // Apply query match overlay if provided.
+        let mut result = syntax_spans;
+        if let Some(q) = query {
+            if !q.is_empty() {
+                result = apply_match_overlay(result, line, q);
+            }
+        }
+
+        result
+    }
+
+    /// Internal: run syntect parsing for a single line and return styled spans.
+    fn parse_with_syntect(&mut self, line: &str, ext: &str) -> Vec<StyledSpan> {
         let highlighter = Highlighter::new(&self.theme);
 
         // Ensure cache entry exists (avoids borrow conflict with syntax_for_ext)
@@ -276,7 +362,6 @@ impl SyntaxHighlighter {
             );
         }
 
-        // Get or create parse state for this extension
         let (parse_state, highlight_state) = self
             .parse_cache
             .get_mut(ext)
@@ -289,10 +374,8 @@ impl SyntaxHighlighter {
             format!("{}\n", line)
         };
 
-        // Parse the line to get scope operations
         let ops = parse_state.parse_line(&line_with_nl, &self.syntax_set);
 
-        // Convert scope ops to styled ranges using our theme
         let styles: Vec<(Style, &str)> =
             syntect::highlighting::RangedHighlightIterator::new(
                 highlight_state,
@@ -303,7 +386,6 @@ impl SyntaxHighlighter {
             .map(|(style, text, _range)| (style, text))
             .collect();
 
-        // Build spans from syntect styles (trimming trailing newline)
         let mut syntax_spans: Vec<StyledSpan> = Vec::new();
         let mut total_len = 0usize;
         let line_len = line.len();
@@ -324,7 +406,6 @@ impl SyntaxHighlighter {
             total_len += text.len();
         }
 
-        // If no spans produced, return the raw line with default style
         if syntax_spans.is_empty() && !line.is_empty() {
             syntax_spans.push(StyledSpan {
                 text: line.to_string(),
@@ -334,14 +415,27 @@ impl SyntaxHighlighter {
             });
         }
 
-        // Apply query match overlay if provided
+        syntax_spans
+    }
+
+    /// Return plain-text spans for a line (no syntax highlighting).
+    /// Still applies query match overlay if provided.
+    fn plain_spans(line: &str, query: Option<&str>) -> Vec<StyledSpan> {
+        if line.is_empty() {
+            return Vec::new();
+        }
+        let mut spans = vec![StyledSpan {
+            text: line.to_string(),
+            fg: (FG_DEFAULT.r, FG_DEFAULT.g, FG_DEFAULT.b, FG_DEFAULT.a),
+            bg: None,
+            bold: false,
+        }];
         if let Some(q) = query {
             if !q.is_empty() {
-                syntax_spans = apply_match_overlay(syntax_spans, line, q);
+                spans = apply_match_overlay(spans, line, q);
             }
         }
-
-        syntax_spans
+        spans
     }
 
     /// Reset cached parse state for a given extension.
@@ -352,9 +446,10 @@ impl SyntaxHighlighter {
         self.parse_cache.remove(ext);
     }
 
-    /// Reset all cached parse state.
+    /// Reset all cached parse state and line result cache.
     pub fn reset_all_caches(&mut self) {
         self.parse_cache.clear();
+        self.line_cache.clear();
     }
 }
 
@@ -634,6 +729,8 @@ mod tests {
         hl.reset_cache("rs");
         assert!(!hl.parse_cache.contains_key("rs"));
 
+        // Reset frame budget so subsequent parses aren't budget-limited
+        hl.begin_frame();
         hl.highlight_line("fn bar() {}", "rs", None);
         hl.highlight_line("def baz():", "py", None);
         assert!(hl.parse_cache.contains_key("rs"));
@@ -641,6 +738,7 @@ mod tests {
 
         hl.reset_all_caches();
         assert!(hl.parse_cache.is_empty());
+        assert!(hl.line_cache.is_empty());
     }
 
     #[test]
@@ -1066,5 +1164,92 @@ mod tests {
         let r_match = by_range.iter().find(|s| s.text == "search").unwrap();
         assert!(is_match_styled(q_match));
         assert!(is_match_styled(r_match));
+    }
+
+    #[test]
+    fn test_long_line_skips_syntect() {
+        let mut hl = SyntaxHighlighter::new();
+
+        // Create a line longer than MAX_HIGHLIGHT_LINE_LEN
+        let long_line = "x".repeat(SyntaxHighlighter::MAX_HIGHLIGHT_LINE_LEN + 100);
+        let spans = hl.highlight_line(&long_line, "rs", None);
+
+        // Should produce exactly 1 plain span (no syntect parsing)
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, long_line);
+        assert_eq!(spans[0].fg, (FG_DEFAULT.r, FG_DEFAULT.g, FG_DEFAULT.b, FG_DEFAULT.a));
+        assert!(!spans[0].bold);
+    }
+
+    #[test]
+    fn test_line_cache_hit() {
+        let mut hl = SyntaxHighlighter::new();
+
+        // First call parses with syntect and caches
+        let spans1 = hl.highlight_line("fn main() {}", "rs", None);
+        assert!(hl.line_cache.contains_key(&("fn main() {}".to_string(), "rs".to_string())));
+
+        // Second call should return identical spans from cache (even across frames)
+        hl.begin_frame();
+        let spans2 = hl.highlight_line("fn main() {}", "rs", None);
+        assert_eq!(spans1.len(), spans2.len());
+        for (a, b) in spans1.iter().zip(spans2.iter()) {
+            assert_eq!(a.text, b.text);
+        }
+    }
+
+    #[test]
+    fn test_frame_budget_fallback() {
+        let mut hl = SyntaxHighlighter::new();
+
+        // Exhaust the frame budget manually
+        hl.frame_time_spent = SyntaxHighlighter::FRAME_BUDGET + Duration::from_millis(1);
+
+        // Should return plain text because budget is exceeded
+        let spans = hl.highlight_line("fn main() {}", "rs", None);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "fn main() {}");
+        // Should be default fg (plain text, not syntax-highlighted)
+        assert_eq!(spans[0].fg, (FG_DEFAULT.r, FG_DEFAULT.g, FG_DEFAULT.b, FG_DEFAULT.a));
+
+        // begin_frame resets the budget
+        hl.begin_frame();
+        let spans2 = hl.highlight_line("fn main() {}", "rs", None);
+        // Now it should get syntax highlighting (from cache)
+        let fn_span = &spans2[0];
+        let is_colored = fn_span.fg != (FG_DEFAULT.r, FG_DEFAULT.g, FG_DEFAULT.b, FG_DEFAULT.a);
+        assert!(is_colored, "after begin_frame, should get syntax colors from cache");
+    }
+
+    #[test]
+    fn test_long_line_with_query_overlay() {
+        let mut hl = SyntaxHighlighter::new();
+
+        // Long line with a query match inside
+        let mut long_line = "a".repeat(150);
+        long_line.push_str("MATCH");
+        long_line.push_str(&"b".repeat(150));
+        let spans = hl.highlight_line(&long_line, "rs", Some("MATCH"));
+
+        // Should have match overlay even though syntect was skipped
+        let match_span = spans.iter().find(|s| s.text == "MATCH");
+        assert!(match_span.is_some(), "should find MATCH span in long line");
+        assert!(is_match_styled(match_span.unwrap()));
+
+        // Full text preserved
+        let combined: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(combined, long_line);
+    }
+
+    #[test]
+    fn test_short_line_still_highlighted() {
+        let mut hl = SyntaxHighlighter::new();
+
+        // Line under the limit should still get syntax highlighting
+        let spans = hl.highlight_line("fn main() {}", "rs", None);
+        let fn_span = &spans[0];
+        // `fn` should be colored (not plain default)
+        let is_colored = fn_span.fg != (FG_DEFAULT.r, FG_DEFAULT.g, FG_DEFAULT.b, FG_DEFAULT.a);
+        assert!(is_colored, "short lines should get syntax colors");
     }
 }

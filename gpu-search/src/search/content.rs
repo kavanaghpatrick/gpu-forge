@@ -12,7 +12,7 @@
 
 use std::mem;
 
-use objc2::rc::Retained;
+use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
@@ -26,7 +26,7 @@ use crate::gpu::pipeline::PsoCache;
 // ============================================================================
 
 /// Chunk size (4KB) -- each chunk of input data is padded to this size
-const CHUNK_SIZE: usize = 4096;
+pub const CHUNK_SIZE: usize = 4096;
 
 /// Maximum pattern length for search
 const MAX_PATTERN_LEN: usize = 64;
@@ -47,12 +47,12 @@ const THREADGROUP_SIZE: usize = 256;
 /// Metadata for each chunk -- matches Metal `ChunkMetadata` in search_types.h.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-struct ChunkMetadata {
-    file_index: u32,
-    chunk_index: u32,
-    offset_in_file: u64,
-    chunk_length: u32,
-    flags: u32, // Bit 0: is_text, Bit 1: is_first, Bit 2: is_last
+pub struct ChunkMetadata {
+    pub file_index: u32,
+    pub chunk_index: u32,
+    pub offset_in_file: u64,
+    pub chunk_length: u32,
+    pub flags: u32, // Bit 0: is_text, Bit 1: is_first, Bit 2: is_last
 }
 
 /// Search parameters -- matches Metal `SearchParams` in search_types.h.
@@ -292,10 +292,34 @@ impl ContentSearchEngine {
     }
 
     /// Reset the engine for a new search (clear loaded data).
+    ///
+    /// Zeros metadata_buffer, match_count_buffer, and matches_buffer to prevent
+    /// stale data from previous searches. chunks_buffer is NOT zeroed (too large,
+    /// and already zero-padded per-chunk in load_content()).
     pub fn reset(&mut self) {
         self.current_chunk_count = 0;
         self.total_data_bytes = 0;
         self.file_count = 0;
+
+        // Zero metadata_buffer (max_chunks * 24 bytes) to clear stale chunk metadata
+        unsafe {
+            let ptr = self.metadata_buffer.contents().as_ptr() as *mut u8;
+            let len = self.max_chunks * mem::size_of::<ChunkMetadata>();
+            std::ptr::write_bytes(ptr, 0, len);
+        }
+
+        // Zero match_count_buffer (4 bytes)
+        unsafe {
+            let ptr = self.match_count_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(ptr, 0, mem::size_of::<u32>());
+        }
+
+        // Zero matches_buffer (MAX_MATCHES * 32 = 320KB) for defense-in-depth
+        unsafe {
+            let ptr = self.matches_buffer.contents().as_ptr() as *mut u8;
+            let len = MAX_MATCHES * mem::size_of::<GpuMatchResult>();
+            std::ptr::write_bytes(ptr, 0, len);
+        }
     }
 
     /// Search for a pattern in all loaded content.
@@ -344,46 +368,172 @@ impl ContentSearchEngine {
             SearchMode::Turbo => &self.turbo_search_pso,
         };
 
-        // Dispatch GPU search
-        let cmd = self
-            .command_queue
-            .commandBuffer()
-            .expect("Failed to create command buffer");
-        let encoder = cmd
-            .computeCommandEncoder()
-            .expect("Failed to create compute encoder");
+        // Dispatch GPU search inside autoreleasepool to prevent Metal object leaks.
+        // On background threads without a pool, autoreleased ObjC objects (command
+        // buffers, encoders) accumulate indefinitely, exhausting Metal driver resources
+        // and eventually blocking the main thread's CAMetalLayer.nextDrawable().
+        autoreleasepool(|_| {
+            let cmd = self
+                .command_queue
+                .commandBuffer()
+                .expect("Failed to create command buffer");
+            let encoder = cmd
+                .computeCommandEncoder()
+                .expect("Failed to create compute encoder");
 
-        encoder.setComputePipelineState(pso);
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(&*self.chunks_buffer), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(&*self.metadata_buffer), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 2);
-            encoder.setBuffer_offset_atIndex(Some(&*self.pattern_buffer), 0, 3);
-            encoder.setBuffer_offset_atIndex(Some(&*self.matches_buffer), 0, 4);
-            encoder.setBuffer_offset_atIndex(Some(&*self.match_count_buffer), 0, 5);
-        }
+            encoder.setComputePipelineState(pso);
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(&*self.chunks_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&*self.metadata_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&*self.pattern_buffer), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(&*self.matches_buffer), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(&*self.match_count_buffer), 0, 5);
+            }
 
-        // One thread per 64 bytes of data
-        let total_threads = self.total_data_bytes.div_ceil(BYTES_PER_THREAD);
+            // One thread per 64 bytes of data
+            let total_threads = self.total_data_bytes.div_ceil(BYTES_PER_THREAD);
 
-        let grid_size = MTLSize {
-            width: total_threads,
-            height: 1,
-            depth: 1,
-        };
-        let tg_size = MTLSize {
-            width: THREADGROUP_SIZE,
-            height: 1,
-            depth: 1,
-        };
+            let grid_size = MTLSize {
+                width: total_threads,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = MTLSize {
+                width: THREADGROUP_SIZE,
+                height: 1,
+                depth: 1,
+            };
 
-        encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
-        encoder.endEncoding();
+            encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
 
-        cmd.commit();
-        cmd.waitUntilCompleted();
+            cmd.commit();
+            cmd.waitUntilCompleted();
+        });
 
         // Read results
+        self.collect_results(options)
+    }
+
+    /// Search for a pattern using an externally-provided content buffer.
+    ///
+    /// Instead of using the engine's internal `chunks_buffer`, the caller
+    /// passes their own Metal buffer (e.g., from a `ContentStore`) and
+    /// the corresponding `ChunkMetadata` slice describing the chunks
+    /// within that buffer.
+    ///
+    /// This enables zero-disk-I/O search: the content store's Metal buffer
+    /// is used directly as the GPU input without copying data.
+    ///
+    /// Buffer layout expected by the GPU kernel:
+    /// - buffer(0) = `content_buffer` (caller-provided)
+    /// - buffer(1) = chunk metadata (written from `chunk_metas`)
+    /// - buffer(2) = search params
+    /// - buffer(3) = pattern
+    /// - buffer(4) = match output
+    /// - buffer(5) = match count
+    pub fn search_with_buffer(
+        &mut self,
+        content_buffer: &ProtocolObject<dyn MTLBuffer>,
+        chunk_metas: &[ChunkMetadata],
+        pattern: &[u8],
+        options: &SearchOptions,
+    ) -> Vec<ContentMatch> {
+        if pattern.is_empty() || pattern.len() > MAX_PATTERN_LEN || chunk_metas.is_empty() {
+            return vec![];
+        }
+
+        let chunk_count = chunk_metas.len();
+        let total_data_bytes = chunk_count * CHUNK_SIZE;
+
+        // Prepare pattern bytes (lowercase if case-insensitive)
+        let pattern_bytes: Vec<u8> = if options.case_sensitive {
+            pattern.to_vec()
+        } else {
+            pattern.iter().map(|b| b.to_ascii_lowercase()).collect()
+        };
+
+        unsafe {
+            // (1) Write pattern to pattern_buffer
+            let pattern_ptr = self.pattern_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(
+                pattern_bytes.as_ptr(),
+                pattern_ptr,
+                pattern_bytes.len(),
+            );
+
+            // (2) Write search params to params_buffer
+            let params_ptr = self.params_buffer.contents().as_ptr() as *mut GpuSearchParams;
+            *params_ptr = GpuSearchParams {
+                chunk_count: chunk_count as u32,
+                pattern_len: pattern_bytes.len() as u32,
+                case_sensitive: if options.case_sensitive { 1 } else { 0 },
+                total_bytes: total_data_bytes as u32,
+            };
+
+            // (3) Write chunk_metas to metadata_buffer
+            let meta_ptr = self.metadata_buffer.contents().as_ptr() as *mut ChunkMetadata;
+            std::ptr::copy_nonoverlapping(chunk_metas.as_ptr(), meta_ptr, chunk_count);
+
+            // (4) Reset match_count to 0
+            let count_ptr = self.match_count_buffer.contents().as_ptr() as *mut u32;
+            *count_ptr = 0;
+        }
+
+        // Update internal state for collect_results
+        self.current_chunk_count = chunk_count;
+        self.total_data_bytes = total_data_bytes;
+
+        // Select kernel
+        let pso = match options.mode {
+            SearchMode::Standard => &self.content_search_pso,
+            SearchMode::Turbo => &self.turbo_search_pso,
+        };
+
+        // (5) Dispatch GPU compute with content_buffer at buffer(0)
+        autoreleasepool(|_| {
+            let cmd = self
+                .command_queue
+                .commandBuffer()
+                .expect("Failed to create command buffer");
+            let encoder = cmd
+                .computeCommandEncoder()
+                .expect("Failed to create compute encoder");
+
+            encoder.setComputePipelineState(pso);
+            unsafe {
+                // Use caller's content_buffer at index 0 instead of self.chunks_buffer
+                encoder.setBuffer_offset_atIndex(Some(content_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&*self.metadata_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&*self.pattern_buffer), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(&*self.matches_buffer), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(&*self.match_count_buffer), 0, 5);
+            }
+
+            // One thread per 64 bytes of data
+            let total_threads = total_data_bytes.div_ceil(BYTES_PER_THREAD);
+
+            let grid_size = MTLSize {
+                width: total_threads,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = MTLSize {
+                width: THREADGROUP_SIZE,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
+
+            cmd.commit();
+            cmd.waitUntilCompleted();
+        });
+
+        // (6) Read back matches
         self.collect_results(options)
     }
 
@@ -401,12 +551,30 @@ impl ContentSearchEngine {
             for i in 0..result_count {
                 let m = *matches_ptr.add(i);
 
+                let byte_offset = m.chunk_index * CHUNK_SIZE as u32
+                    + m.context_start + m.column;
+
+                // Validate byte_offset is within the loaded data range.
+                // chunk_index should be < current_chunk_count, and the
+                // computed offset should not exceed total_data_bytes.
+                debug_assert!(
+                    (m.chunk_index as usize) < self.current_chunk_count,
+                    "GPU match chunk_index {} >= current_chunk_count {}",
+                    m.chunk_index, self.current_chunk_count,
+                );
+                debug_assert!(
+                    (byte_offset as usize) < self.current_chunk_count * CHUNK_SIZE,
+                    "GPU byte_offset {} exceeds loaded data range {} (chunk_index={}, context_start={}, column={})",
+                    byte_offset,
+                    self.current_chunk_count * CHUNK_SIZE,
+                    m.chunk_index, m.context_start, m.column,
+                );
+
                 results.push(ContentMatch {
                     file_index: m.file_index as usize,
                     line_number: m.line_number,
                     column: m.column,
-                    byte_offset: m.chunk_index * CHUNK_SIZE as u32
-                        + m.context_start + m.column,
+                    byte_offset,
                     match_length: m.match_length,
                 });
             }
@@ -431,6 +599,44 @@ impl ContentSearchEngine {
     /// Get loaded file count.
     pub fn file_count(&self) -> usize {
         self.file_count
+    }
+
+    /// Get a reference to the Metal device.
+    ///
+    /// Used by the content store fast-path to create padded GPU buffers.
+    pub fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
+        &self.device
+    }
+}
+
+// ============================================================================
+// Test-only buffer inspection methods
+// ============================================================================
+
+/// Test-only buffer inspection methods (always compiled for integration test access).
+impl ContentSearchEngine {
+    /// Returns raw bytes of metadata_buffer up to max_chunks * sizeof(ChunkMetadata).
+    pub fn inspect_metadata_buffer(&self) -> Vec<u8> {
+        let byte_len = self.max_chunks * mem::size_of::<ChunkMetadata>();
+        let mut out = vec![0u8; byte_len];
+        unsafe {
+            let src = self.metadata_buffer.contents().as_ptr() as *const u8;
+            std::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), byte_len);
+        }
+        out
+    }
+
+    /// Reads the current match_count_buffer value.
+    pub fn inspect_match_count(&self) -> u32 {
+        unsafe {
+            let ptr = self.match_count_buffer.contents().as_ptr() as *const u32;
+            *ptr
+        }
+    }
+
+    /// Returns the max_chunks capacity.
+    pub fn max_chunks(&self) -> usize {
+        self.max_chunks
     }
 }
 
@@ -723,5 +929,198 @@ mod tests {
         assert_eq!(mem::size_of::<GpuSearchParams>(), 16);
         assert_eq!(mem::size_of::<GpuMatchResult>(), 32);
         assert_eq!(mem::size_of::<ChunkMetadata>(), 24);
+    }
+
+    #[test]
+    fn test_search_with_buffer_basic() {
+        use crate::index::content_store::ContentStoreBuilder;
+
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        let mut engine = ContentSearchEngine::new(&device, &pso_cache, 100);
+
+        // Build a ContentStore with known content (each file < CHUNK_SIZE)
+        let file0 = b"fn alpha() { let x = 42; }\nfn beta() { return 7; }\n";
+        let file1 = b"fn gamma() { println!(\"hello\"); }\n";
+        let file2 = b"struct Foo { bar: u32 }\nimpl Foo { fn new() -> Self { Foo { bar: 0 } } }\n";
+
+        let mut builder = ContentStoreBuilder::new(64 * 1024).unwrap();
+        builder.append(file0, 0, 0, 0);
+        builder.append(file1, 1, 0, 0);
+        builder.append(file2, 2, 0, 0);
+        let store = builder.finalize(&device);
+
+        // Build ChunkMetadata: each file fits in one chunk since all < CHUNK_SIZE
+        let mut chunk_metas = Vec::new();
+        for (file_idx, meta) in store.files().iter().enumerate() {
+            let file_len = meta.content_len as usize;
+            let num_chunks = if file_len == 0 { 0 } else { file_len.div_ceil(CHUNK_SIZE) };
+            for chunk_i in 0..num_chunks {
+                let offset_in_file = chunk_i * CHUNK_SIZE;
+                let chunk_len = (file_len - offset_in_file).min(CHUNK_SIZE);
+                let mut flags = 1u32; // is_text
+                if chunk_i == 0 {
+                    flags |= 2; // is_first
+                }
+                if chunk_i == num_chunks - 1 {
+                    flags |= 4; // is_last
+                }
+                chunk_metas.push(ChunkMetadata {
+                    file_index: file_idx as u32,
+                    chunk_index: chunk_i as u32,
+                    offset_in_file: offset_in_file as u64,
+                    chunk_length: chunk_len as u32,
+                    flags,
+                });
+            }
+        }
+
+        // The GPU kernel reads data at chunk_index * CHUNK_SIZE from buffer(0).
+        // ContentStore stores files contiguously (NOT padded to CHUNK_SIZE).
+        // Build a padded buffer with each file's chunk at the correct offset.
+        let options = MTLResourceOptions::StorageModeShared;
+        let padded_len = chunk_metas.len() * CHUNK_SIZE;
+        let padded_buffer = device
+            .newBufferWithLength_options(padded_len, options)
+            .expect("Failed to allocate padded buffer");
+
+        unsafe {
+            let dst_base = padded_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(dst_base, 0, padded_len);
+
+            let src = store.buffer();
+            let mut chunk_idx = 0usize;
+            for meta in store.files().iter() {
+                let file_start = meta.content_offset as usize;
+                let file_len = meta.content_len as usize;
+                let num_chunks = if file_len == 0 { 0 } else { file_len.div_ceil(CHUNK_SIZE) };
+                for c in 0..num_chunks {
+                    let src_offset = file_start + c * CHUNK_SIZE;
+                    let copy_len = (file_len - c * CHUNK_SIZE).min(CHUNK_SIZE);
+                    let dst = dst_base.add(chunk_idx * CHUNK_SIZE);
+                    std::ptr::copy_nonoverlapping(
+                        src[src_offset..src_offset + copy_len].as_ptr(),
+                        dst,
+                        copy_len,
+                    );
+                    chunk_idx += 1;
+                }
+            }
+        }
+
+        // Search for "fn " using the external buffer
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results = engine.search_with_buffer(&padded_buffer, &chunk_metas, b"fn ", &search_opts);
+
+        // CPU reference counts
+        let cpu0 = cpu_search(file0, b"fn ", true);
+        let cpu1 = cpu_search(file1, b"fn ", true);
+        let cpu2 = cpu_search(file2, b"fn ", true);
+        let total_cpu = cpu0 + cpu1 + cpu2;
+
+        println!(
+            "search_with_buffer: GPU={}, CPU={} ({}+{}+{})",
+            results.len(),
+            total_cpu,
+            cpu0,
+            cpu1,
+            cpu2
+        );
+        for (i, m) in results.iter().enumerate() {
+            println!(
+                "  match {}: file={}, line={}, col={}",
+                i, m.file_index, m.line_number, m.column
+            );
+        }
+
+        assert_eq!(
+            results.len(),
+            total_cpu,
+            "search_with_buffer GPU({}) must equal CPU({})",
+            results.len(),
+            total_cpu
+        );
+        // file0: "fn alpha" + "fn beta" = 2, file1: "fn gamma" = 1, file2: "fn new" = 1
+        assert_eq!(results.len(), 4, "Should find 4 'fn ' matches across 3 files");
+
+        // Verify file_index distribution
+        let f0: Vec<_> = results.iter().filter(|m| m.file_index == 0).collect();
+        let f1: Vec<_> = results.iter().filter(|m| m.file_index == 1).collect();
+        let f2: Vec<_> = results.iter().filter(|m| m.file_index == 2).collect();
+        assert_eq!(f0.len(), 2, "file0 should have 2 'fn ' matches");
+        assert_eq!(f1.len(), 1, "file1 should have 1 'fn ' match");
+        assert_eq!(f2.len(), 1, "file2 should have 1 'fn ' match");
+    }
+
+    #[test]
+    fn test_search_with_buffer_no_matches() {
+        use crate::index::content_store::ContentStoreBuilder;
+
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        let mut engine = ContentSearchEngine::new(&device, &pso_cache, 100);
+
+        let content = b"this has no matching pattern at all\n";
+        let mut builder = ContentStoreBuilder::new(16384).unwrap();
+        builder.append(content, 0, 0, 0);
+        let store = builder.finalize(&device);
+        let _ = store; // keep alive for reference
+
+        // Build one chunk
+        let chunk_metas = vec![ChunkMetadata {
+            file_index: 0,
+            chunk_index: 0,
+            offset_in_file: 0,
+            chunk_length: content.len() as u32,
+            flags: 1 | 2 | 4, // is_text | is_first | is_last
+        }];
+
+        // Create padded buffer with content
+        let options = MTLResourceOptions::StorageModeShared;
+        let padded_buffer = device
+            .newBufferWithLength_options(CHUNK_SIZE, options)
+            .expect("Failed to allocate buffer");
+        unsafe {
+            let dst = padded_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(dst, 0, CHUNK_SIZE);
+            std::ptr::copy_nonoverlapping(content.as_ptr(), dst, content.len());
+        }
+
+        let search_opts = SearchOptions::default();
+        let results =
+            engine.search_with_buffer(&padded_buffer, &chunk_metas, b"ZZZZZ", &search_opts);
+        assert_eq!(results.len(), 0, "Should find no matches for non-existent pattern");
+    }
+
+    #[test]
+    fn test_search_with_buffer_empty_inputs() {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        let mut engine = ContentSearchEngine::new(&device, &pso_cache, 100);
+
+        let chunk_metas = vec![ChunkMetadata {
+            file_index: 0,
+            chunk_index: 0,
+            offset_in_file: 0,
+            chunk_length: 100,
+            flags: 7,
+        }];
+
+        let options = MTLResourceOptions::StorageModeShared;
+        let buf = device
+            .newBufferWithLength_options(CHUNK_SIZE, options)
+            .expect("buffer");
+
+        // Empty pattern should return empty
+        let results = engine.search_with_buffer(&buf, &chunk_metas, b"", &SearchOptions::default());
+        assert_eq!(results.len(), 0);
+
+        // Empty chunk_metas should return empty
+        let results = engine.search_with_buffer(&buf, &[], b"test", &SearchOptions::default());
+        assert_eq!(results.len(), 0);
     }
 }

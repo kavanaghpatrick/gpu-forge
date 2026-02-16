@@ -27,16 +27,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel as channel;
+use objc2::rc::autoreleasepool;
 use objc2::runtime::ProtocolObject;
-use objc2_metal::MTLDevice;
+use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
 use crate::gpu::pipeline::PsoCache;
 use crate::index::cache::MmapIndexCache;
+use crate::index::content_index_store::ContentIndexStore;
+use crate::index::content_store::build_chunk_metadata;
 use crate::index::gpu_index::GpuResidentIndex;
 use crate::index::shared_index::SharedIndexManager;
+use crate::index::store::IndexStore;
+use crate::ui::watchdog::DiagState;
 use super::binary::BinaryDetector;
 use super::cancel::{CancellationToken, SearchSession};
-use super::content::SearchOptions;
+use super::content::{SearchOptions, CHUNK_SIZE};
 use super::ignore::GitignoreFilter;
 use super::profile::PipelineProfile;
 use super::streaming::StreamingSearchEngine;
@@ -48,13 +53,40 @@ use super::verify::{cpu_verify_matches, VerifyMode};
 // ============================================================================
 
 /// Maximum files to batch before dispatching to GPU.
-/// Keeps GPU dispatches frequent enough for progressive results while
-/// amortizing per-dispatch overhead.
-const STREAMING_BATCH_SIZE: usize = 500;
+/// Smaller batches = shorter GPU occupancy per dispatch = less render starvation.
+/// 200 files × ~10 chunks/file = ~2000 chunks × 4KB = ~8MB GPU data per batch.
+/// This keeps each GPU compute pass short (<5ms), leaving ample time for wgpu
+/// to acquire drawables and present frames between compute batches.
+const STREAMING_BATCH_SIZE: usize = 200;
 
 /// Channel capacity for the file discovery producer -> consumer pipeline.
 /// Bounded to apply backpressure if GPU processing falls behind discovery.
 const DISCOVERY_CHANNEL_CAPACITY: usize = 4096;
+
+/// Base sleep between GPU batch dispatches to yield Metal GPU time for rendering.
+/// On Apple Silicon, compute and render share one unified GPU. Each compute
+/// dispatch blocks the GPU for the duration of the kernel. The yield must be
+/// long enough for wgpu to submit a render command buffer, acquire a drawable
+/// from CAMetalLayer, and present. 32ms (~2 vsync cycles at 60fps) ensures the
+/// render pipeline has a comfortable window even with complex result rendering.
+const GPU_YIELD_BASE_MS: u64 = 4;
+
+/// When the UI hasn't rendered a frame in this many ms, the pre-dispatch stall
+/// gate activates and pauses compute to let the renderer recover. On Apple
+/// Silicon, compute and render share a unified GPU — dispatching more compute
+/// work while the renderer is starved only makes the freeze worse.
+const UI_STALL_THRESHOLD_MS: f64 = 100.0;
+
+/// The extended yield when UI stalling is detected. 100ms is ~6 frames at 60fps,
+/// enough for the Metal drawable pool to refill and wgpu to present.
+#[allow(dead_code)]
+const UI_STALL_YIELD_MS: u64 = 100;
+
+/// Maximum filename matches to send to the UI. Beyond this, the render workload
+/// for text layout/display overwhelms wgpu, starving CAMetalLayer's drawable pool.
+/// 1000 matches is plenty for interactive browsing; the Complete response will
+/// carry the final sorted+truncated list for display.
+const FILE_MATCH_CAP: usize = 1000;
 
 /// Top-level search orchestrator coordinating the full search pipeline.
 ///
@@ -71,6 +103,15 @@ const DISCOVERY_CHANNEL_CAPACITY: usize = 4096;
 pub struct SearchOrchestrator {
     /// GPU streaming search engine (reused across searches).
     engine: StreamingSearchEngine,
+    /// Optional IndexStore for mmap-backed zero-copy snapshot access.
+    /// When set, `try_index_producer` checks this store first before
+    /// falling back to MmapIndexCache.
+    index_store: Option<Arc<IndexStore>>,
+    /// Optional ContentIndexStore for in-memory content search (zero disk I/O).
+    /// When available and populated, `search_streaming_inner` bypasses the
+    /// disk-based pipeline and dispatches GPU search directly from the
+    /// content store's Metal buffer.
+    content_store: Option<Arc<ContentIndexStore>>,
 }
 
 impl SearchOrchestrator {
@@ -82,7 +123,40 @@ impl SearchOrchestrator {
         pso_cache: &PsoCache,
     ) -> Option<Self> {
         let engine = StreamingSearchEngine::new(device, pso_cache)?;
-        Some(Self { engine })
+        Some(Self { engine, index_store: None, content_store: None })
+    }
+
+    /// Create a new search orchestrator with an IndexStore for zero-copy snapshots.
+    ///
+    /// When `index_store` is provided, the streaming search pipeline will check
+    /// the store's snapshot before falling back to MmapIndexCache or walk_and_filter.
+    pub fn with_store(
+        device: &ProtocolObject<dyn MTLDevice>,
+        pso_cache: &PsoCache,
+        store: Arc<IndexStore>,
+    ) -> Option<Self> {
+        let engine = StreamingSearchEngine::new(device, pso_cache)?;
+        Some(Self { engine, index_store: Some(store), content_store: None })
+    }
+
+    /// Create a new search orchestrator with a ContentIndexStore for in-memory search.
+    ///
+    /// When `content_store` is populated (via background content build), the search
+    /// pipeline bypasses all disk I/O and dispatches GPU search directly from the
+    /// content store's Metal buffer. Falls back to the disk-based pipeline when
+    /// the content store is not yet available.
+    pub fn with_content_store(
+        device: &ProtocolObject<dyn MTLDevice>,
+        pso_cache: &PsoCache,
+        index_store: Option<Arc<IndexStore>>,
+        content_store: Arc<ContentIndexStore>,
+    ) -> Option<Self> {
+        let engine = StreamingSearchEngine::new(device, pso_cache)?;
+        Some(Self {
+            engine,
+            index_store,
+            content_store: Some(content_store),
+        })
     }
 
     /// Execute a full search pipeline for the given request.
@@ -363,12 +437,44 @@ impl SearchOrchestrator {
     ///                                                               │
     /// Stage 3 (main):    batch full ─> GPU search ─> resolve ─> send
     /// ```
+    /// Wrapper with DiagState for UI app usage.
+    pub fn search_streaming_diag(
+        &mut self,
+        request: SearchRequest,
+        update_tx: &channel::Sender<StampedUpdate>,
+        session: &SearchSession,
+        diag: &Arc<DiagState>,
+    ) -> SearchResponse {
+        self.search_streaming_inner(request, update_tx, session, Some(diag))
+    }
+
     pub fn search_streaming(
         &mut self,
         request: SearchRequest,
         update_tx: &channel::Sender<StampedUpdate>,
         session: &SearchSession,
     ) -> SearchResponse {
+        self.search_streaming_inner(request, update_tx, session, None)
+    }
+
+    fn search_streaming_inner(
+        &mut self,
+        request: SearchRequest,
+        update_tx: &channel::Sender<StampedUpdate>,
+        session: &SearchSession,
+        diag: Option<&Arc<DiagState>>,
+    ) -> SearchResponse {
+        // -----------------------------------------------------------------
+        // Content store fast-path: GPU search from in-memory content buffer
+        // Bypasses ALL disk I/O when the content store is populated.
+        // -----------------------------------------------------------------
+        if let Some(cs) = &self.content_store {
+            if cs.is_available() {
+                eprintln!("[gpu-search] content store fast-path: dispatching from in-memory buffer");
+                return self.search_from_content_store(cs.clone(), &request, update_tx, session);
+            }
+        }
+
         let start = Instant::now();
         let mut profile = PipelineProfile::default();
         let mut ttfr_recorded = false;
@@ -391,23 +497,30 @@ impl SearchOrchestrator {
 
         let cancel_token = session.token.clone();
 
-        // Try loading from GSIX index for instant file discovery
-        let use_index = Self::try_index_producer(
-            &root,
-            &path_tx,
-            &producer_counter,
-            include_binary,
-            file_types.as_deref(),
-        );
+        // Try loading from GSIX index for instant file discovery.
+        // We check availability synchronously but send entries on a background
+        // thread to avoid deadlocking the bounded channel (capacity 4096).
+        let has_index = self.check_index_available(&root, include_binary, file_types.as_deref());
 
         // Collect paths for GSIX index building when falling back to walk
         let index_collector: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let producer = if use_index {
+        let producer = if has_index {
             eprintln!("[gpu-search] Stage 1: using GSIX index (instant discovery)");
-            // Index entries already sent -- drop sender to close channel
-            drop(path_tx);
-            None
+            // Spawn a thread to send index entries — bounded channel would
+            // deadlock if we tried to send 3M+ entries inline before consuming.
+            let store = self.index_store.as_ref().unwrap().clone();
+            let producer = std::thread::spawn(move || {
+                Self::try_snapshot_producer_threaded(
+                    &store,
+                    &path_tx,
+                    &producer_counter,
+                    include_binary,
+                    file_types.as_deref(),
+                );
+                // path_tx drops here, closing the channel
+            });
+            Some(producer)
         } else {
             eprintln!("[gpu-search] Stage 1: falling back to walk_and_filter");
             let idx_collector = Arc::clone(&index_collector);
@@ -457,7 +570,7 @@ impl SearchOrchestrator {
                 break;
             }
 
-            // Filename matching (inline, no batching needed)
+            // Filename matching (inline, sent frequently for responsive UI)
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 let name_lower = name.to_lowercase();
                 if name_lower.contains(&pattern_lower) {
@@ -478,6 +591,17 @@ impl SearchOrchestrator {
                 }
             }
 
+            // Send NEW filename matches incrementally (not the full accumulated list).
+            // The UI extends its file_matches list with each batch, avoiding the
+            // O(n^2) clone of the full Vec that previously caused massive allocation
+            // churn when thousands of files match (e.g., searching for "patrick" from /).
+            if pending_file_matches.len() >= 20 && all_file_matches.len() <= FILE_MATCH_CAP {
+                let _ = update_tx.send(StampedUpdate {
+                    generation: session.guard.generation_id(),
+                    update: SearchUpdate::FileMatches(std::mem::take(&mut pending_file_matches)),
+                });
+            }
+
             batch.push(path);
 
             // When batch is full, dispatch to GPU
@@ -489,27 +613,63 @@ impl SearchOrchestrator {
                     break;
                 }
 
+                // --- Pre-dispatch stall gate ---
+                // On Apple Silicon, compute and render share the unified GPU.
+                // If the UI is stalled (update() not being called), dispatching
+                // more compute work will only worsen the freeze by saturating
+                // the GPU and preventing wgpu's nextDrawable() from returning.
+                //
+                // Strategy: when a stall is detected, back off exponentially
+                // to give the render pipeline maximum GPU time to recover.
+                // We do NOT need request_repaint() here — the main thread's
+                // update() self-drives via request_repaint_after(16ms). We just
+                // need to stop hogging the GPU with compute work.
+                if let Some(d) = diag {
+                    let stall = d.ui_stall_ms();
+                    if stall >= UI_STALL_THRESHOLD_MS {
+                        // Exponential backoff: 100ms, 200ms, 400ms, capped at 500ms
+                        let backoff_ms = ((stall / UI_STALL_THRESHOLD_MS) as u64)
+                            .clamp(1, 5) * 100;
+                        eprintln!(
+                            "[gpu-search] STALL GATE: UI frozen {:.0}ms, backing off {}ms before batch #{}",
+                            stall, backoff_ms, batch_number + 1,
+                        );
+                        std::thread::sleep(Duration::from_millis(backoff_ms));
+                    }
+                }
+
                 batch_number += 1;
                 let files_so_far = total_files_counter.load(Ordering::Relaxed);
+
+                // Update watchdog metrics before GPU dispatch
+                if let Some(d) = diag {
+                    d.touch_bg();
+                    d.bg_batch_num.store(batch_number, Ordering::Relaxed);
+                    d.bg_files_searched.store(files_so_far, Ordering::Relaxed);
+                }
+
                 eprintln!("[gpu-search] batch #{}: dispatching {} files to GPU ({} discovered so far, {:.1}s)",
                     batch_number, batch.len(), files_so_far,
                     start.elapsed().as_secs_f64());
 
-                // Send accumulated file matches progressively
-                if !pending_file_matches.is_empty() {
+                // Flush any remaining pending file matches at batch boundaries
+                if !pending_file_matches.is_empty() && all_file_matches.len() <= FILE_MATCH_CAP {
                     let _ = update_tx.send(StampedUpdate {
                         generation: session.guard.generation_id(),
-                        update: SearchUpdate::FileMatches(pending_file_matches.clone()),
+                        update: SearchUpdate::FileMatches(std::mem::take(&mut pending_file_matches)),
                     });
-                    pending_file_matches.clear();
                 }
 
-                let (batch_matches, batch_profile) = self.dispatch_gpu_batch_profiled(
-                    &batch,
-                    &request.pattern,
-                    &search_options,
-                    request.max_results.saturating_sub(all_content_matches.len()),
-                );
+                // Wrap GPU dispatch in autoreleasepool to drain Metal objects
+                // (command buffers, encoders) and prevent resource exhaustion.
+                let (batch_matches, batch_profile) = autoreleasepool(|_| {
+                    self.dispatch_gpu_batch_profiled(
+                        &batch,
+                        &request.pattern,
+                        &search_options,
+                        request.max_results.saturating_sub(all_content_matches.len()),
+                    )
+                });
                 // Accumulate batch profile into pipeline profile
                 profile.gpu_load_us += batch_profile.gpu_load_us;
                 profile.gpu_dispatch_us += batch_profile.gpu_dispatch_us;
@@ -536,6 +696,18 @@ impl SearchOrchestrator {
                     all_content_matches.extend(batch_matches);
                 }
                 batch.clear();
+
+                // Update watchdog after GPU dispatch completes
+                if let Some(d) = diag {
+                    d.touch_bg();
+                    d.bg_content_matches.store(all_content_matches.len() as u64, Ordering::Relaxed);
+                }
+
+                // Yield GPU time to the renderer between batches.
+                // The stall gate above handles severe stalls with exponential
+                // backoff. This base yield ensures a minimum gap between compute
+                // dispatches for the render pipeline to acquire drawables.
+                std::thread::sleep(Duration::from_millis(GPU_YIELD_BASE_MS));
             }
         }
 
@@ -549,21 +721,22 @@ impl SearchOrchestrator {
             eprintln!("[gpu-search] batch #{} (final): dispatching {} files to GPU ({:.1}s)",
                 batch_number, batch.len(), start.elapsed().as_secs_f64());
 
-            // Send any remaining file matches
-            if !pending_file_matches.is_empty() {
+            // Flush any remaining pending file matches
+            if !pending_file_matches.is_empty() && all_file_matches.len() <= FILE_MATCH_CAP {
                 let _ = update_tx.send(StampedUpdate {
                     generation: session.guard.generation_id(),
-                    update: SearchUpdate::FileMatches(pending_file_matches.clone()),
+                    update: SearchUpdate::FileMatches(std::mem::take(&mut pending_file_matches)),
                 });
-                pending_file_matches.clear();
             }
 
-            let (batch_matches, batch_profile) = self.dispatch_gpu_batch_profiled(
-                &batch,
-                &request.pattern,
-                &search_options,
-                request.max_results.saturating_sub(all_content_matches.len()),
-            );
+            let (batch_matches, batch_profile) = autoreleasepool(|_| {
+                self.dispatch_gpu_batch_profiled(
+                    &batch,
+                    &request.pattern,
+                    &search_options,
+                    request.max_results.saturating_sub(all_content_matches.len()),
+                )
+            });
             // Accumulate batch profile into pipeline profile
             profile.gpu_load_us += batch_profile.gpu_load_us;
             profile.gpu_dispatch_us += batch_profile.gpu_dispatch_us;
@@ -620,14 +793,12 @@ impl SearchOrchestrator {
             };
         }
 
-        // Send final file matches (complete, ranked)
+        // Sort and cap file matches for the final Complete response.
+        // No separate FileMatches send needed here — Complete carries them.
         all_file_matches.sort_by(|a, b| {
             b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
         });
-        let _ = update_tx.send(StampedUpdate {
-            generation: session.guard.generation_id(),
-            update: SearchUpdate::FileMatches(all_file_matches.clone()),
-        });
+        all_file_matches.truncate(FILE_MATCH_CAP);
 
         let total_matches = (all_file_matches.len() + all_content_matches.len()) as u64;
 
@@ -646,19 +817,19 @@ impl SearchOrchestrator {
             profile,
         };
 
-        let _ = update_tx.send(StampedUpdate {
-            generation: session.guard.generation_id(),
-            update: SearchUpdate::Complete(response.clone()),
-        });
-
         eprintln!("[gpu-search] search complete: {} batches, {} files, {} file matches, {} content matches, {:.1}s",
             batch_number, total_files_searched, response.file_matches.len(),
             response.content_matches.len(), response.elapsed.as_secs_f64());
         eprintln!("[gpu-search] profile:\n{}", response.profile);
 
+        let _ = update_tx.send(StampedUpdate {
+            generation: session.guard.generation_id(),
+            update: SearchUpdate::Complete(response.clone()),
+        });
+
         // Build GSIX index in background if we walked (no index was used)
         // and the search wasn't cancelled. This makes the next search instant.
-        if !use_index && !session.should_stop() {
+        if !has_index && !session.should_stop() {
             let search_root = request.root.clone();
             std::thread::spawn(move || {
                 let paths = match Arc::try_unwrap(index_collector) {
@@ -685,13 +856,142 @@ impl SearchOrchestrator {
 
     /// Try to use the GSIX index for instant file discovery.
     ///
-    /// If a fresh index exists for the given root, iterates all index entries
-    /// into the crossbeam channel (instant, no filesystem walk). Applies the
-    /// same binary and filetype filters as walk_and_filter.
+    /// Checks two sources in priority order:
+    /// 1. IndexStore snapshot (mmap-backed, zero-copy) — preferred when available
+    /// 2. MmapIndexCache from disk (v2 format) — fallback for non-store contexts
+    ///
+    /// If a fresh index exists, iterates all index entries into the crossbeam
+    /// channel (instant, no filesystem walk). Applies the same binary and
+    /// filetype filters as walk_and_filter.
     ///
     /// Returns `true` if the index was used (entries sent), `false` if the
     /// caller should fall back to walk_and_filter.
+    #[allow(dead_code)]
     fn try_index_producer(
+        &self,
+        root: &Path,
+        path_tx: &channel::Sender<PathBuf>,
+        counter: &AtomicU64,
+        include_binary: bool,
+        file_types: Option<&[String]>,
+    ) -> bool {
+        // Priority 1: Check IndexStore snapshot (zero-copy mmap path)
+        if let Some(ref store) = self.index_store {
+            if Self::try_snapshot_producer(store, path_tx, counter, include_binary, file_types) {
+                return true;
+            }
+        }
+
+        // Priority 2: Fall back to MmapIndexCache from disk
+        Self::try_mmap_cache_producer(root, path_tx, counter, include_binary, file_types)
+    }
+
+    /// Check if the index is available without sending any entries.
+    /// Used by search_streaming to decide whether to spawn an index producer thread.
+    fn check_index_available(
+        &self,
+        _root: &Path,
+        _include_binary: bool,
+        _file_types: Option<&[String]>,
+    ) -> bool {
+        if let Some(ref store) = self.index_store {
+            if store.is_available() {
+                let guard = store.snapshot();
+                if let Some(snapshot) = guard.as_ref().as_ref() {
+                    return snapshot.entry_count() > 0;
+                }
+            }
+        }
+        false
+    }
+
+    /// Send entries from an IndexStore snapshot on a background thread.
+    /// This avoids deadlocking the bounded channel when the index has
+    /// millions of entries.
+    fn try_snapshot_producer_threaded(
+        store: &IndexStore,
+        path_tx: &channel::Sender<PathBuf>,
+        counter: &AtomicU64,
+        include_binary: bool,
+        file_types: Option<&[String]>,
+    ) {
+        let guard = store.snapshot();
+        let snapshot = match guard.as_ref().as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let entry_count = snapshot.entry_count();
+        eprintln!(
+            "[gpu-search] index: sending {} snapshot entries on producer thread",
+            entry_count
+        );
+
+        let sent = Self::send_entries_from_slice(
+            snapshot.entries(),
+            path_tx,
+            counter,
+            include_binary,
+            file_types,
+        );
+
+        eprintln!(
+            "[gpu-search] index: sent {} paths from {} snapshot entries",
+            sent, entry_count
+        );
+    }
+
+    /// Try to produce paths from an IndexStore snapshot (zero-copy mmap path).
+    ///
+    /// Returns `true` if the snapshot was available and entries were sent.
+    #[allow(dead_code)]
+    fn try_snapshot_producer(
+        store: &IndexStore,
+        path_tx: &channel::Sender<PathBuf>,
+        counter: &AtomicU64,
+        include_binary: bool,
+        file_types: Option<&[String]>,
+    ) -> bool {
+        if !store.is_available() {
+            eprintln!("[gpu-search] index: IndexStore has no snapshot");
+            return false;
+        }
+
+        let guard = store.snapshot();
+        let snapshot = match guard.as_ref().as_ref() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let entry_count = snapshot.entry_count();
+        if entry_count == 0 {
+            eprintln!("[gpu-search] index: IndexStore snapshot is empty");
+            return false;
+        }
+
+        eprintln!(
+            "[gpu-search] index: using IndexStore snapshot ({} entries, zero-copy mmap)",
+            entry_count
+        );
+
+        let sent = Self::send_entries_from_slice(
+            snapshot.entries(),
+            path_tx,
+            counter,
+            include_binary,
+            file_types,
+        );
+
+        eprintln!(
+            "[gpu-search] index: sent {} paths from {} snapshot entries",
+            sent, entry_count
+        );
+        true
+    }
+
+    /// Fall back to MmapIndexCache from disk for index-based file discovery.
+    #[allow(dead_code)]
+    fn try_mmap_cache_producer(
         root: &Path,
         path_tx: &channel::Sender<PathBuf>,
         counter: &AtomicU64,
@@ -737,24 +1037,49 @@ impl SearchOrchestrator {
             idx_path.display()
         );
 
-        // Set up binary detector for filtering
-        let detector = if include_binary {
-            BinaryDetector::include_all()
-        } else {
-            BinaryDetector::new()
-        };
+        let sent = Self::send_entries_from_slice(
+            cache.entries(),
+            path_tx,
+            counter,
+            include_binary,
+            file_types,
+        );
 
+        eprintln!(
+            "[gpu-search] index: sent {} paths from {} entries",
+            sent, entry_count
+        );
+        true
+    }
+
+    /// Send entries from a GpuPathEntry slice through the channel, applying filters.
+    ///
+    /// Shared logic between IndexStore snapshot and MmapIndexCache paths.
+    /// Returns the number of paths successfully sent.
+    ///
+    /// Uses a TEXT ALLOWLIST (is_known_text) rather than a binary blocklist
+    /// (is_binary_path). From root `/`, 3.3M index entries contain ~160K files
+    /// with unknown extensions (no ext, or obscure ext like .dat, .conf2, etc).
+    /// A binary blocklist lets all those through, overwhelming GPU content search
+    /// with 7+ GB of RSS. The text allowlist reduces this to ~10-20K actual
+    /// source/config files.
+    fn send_entries_from_slice(
+        entries: &[crate::gpu::types::GpuPathEntry],
+        path_tx: &channel::Sender<PathBuf>,
+        counter: &AtomicU64,
+        include_binary: bool,
+        file_types: Option<&[String]>,
+    ) -> u64 {
         let mut sent = 0u64;
-        for entry in cache.entries() {
-            // Extract path from GpuPathEntry
-            let path_bytes = &entry.path[..entry.path_len as usize];
-            let path = match std::str::from_utf8(path_bytes) {
-                Ok(s) => PathBuf::from(s),
-                Err(_) => continue,
-            };
+        for entry in entries {
 
             // Skip directories (flag bit 0 = is_dir)
             if entry.flags & 1 != 0 {
+                continue;
+            }
+
+            // Skip deleted entries (IS_DELETED tombstone flag)
+            if entry.flags & 0x10 != 0 {
                 continue;
             }
 
@@ -764,14 +1089,18 @@ impl SearchOrchestrator {
                 continue;
             }
 
-            // Binary filter
-            if detector.should_skip(&path) {
-                continue;
-            }
+            let path_bytes = &entry.path[..entry.path_len as usize];
+            let path_str = match std::str::from_utf8(path_bytes) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
 
-            // File type filter
+            let path_ref = std::path::Path::new(path_str);
+
+            // File type filter (checked before text allowlist for efficiency —
+            // if the user specified file types, only those matter)
             if let Some(types) = file_types {
-                let passes = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                let passes = if let Some(ext) = path_ref.extension().and_then(|e| e.to_str()) {
                     types.iter().any(|t| t.eq_ignore_ascii_case(ext))
                 } else {
                     false
@@ -779,20 +1108,28 @@ impl SearchOrchestrator {
                 if !passes {
                     continue;
                 }
+            } else if !include_binary {
+                // TEXT ALLOWLIST: Only send files with known text extensions.
+                // This is critical for root `/` searches where 3.3M index entries
+                // include ~160K files with unknown extensions. A binary blocklist
+                // (is_binary_path) lets all those through, causing 7+ GB RSS.
+                // The text allowlist reduces the count to ~10-20K actual source files.
+                if !super::binary::is_known_text(path_ref) {
+                    continue;
+                }
             }
+
+            let path = PathBuf::from(path_str);
 
             sent += 1;
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if path_tx.send(path).is_err() {
+                // Consumer disconnected (search cancelled or done)
                 break;
             }
         }
 
-        eprintln!(
-            "[gpu-search] index: sent {} paths from {} entries",
-            sent, entry_count
-        );
-        true
+        sent
     }
 
     /// Dispatch a batch to GPU and return matches with per-batch profile data.
@@ -888,6 +1225,14 @@ impl SearchOrchestrator {
         // window) is intentionally ignored -- only byte_offset is used.
         let resolve_start = Instant::now();
         let mut content_matches = Vec::new();
+
+        // File-level content validation cache: tracks whether each file
+        // actually contains the search pattern. Defense-in-depth against
+        // byte_offset mapping to the wrong file entirely.
+        let mut file_contains_pattern: std::collections::HashMap<PathBuf, bool> =
+            std::collections::HashMap::new();
+        let pattern_lower = pattern.to_lowercase();
+
         for m in &gpu_results {
             if content_matches.len() >= remaining_budget {
                 break;
@@ -895,6 +1240,37 @@ impl SearchOrchestrator {
             if let Some((line_number, line_content, context_before, context_after, match_start)) =
                 resolve_match(&m.file_path, m.byte_offset as usize, pattern, options.case_sensitive)
             {
+                // FILE-LEVEL VALIDATION GATE: verify the file itself contains
+                // the pattern. resolve_match already confirms the pattern is
+                // in the resolved line, but this catches the hypothetical case
+                // where byte_offset maps to the wrong file entirely.
+                let file_valid = *file_contains_pattern
+                    .entry(m.file_path.clone())
+                    .or_insert_with(|| {
+                        match std::fs::read(&m.file_path) {
+                            Ok(content) => {
+                                let text = String::from_utf8_lossy(&content);
+                                if options.case_sensitive {
+                                    text.contains(pattern)
+                                } else {
+                                    text.to_lowercase().contains(&pattern_lower)
+                                }
+                            }
+                            Err(_) => false,
+                        }
+                    });
+
+                if !file_valid {
+                    eprintln!(
+                        "[gpu-search] FILE-LEVEL REJECTION: file does not contain pattern \
+                         file={} pattern='{}' byte_offset={}",
+                        m.file_path.display(),
+                        pattern,
+                        m.byte_offset,
+                    );
+                    continue;
+                }
+
                 let match_end = match_start + pattern.len();
                 content_matches.push(ContentMatch {
                     path: m.file_path.clone(),
@@ -911,6 +1287,358 @@ impl SearchOrchestrator {
         batch_profile.matches_rejected = batch_profile.matches_raw.saturating_sub(batch_profile.matches_resolved);
 
         (content_matches, batch_profile)
+    }
+
+    /// Search using the in-memory content store (zero disk I/O fast-path).
+    ///
+    /// Loads the current ContentSnapshot via arc-swap guard, builds
+    /// ChunkMetadata from the content store, dispatches GPU search via
+    /// `search_with_buffer`, resolves matches to file paths and line
+    /// numbers, and sends results via the update channel.
+    ///
+    /// This eliminates ALL disk reads during search -- the content buffer
+    /// and file paths are already in memory from the background build.
+    fn search_from_content_store(
+        &mut self,
+        cs: Arc<ContentIndexStore>,
+        request: &SearchRequest,
+        update_tx: &channel::Sender<StampedUpdate>,
+        session: &SearchSession,
+    ) -> SearchResponse {
+        let start = Instant::now();
+        let mut profile = PipelineProfile::default();
+
+        // Check cancellation early
+        if session.should_stop() {
+            return SearchResponse {
+                file_matches: vec![],
+                content_matches: vec![],
+                total_files_searched: 0,
+                total_matches: 0,
+                elapsed: start.elapsed(),
+                profile,
+            };
+        }
+
+        // (1) Load ContentSnapshot via arc-swap guard
+        let guard = cs.snapshot();
+        let snapshot = match guard.as_ref().as_ref() {
+            Some(s) => s,
+            None => {
+                eprintln!("[gpu-search] content store: snapshot disappeared between is_available and load");
+                return SearchResponse {
+                    file_matches: vec![],
+                    content_matches: vec![],
+                    total_files_searched: 0,
+                    total_matches: 0,
+                    elapsed: start.elapsed(),
+                    profile,
+                };
+            }
+        };
+
+        let content_store = snapshot.content_store();
+        let total_files = content_store.file_count() as u64;
+        profile.files_walked = total_files as u32;
+        profile.files_filtered = total_files as u32;
+
+        // (2) Filename matching (same logic as streaming pipeline)
+        let pattern_lower = request.pattern.to_lowercase();
+        let mut file_matches: Vec<FileMatch> = Vec::new();
+        let paths = content_store.paths();
+        for path in paths {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let name_lower = name.to_lowercase();
+                if name_lower.contains(&pattern_lower) {
+                    let path_len = path.to_string_lossy().len() as f32;
+                    let mut score = 100.0 / (path_len.max(1.0));
+                    if name_lower == pattern_lower {
+                        score += 10.0;
+                    }
+                    if name_lower.starts_with(&pattern_lower) {
+                        score += 5.0;
+                    }
+                    file_matches.push(FileMatch {
+                        path: path.clone(),
+                        score,
+                    });
+                }
+            }
+        }
+        file_matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        file_matches.truncate(FILE_MATCH_CAP);
+
+        // Send filename matches
+        if !file_matches.is_empty() {
+            let _ = update_tx.send(StampedUpdate {
+                generation: session.guard.generation_id(),
+                update: SearchUpdate::FileMatches(file_matches.clone()),
+            });
+        }
+
+        // Check cancellation before GPU dispatch
+        if session.should_stop() {
+            profile.total_us = start.elapsed().as_micros() as u64;
+            return SearchResponse {
+                file_matches: vec![],
+                content_matches: vec![],
+                total_files_searched: total_files,
+                total_matches: 0,
+                elapsed: start.elapsed(),
+                profile,
+            };
+        }
+
+        // (3) Build ChunkMetadata and padded GPU buffer from content store.
+        //
+        // The GPU kernel reads data at chunk_index * CHUNK_SIZE from buffer(0).
+        // ContentStore stores files contiguously (NOT padded to CHUNK_SIZE).
+        // We build a padded Metal buffer with each chunk at the correct offset.
+        let chunks_start = Instant::now();
+        let chunk_metas = build_chunk_metadata(content_store);
+        profile.batch_us = chunks_start.elapsed().as_micros() as u64;
+
+        if chunk_metas.is_empty() {
+            profile.total_us = start.elapsed().as_micros() as u64;
+            profile.ttfr_us = profile.total_us;
+            let total_matches = file_matches.len() as u64;
+            let response = SearchResponse {
+                file_matches,
+                content_matches: vec![],
+                total_files_searched: total_files,
+                total_matches,
+                elapsed: start.elapsed(),
+                profile,
+            };
+            let _ = update_tx.send(StampedUpdate {
+                generation: session.guard.generation_id(),
+                update: SearchUpdate::Complete(response.clone()),
+            });
+            return response;
+        }
+
+        // (4) Build padded Metal buffer for GPU dispatch.
+        // GPU kernel reads chunk N from byte offset N*CHUNK_SIZE in buffer(0).
+        // ContentStore buffer is contiguous, so we copy each chunk into the
+        // correct padded position.
+        let padded_len = chunk_metas.len() * CHUNK_SIZE;
+        let options = MTLResourceOptions::StorageModeShared;
+
+        // We need a device reference to create the padded buffer.
+        // Get it from the StreamingSearchEngine's inner ContentSearchEngine.
+        let padded_buffer = autoreleasepool(|_| {
+            let engine = self.engine.content_engine_mut();
+            let device = engine.device();
+
+            let padded_buf = device
+                .newBufferWithLength_options(padded_len, options)
+                .expect("Failed to allocate padded GPU buffer");
+
+            // Copy content data into padded positions
+            unsafe {
+                let dst_base = padded_buf.contents().as_ptr() as *mut u8;
+                std::ptr::write_bytes(dst_base, 0, padded_len);
+
+                let src = content_store.buffer();
+                let mut chunk_idx = 0usize;
+                for meta in content_store.files().iter() {
+                    let file_start = meta.content_offset as usize;
+                    let file_len = meta.content_len as usize;
+                    let num_chunks = if file_len == 0 { 0 } else { file_len.div_ceil(CHUNK_SIZE) };
+                    for c in 0..num_chunks {
+                        let src_offset = file_start + c * CHUNK_SIZE;
+                        let copy_len = (file_len - c * CHUNK_SIZE).min(CHUNK_SIZE);
+                        let dst = dst_base.add(chunk_idx * CHUNK_SIZE);
+                        std::ptr::copy_nonoverlapping(
+                            src[src_offset..src_offset + copy_len].as_ptr(),
+                            dst,
+                            copy_len,
+                        );
+                        chunk_idx += 1;
+                    }
+                }
+            }
+
+            padded_buf
+        });
+
+        // (5) Dispatch GPU search with padded content buffer
+        let search_options = SearchOptions {
+            case_sensitive: request.case_sensitive,
+            max_results: request.max_results,
+            ..Default::default()
+        };
+
+        let gpu_start = Instant::now();
+        let gpu_matches = autoreleasepool(|_| {
+            self.engine.content_engine_mut().search_with_buffer(
+                &padded_buffer,
+                &chunk_metas,
+                request.pattern.as_bytes(),
+                &search_options,
+            )
+        });
+        profile.gpu_dispatch_us = gpu_start.elapsed().as_micros() as u64;
+        profile.gpu_dispatches = 1;
+        profile.matches_raw = gpu_matches.len() as u32;
+        profile.files_searched = content_store.file_count();
+        profile.bytes_searched = content_store.total_bytes();
+
+        eprintln!(
+            "[gpu-search] content store: GPU returned {} raw matches from {} chunks ({} files, {:.1}ms)",
+            gpu_matches.len(),
+            chunk_metas.len(),
+            content_store.file_count(),
+            gpu_start.elapsed().as_secs_f64() * 1000.0
+        );
+
+        // (6) Resolve GPU matches to ContentMatch entries
+        // GPU ContentMatch has file_index, byte_offset, line_number, column.
+        // We need to resolve file_index -> path and compute accurate line numbers.
+        let resolve_start = Instant::now();
+        let mut content_matches: Vec<ContentMatch> = Vec::new();
+
+        for m in &gpu_matches {
+            if content_matches.len() >= request.max_results {
+                break;
+            }
+
+            let file_id = m.file_index as u32;
+
+            // Resolve file_id to path
+            let path = match content_store.path_for(file_id) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Get file content from the content store (zero disk I/O)
+            let file_content = match content_store.content_for(file_id) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            // Convert GPU byte_offset (in padded buffer space) to file-relative offset.
+            // GPU byte_offset = chunk_index * CHUNK_SIZE + context_start + column.
+            // 1. Find the chunk in the padded buffer
+            // 2. Look up its offset_in_file from ChunkMetadata
+            // 3. Add the intra-chunk offset
+            let padded_chunk_idx = m.byte_offset as usize / CHUNK_SIZE;
+            let offset_in_chunk = m.byte_offset as usize % CHUNK_SIZE;
+
+            let file_byte_offset = if let Some(cm) = chunk_metas.get(padded_chunk_idx) {
+                cm.offset_in_file as usize + offset_in_chunk
+            } else {
+                continue; // chunk index out of range
+            };
+
+            // If file-relative byte_offset exceeds file length, skip
+            if file_byte_offset >= file_content.len() {
+                continue;
+            }
+
+            // Resolve to line number and content using in-memory data
+            let text = String::from_utf8_lossy(file_content);
+            let lines: Vec<&str> = text.lines().collect();
+            let offset = file_byte_offset as usize;
+
+            let mut cumulative = 0usize;
+            let mut target_line = 0usize;
+            for (i, line) in lines.iter().enumerate() {
+                let after_line = cumulative + line.len();
+                let newline_len = if file_content.get(after_line) == Some(&b'\r') { 2 } else { 1 };
+                let line_end = after_line + newline_len;
+                if offset < line_end {
+                    target_line = i;
+                    break;
+                }
+                cumulative = line_end;
+                if i == lines.len() - 1 {
+                    target_line = i;
+                }
+            }
+
+            let line_content = lines.get(target_line).unwrap_or(&"").to_string();
+
+            // Find the pattern in the line for match_range
+            let match_col = if request.case_sensitive {
+                line_content.find(&request.pattern)
+            } else {
+                line_content.to_lowercase().find(&pattern_lower)
+            };
+
+            let match_col = match match_col {
+                Some(c) => c,
+                None => continue, // pattern not on this line -- skip
+            };
+
+            let match_end = match_col + request.pattern.len();
+
+            // Context lines
+            let context_before: Vec<String> = (target_line.saturating_sub(2)..target_line)
+                .filter_map(|i| lines.get(i).map(|l| l.to_string()))
+                .collect();
+            let context_after: Vec<String> = (target_line + 1..=(target_line + 2).min(lines.len().saturating_sub(1)))
+                .filter_map(|i| lines.get(i).map(|l| l.to_string()))
+                .collect();
+
+            content_matches.push(ContentMatch {
+                path: path.clone(),
+                line_number: (target_line + 1) as u32,
+                line_content,
+                context_before,
+                context_after,
+                match_range: match_col..match_end,
+            });
+        }
+
+        profile.resolve_us = resolve_start.elapsed().as_micros() as u64;
+        profile.matches_resolved = content_matches.len() as u32;
+        profile.matches_rejected = profile.matches_raw.saturating_sub(profile.matches_resolved);
+
+        eprintln!(
+            "[gpu-search] content store: resolved {} matches ({} rejected) in {:.1}ms",
+            content_matches.len(),
+            profile.matches_rejected,
+            resolve_start.elapsed().as_secs_f64() * 1000.0
+        );
+
+        // (7) Send results
+        if !content_matches.is_empty() {
+            profile.ttfr_us = start.elapsed().as_micros() as u64;
+            let _ = update_tx.send(StampedUpdate {
+                generation: session.guard.generation_id(),
+                update: SearchUpdate::ContentMatches(content_matches.clone()),
+            });
+        } else {
+            profile.ttfr_us = start.elapsed().as_micros() as u64;
+        }
+
+        let total_matches = (file_matches.len() + content_matches.len()) as u64;
+        profile.total_us = start.elapsed().as_micros() as u64;
+
+        let response = SearchResponse {
+            file_matches,
+            content_matches,
+            total_files_searched: total_files,
+            total_matches,
+            elapsed: start.elapsed(),
+            profile,
+        };
+
+        eprintln!(
+            "[gpu-search] content store search complete: {} file matches, {} content matches, {:.1}ms",
+            response.file_matches.len(),
+            response.content_matches.len(),
+            response.elapsed.as_secs_f64() * 1000.0
+        );
+        eprintln!("[gpu-search] profile:\n{}", response.profile);
+
+        let _ = update_tx.send(StampedUpdate {
+            generation: session.guard.generation_id(),
+            update: SearchUpdate::Complete(response.clone()),
+        });
+
+        response
     }
 }
 
@@ -1202,11 +1930,15 @@ fn resolve_match(
     let text = String::from_utf8_lossy(&content);
     let lines: Vec<&str> = text.lines().collect();
 
-    // Find which line the byte_offset falls on
+    // Find which line the byte_offset falls on.
+    // lines() strips both \n and \r\n, so we check the raw bytes to determine
+    // the actual line-ending length (1 for \n, 2 for \r\n).
     let mut cumulative = 0usize;
     let mut target_line = 0usize;
     for (i, line) in lines.iter().enumerate() {
-        let line_end = cumulative + line.len() + 1; // +1 for newline
+        let after_line = cumulative + line.len();
+        let newline_len = if content.get(after_line) == Some(&b'\r') { 2 } else { 1 };
+        let line_end = after_line + newline_len;
         if byte_offset < line_end {
             target_line = i;
             break;
@@ -1219,6 +1951,10 @@ fn resolve_match(
 
     let line_content = lines.get(target_line).unwrap_or(&"").to_string();
 
+    // The GPU byte_offset should place us at the exact match column within the line.
+    // expected_col = byte_offset - cumulative (start of this line in the file).
+    let expected_col = byte_offset - cumulative;
+
     // Find the actual pattern match within the line for match_range.
     // If the pattern is NOT found in this line, reject the match entirely —
     // this catches byte_offset mapping errors from the GPU pipeline.
@@ -1227,6 +1963,45 @@ fn resolve_match(
     } else {
         line_content.to_lowercase().find(&pattern.to_lowercase())?
     };
+
+    // Diagnostic: validate GPU byte_offset against find() position.
+    // If they diverge significantly, the GPU reported a different column than
+    // where find() located the pattern. Still accept find()'s result (the
+    // pattern IS in the line) but log the discrepancy for diagnostics.
+    let col_diff = match_col.abs_diff(expected_col);
+    if col_diff > pattern.len() {
+        eprintln!(
+            "[gpu-search] byte_offset discrepancy: file={} byte_offset={} expected_col={} match_col={} diff={} pattern='{}'",
+            path.display(), byte_offset, expected_col, match_col, col_diff, pattern
+        );
+    }
+
+    // Verify the content at byte_offset actually starts with the pattern bytes
+    // (case-insensitive). If it does not, the GPU reported an offset that doesn't
+    // align with the pattern — a GPU false positive at the byte level. We still
+    // accept find()'s result since the pattern IS in the line.
+    if byte_offset + pattern.len() <= content.len() {
+        let slice_at_offset = &content[byte_offset..byte_offset + pattern.len()];
+        let pattern_bytes = pattern.as_bytes();
+        let starts_with_pattern = if case_sensitive {
+            slice_at_offset == pattern_bytes
+        } else {
+            slice_at_offset
+                .iter()
+                .zip(pattern_bytes.iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        };
+        if !starts_with_pattern {
+            eprintln!(
+                "[gpu-search] byte_offset discrepancy: content at offset does not match pattern \
+                 file={} byte_offset={} expected='{}' found='{}'",
+                path.display(),
+                byte_offset,
+                pattern,
+                String::from_utf8_lossy(slice_at_offset)
+            );
+        }
+    }
 
     // Context: 2 lines before and after
     let context_before: Vec<String> = (target_line.saturating_sub(2)..target_line)
@@ -1918,5 +2693,486 @@ mod tests {
         // Case-sensitive search for "foo" on "FOO BAR" line should fail
         let result2 = resolve_match(&file, 12, "foo", true);
         assert!(result2.is_none(), "case-sensitive search for 'foo' should not match 'FOO'");
+    }
+
+    // ========================================================================
+    // Content store fast-path tests
+    // ========================================================================
+
+    #[test]
+    fn test_content_store_fast_path() {
+        use crate::index::content_index_store::ContentIndexStore;
+        use crate::index::content_snapshot::ContentSnapshot;
+        use crate::index::content_store::ContentStoreBuilder;
+
+        let device = GpuDevice::new();
+        let pso_cache = PsoCache::new(&device.device);
+
+        // Build a ContentStore with known content and paths using mmap builder
+        let dir = make_test_directory();
+
+        let main_rs = dir.path().join("main.rs");
+        let lib_rs = dir.path().join("lib.rs");
+        let utils_rs = dir.path().join("utils.rs");
+
+        let main_content = std::fs::read(&main_rs).unwrap();
+        let lib_content = std::fs::read(&lib_rs).unwrap();
+        let utils_content = std::fs::read(&utils_rs).unwrap();
+
+        let total_size = main_content.len() + lib_content.len() + utils_content.len();
+        let mut builder = ContentStoreBuilder::new(total_size + 4096).unwrap();
+
+        builder.append_with_path(&main_content, main_rs.clone(), 0, 0, 0);
+        builder.append_with_path(&lib_content, lib_rs.clone(), 1, 0, 0);
+        builder.append_with_path(&utils_content, utils_rs.clone(), 2, 0, 0);
+
+        let store = builder.finalize(&device.device);
+
+        let snapshot = ContentSnapshot::new(store, 0);
+        let content_store = Arc::new(ContentIndexStore::new());
+        content_store.swap(snapshot);
+
+        // Create orchestrator with content store
+        let mut orchestrator = SearchOrchestrator::with_content_store(
+            &device.device,
+            &pso_cache,
+            None,
+            content_store,
+        ).expect("Failed to create orchestrator with content store");
+
+        // Search for "fn " -- should use content store fast-path
+        let request = SearchRequest {
+            pattern: "fn ".to_string(),
+            root: dir.path().to_path_buf(),
+            file_types: None,
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 10_000,
+        };
+
+        let (update_tx, update_rx) = channel::unbounded();
+        let session = test_session();
+        let response = orchestrator.search_streaming(request, &update_tx, &session);
+
+        println!("Content store fast-path results:");
+        println!("  File matches: {}", response.file_matches.len());
+        println!("  Content matches: {}", response.content_matches.len());
+        println!("  Total files searched: {}", response.total_files_searched);
+        println!("  Elapsed: {:.1}ms", response.elapsed.as_secs_f64() * 1000.0);
+
+        for cm in &response.content_matches {
+            println!("  {}:{}: {}", cm.path.display(), cm.line_number, cm.line_content.trim());
+        }
+
+        // Should find "fn " in at least 3 files (main.rs, lib.rs, utils.rs)
+        assert!(
+            response.content_matches.len() >= 3,
+            "Content store fast-path should find at least 3 'fn ' matches, got {}",
+            response.content_matches.len()
+        );
+
+        // All matches should have valid paths
+        for cm in &response.content_matches {
+            assert!(cm.path.exists(), "Content match path should exist: {:?}", cm.path);
+            assert!(cm.line_number > 0, "Line number should be > 0");
+            assert!(!cm.line_content.is_empty(), "Line content should not be empty");
+        }
+
+        // Should have sent updates
+        let mut got_complete = false;
+        while let Ok(stamped) = update_rx.try_recv() {
+            if matches!(stamped.update, SearchUpdate::Complete(_)) {
+                got_complete = true;
+            }
+        }
+        assert!(got_complete, "Should send Complete update");
+
+        // Total files searched should equal the content store file count
+        assert_eq!(response.total_files_searched, 3);
+    }
+
+    #[test]
+    fn test_content_store_fallback_when_unavailable() {
+        // When content store is empty (not yet built), should fall back to disk pipeline
+        use crate::index::content_index_store::ContentIndexStore;
+
+        let device = GpuDevice::new();
+        let pso_cache = PsoCache::new(&device.device);
+
+        let content_store = Arc::new(ContentIndexStore::new());
+        // Don't swap any snapshot -- store is empty
+
+        let mut orchestrator = SearchOrchestrator::with_content_store(
+            &device.device,
+            &pso_cache,
+            None,
+            content_store,
+        ).expect("Failed to create orchestrator");
+
+        let dir = make_test_directory();
+        let request = SearchRequest {
+            pattern: "fn ".to_string(),
+            root: dir.path().to_path_buf(),
+            file_types: None,
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 10_000,
+        };
+
+        let (update_tx, _) = channel::unbounded();
+        let session = test_session();
+        let response = orchestrator.search_streaming(request, &update_tx, &session);
+
+        // Should still find matches via disk-based pipeline fallback
+        assert!(
+            response.content_matches.len() >= 3,
+            "Fallback to disk pipeline should find at least 3 'fn ' matches, got {}",
+            response.content_matches.len()
+        );
+    }
+
+    // ========================================================================
+    // Phase 3 checkpoint: zero disk I/O search with 100 files
+    // ========================================================================
+
+    /// Generate a 100-file test corpus with known patterns for checkpoint verification.
+    ///
+    /// File distribution:
+    ///   - files 0..29:  contain "kolbey" only
+    ///   - files 30..49: contain "patrick" only
+    ///   - files 50..64: contain BOTH "kolbey" and "patrick"
+    ///   - files 65..79: contain "GPU_SEARCH" (unique marker)
+    ///   - files 80..99: contain NEITHER pattern (noise/padding)
+    ///
+    /// Returns (TempDir, expected_kolbey_count, expected_patrick_count, expected_gpu_search_count)
+    fn make_100_file_corpus() -> (TempDir, usize, usize, usize) {
+        let dir = TempDir::new().expect("create tempdir");
+
+        // Category 1: kolbey only (files 0..30 = 30 files)
+        for i in 0..30 {
+            let name = format!("kolbey_{:03}.txt", i);
+            let content = format!(
+                "// File {i}\nfn process_{i}() {{\n    let name = \"kolbey\";\n    println!(\"hello kolbey #{i}\");\n}}\n"
+            );
+            std::fs::write(dir.path().join(&name), &content).unwrap();
+        }
+
+        // Category 2: patrick only (files 30..50 = 20 files)
+        for i in 30..50 {
+            let name = format!("patrick_{:03}.txt", i);
+            let content = format!(
+                "// File {i}\nfn handler_{i}() {{\n    let author = \"patrick\";\n    // Written by patrick\n}}\n"
+            );
+            std::fs::write(dir.path().join(&name), &content).unwrap();
+        }
+
+        // Category 3: both patterns (files 50..65 = 15 files)
+        for i in 50..65 {
+            let name = format!("both_{:03}.txt", i);
+            let content = format!(
+                "// File {i}\n// Author: patrick\nfn collaborate_{i}() {{\n    let team = vec![\"kolbey\", \"patrick\"];\n    println!(\"kolbey and patrick working\");\n}}\n"
+            );
+            std::fs::write(dir.path().join(&name), &content).unwrap();
+        }
+
+        // Category 4: GPU_SEARCH marker (files 65..80 = 15 files)
+        for i in 65..80 {
+            let name = format!("gpu_{:03}.txt", i);
+            let content = format!(
+                "// File {i}\nconst MARKER: &str = \"GPU_SEARCH\";\nfn benchmark_{i}() {{\n    // GPU_SEARCH enabled\n}}\n"
+            );
+            std::fs::write(dir.path().join(&name), &content).unwrap();
+        }
+
+        // Category 5: noise files (files 80..100 = 20 files) -- no target patterns
+        for i in 80..100 {
+            let name = format!("noise_{:03}.txt", i);
+            let content = format!(
+                "// File {i}\nfn utility_{i}() {{\n    let x = {i} * 2;\n    let y = x + 1;\n    println!(\"result: {{}}\", y);\n}}\n"
+            );
+            std::fs::write(dir.path().join(&name), &content).unwrap();
+        }
+
+        // Expected match counts:
+        // "kolbey":     30 files (cat1) + 15 files (cat3) = 45 files
+        //   cat1: 2 occurrences each (name = "kolbey", hello kolbey) = 60
+        //   cat3: 2 occurrences each (vec kolbey, kolbey and) = 30
+        //   Total "kolbey" occurrences = 90
+        //
+        // "patrick":    20 files (cat2) + 15 files (cat3) = 35 files
+        //   cat2: 2 occurrences each = 40
+        //   cat3: 2 occurrences each (Author: patrick, and patrick) + 1 (vec patrick) = 45
+        //   (exact count varies by GPU match granularity)
+        //
+        // "GPU_SEARCH": 15 files (cat4), 2 occurrences each = 30
+
+        let kolbey_files = 30 + 15; // 45 files contain "kolbey"
+        let patrick_files = 20 + 15; // 35 files contain "patrick"
+        let gpu_search_files = 15; // 15 files contain "GPU_SEARCH"
+
+        (dir, kolbey_files, patrick_files, gpu_search_files)
+    }
+
+    #[test]
+    fn test_content_store_phase3_checkpoint() {
+        use crate::index::content_index_store::ContentIndexStore;
+        use crate::index::content_snapshot::ContentSnapshot;
+        use crate::index::content_store::ContentStoreBuilder;
+        use std::collections::HashSet;
+
+        let device = GpuDevice::new();
+        let pso_cache = PsoCache::new(&device.device);
+
+        let (dir, expected_kolbey_files, expected_patrick_files, expected_gpu_files) =
+            make_100_file_corpus();
+
+        // -----------------------------------------------------------------
+        // Build ContentStore from the 100 files
+        // -----------------------------------------------------------------
+        // Read all files and compute total size
+        let mut file_entries: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut total_size = 0usize;
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                let content = std::fs::read(&path).unwrap();
+                total_size += content.len();
+                file_entries.push((path, content));
+            }
+        }
+        // Sort for deterministic ordering
+        file_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(file_entries.len(), 100, "Should have exactly 100 files");
+
+        let mut builder = ContentStoreBuilder::new(total_size + 16384).unwrap();
+        for (i, (path, content)) in file_entries.iter().enumerate() {
+            builder.append_with_path(content, path.clone(), i as u32, 0, 0);
+        }
+        let store = builder.finalize(&device.device);
+        assert_eq!(store.file_count() as usize, 100);
+
+        let snapshot = ContentSnapshot::new(store, 0);
+        let content_store = Arc::new(ContentIndexStore::new());
+        content_store.swap(snapshot);
+
+        // -----------------------------------------------------------------
+        // Test 1: Search for "kolbey" via content store
+        // -----------------------------------------------------------------
+        let mut orchestrator = SearchOrchestrator::with_content_store(
+            &device.device,
+            &pso_cache,
+            None,
+            content_store.clone(),
+        ).expect("Failed to create orchestrator");
+
+        let request = SearchRequest {
+            pattern: "kolbey".to_string(),
+            root: dir.path().to_path_buf(),
+            file_types: None,
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 10_000,
+        };
+
+        let (update_tx, _) = channel::unbounded();
+        let session = test_session();
+        let response = orchestrator.search_streaming(request, &update_tx, &session);
+
+        println!("=== Phase 3 Checkpoint: 'kolbey' search ===");
+        println!("  Content matches: {}", response.content_matches.len());
+        println!("  Total files searched: {}", response.total_files_searched);
+        println!("  Elapsed: {:.1}ms", response.elapsed.as_secs_f64() * 1000.0);
+
+        // Verify we searched all 100 files
+        assert_eq!(response.total_files_searched, 100, "Should search all 100 files");
+
+        // Collect unique file paths from matches
+        let kolbey_match_files: HashSet<PathBuf> = response.content_matches
+            .iter()
+            .map(|m| m.path.clone())
+            .collect();
+
+        println!("  Unique files with 'kolbey' matches: {}", kolbey_match_files.len());
+
+        // Should find matches in the correct number of files
+        assert!(
+            kolbey_match_files.len() >= expected_kolbey_files - 2,
+            "Expected matches in ~{} files for 'kolbey', got {} files",
+            expected_kolbey_files, kolbey_match_files.len()
+        );
+
+        // No false positives: matches should ONLY be in kolbey_ or both_ files
+        for path in &kolbey_match_files {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                name.starts_with("kolbey_") || name.starts_with("both_"),
+                "False positive: 'kolbey' match found in unexpected file: {}",
+                name
+            );
+        }
+
+        // All matches should have valid line content containing "kolbey"
+        for cm in &response.content_matches {
+            assert!(cm.line_number > 0, "Line number should be > 0 for {:?}", cm.path);
+            // line_content should contain the pattern (case-sensitive)
+            assert!(
+                cm.line_content.contains("kolbey"),
+                "Match line should contain 'kolbey': {:?} -> '{}'",
+                cm.path.file_name(), cm.line_content.trim()
+            );
+        }
+
+        // No matches should be in noise_, patrick_, or gpu_ files
+        for cm in &response.content_matches {
+            let name = cm.path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                !name.starts_with("noise_") && !name.starts_with("patrick_") && !name.starts_with("gpu_"),
+                "False positive: 'kolbey' should not match in {}", name
+            );
+        }
+
+        // -----------------------------------------------------------------
+        // Test 2: Search for "GPU_SEARCH" via content store
+        // -----------------------------------------------------------------
+        let request2 = SearchRequest {
+            pattern: "GPU_SEARCH".to_string(),
+            root: dir.path().to_path_buf(),
+            file_types: None,
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 10_000,
+        };
+
+        let (update_tx2, _) = channel::unbounded();
+        let session2 = test_session();
+        let response2 = orchestrator.search_streaming(request2, &update_tx2, &session2);
+
+        println!("\n=== Phase 3 Checkpoint: 'GPU_SEARCH' search ===");
+        println!("  Content matches: {}", response2.content_matches.len());
+
+        let gpu_match_files: HashSet<PathBuf> = response2.content_matches
+            .iter()
+            .map(|m| m.path.clone())
+            .collect();
+
+        println!("  Unique files with 'GPU_SEARCH' matches: {}", gpu_match_files.len());
+
+        // Should find GPU_SEARCH only in gpu_ files
+        assert!(
+            gpu_match_files.len() >= expected_gpu_files - 1,
+            "Expected matches in ~{} files for 'GPU_SEARCH', got {} files",
+            expected_gpu_files, gpu_match_files.len()
+        );
+
+        for path in &gpu_match_files {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                name.starts_with("gpu_"),
+                "False positive: 'GPU_SEARCH' match in unexpected file: {}",
+                name
+            );
+        }
+
+        // Each match line should contain "GPU_SEARCH"
+        for cm in &response2.content_matches {
+            assert!(
+                cm.line_content.contains("GPU_SEARCH"),
+                "Match line should contain 'GPU_SEARCH': {:?} -> '{}'",
+                cm.path.file_name(), cm.line_content.trim()
+            );
+        }
+
+        // -----------------------------------------------------------------
+        // Test 3: Search for "ZZZZZ_NONEXISTENT" -- zero matches expected
+        // -----------------------------------------------------------------
+        let request3 = SearchRequest {
+            pattern: "ZZZZZ_NONEXISTENT".to_string(),
+            root: dir.path().to_path_buf(),
+            file_types: None,
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 10_000,
+        };
+
+        let (update_tx3, _) = channel::unbounded();
+        let session3 = test_session();
+        let response3 = orchestrator.search_streaming(request3, &update_tx3, &session3);
+
+        assert_eq!(
+            response3.content_matches.len(), 0,
+            "Non-existent pattern should return zero matches, got {}",
+            response3.content_matches.len()
+        );
+        assert_eq!(response3.total_files_searched, 100);
+
+        // -----------------------------------------------------------------
+        // Test 4: Search for "patrick" -- verify file distribution
+        // -----------------------------------------------------------------
+        let request4 = SearchRequest {
+            pattern: "patrick".to_string(),
+            root: dir.path().to_path_buf(),
+            file_types: None,
+            case_sensitive: true,
+            respect_gitignore: false,
+            include_binary: false,
+            max_results: 10_000,
+        };
+
+        let (update_tx4, _) = channel::unbounded();
+        let session4 = test_session();
+        let response4 = orchestrator.search_streaming(request4, &update_tx4, &session4);
+
+        println!("\n=== Phase 3 Checkpoint: 'patrick' search ===");
+        println!("  Content matches: {}", response4.content_matches.len());
+
+        let patrick_match_files: HashSet<PathBuf> = response4.content_matches
+            .iter()
+            .map(|m| m.path.clone())
+            .collect();
+
+        println!("  Unique files with 'patrick' matches: {}", patrick_match_files.len());
+
+        assert!(
+            patrick_match_files.len() >= expected_patrick_files - 2,
+            "Expected matches in ~{} files for 'patrick', got {} files",
+            expected_patrick_files, patrick_match_files.len()
+        );
+
+        // No false positives: matches only in patrick_ or both_ files
+        for path in &patrick_match_files {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                name.starts_with("patrick_") || name.starts_with("both_"),
+                "False positive: 'patrick' match in unexpected file: {}",
+                name
+            );
+        }
+
+        // All match lines should contain "patrick"
+        for cm in &response4.content_matches {
+            assert!(
+                cm.line_content.contains("patrick"),
+                "Match line should contain 'patrick': {:?} -> '{}'",
+                cm.path.file_name(), cm.line_content.trim()
+            );
+        }
+
+        println!("\n=== Phase 3 Checkpoint PASSED ===");
+        println!("  100 files indexed, zero disk I/O during search");
+        println!("  'kolbey':       {} matches in {} files (expected ~{})",
+            response.content_matches.len(), kolbey_match_files.len(), expected_kolbey_files);
+        println!("  'GPU_SEARCH':   {} matches in {} files (expected ~{})",
+            response2.content_matches.len(), gpu_match_files.len(), expected_gpu_files);
+        println!("  'patrick':      {} matches in {} files (expected ~{})",
+            response4.content_matches.len(), patrick_match_files.len(), expected_patrick_files);
+        println!("  no-match query: 0 matches (correct)");
+        println!("  No false positives in any search");
     }
 }

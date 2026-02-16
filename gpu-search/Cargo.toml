@@ -12,8 +12,8 @@ objc2-foundation = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
 
-# UI
-eframe = "0.31"
+# UI (wgpu backend for Metal on macOS — glow uses OpenGL which lacks Metal compute integration)
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu"] }
 
 # Syntax highlighting
 syntect = "5"
@@ -36,11 +36,22 @@ libc = "0.2"
 # Cross-thread channels
 crossbeam-channel = "0.5"
 
+# CRC32 checksum
+crc32fast = "1"
+
+# Lock-free atomic pointer swap
+arc-swap = "1"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Filesystem watching
+# macOS FSEvents integration
+fsevent-sys = "4"
+core-foundation = "0.10"
+
+# Filesystem watching (non-macOS only; macOS uses FSEventsListener)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 notify = "7"
 notify-debouncer-mini = "0.5"
 
@@ -67,4 +78,12 @@ harness = false
 
 [[bench]]
 name = "grouped_scroll"
+harness = false
+
+[[bench]]
+name = "index_load"
+harness = false
+
+[[bench]]
+name = "content_search"
 harness = false

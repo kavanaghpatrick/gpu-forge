@@ -11,12 +11,71 @@ use eframe::egui;
 use super::path_utils::abbreviate_root;
 use super::theme;
 
+/// Represents the current state of the persistent file index.
+///
+/// Used by the UI to display index status in the status bar and by the app
+/// to track index lifecycle events (building, ready, updating, stale, error).
+#[derive(Debug, Clone, Default)]
+pub enum IndexState {
+    /// Index is being loaded from disk (initial startup).
+    #[default]
+    Loading,
+    /// Index is being built from a filesystem scan.
+    Building {
+        /// Number of files indexed so far.
+        files_indexed: usize,
+    },
+    /// Index is ready and serving searches.
+    Ready {
+        /// Total number of files in the index.
+        file_count: usize,
+    },
+    /// Index is being updated with incremental changes from FSEvents.
+    Updating,
+    /// Index exists but is older than the staleness threshold.
+    Stale {
+        /// Total number of files in the stale index.
+        file_count: usize,
+    },
+    /// Index encountered an error.
+    Error {
+        /// Human-readable error description.
+        message: String,
+    },
+}
+
+
+/// Format a file count for compact display.
+///
+/// - < 1000: exact number (e.g., "420")
+/// - 1000-999999: K format (e.g., "1.5K", "420K")
+/// - >= 1000000: M format (e.g., "1.3M")
+pub fn format_file_count(count: usize) -> String {
+    if count < 1_000 {
+        format!("{count}")
+    } else if count < 1_000_000 {
+        let k = count as f64 / 1_000.0;
+        if count < 100_000 {
+            // Show one decimal for 1.0K-99.9K
+            format!("{k:.1}K")
+        } else {
+            // 100K-999K: no decimal needed
+            format!("{k:.0}K")
+        }
+    } else {
+        let m = count as f64 / 1_000_000.0;
+        format!("{m:.1}M")
+    }
+}
+
 /// Status bar displaying search statistics.
 ///
 /// When searching: "Searching... | N matches | X.Xs | ~root | 2 filters"
 /// When idle:      "N matches in X.Xms | ~root | 2 filters"
 /// Uses TEXT_MUTED for labels and TEXT_PRIMARY for values.
 pub struct StatusBar {
+    /// Current state of the persistent file index.
+    pub index_state: IndexState,
     /// Number of matches found.
     pub match_count: usize,
     /// Time elapsed for the search.
@@ -34,6 +93,7 @@ pub struct StatusBar {
 impl Default for StatusBar {
     fn default() -> Self {
         Self {
+            index_state: IndexState::default(),
             match_count: 0,
             elapsed: Duration::ZERO,
             search_root: PathBuf::from("."),
@@ -53,12 +113,34 @@ impl StatusBar {
         active_filter_count: usize,
     ) -> Self {
         Self {
+            index_state: IndexState::default(),
             match_count,
             elapsed,
             search_root: search_root.into(),
             active_filter_count,
             is_searching: false,
             search_start: None,
+        }
+    }
+
+    /// Returns the display text and color for the current index state.
+    pub fn index_status_text(&self) -> (String, egui::Color32) {
+        match &self.index_state {
+            IndexState::Loading => ("Loading...".to_string(), theme::ACCENT),
+            IndexState::Building { files_indexed } => {
+                let formatted = format_file_count(*files_indexed);
+                (format!("Indexing: {formatted} files"), theme::ACCENT)
+            }
+            IndexState::Ready { file_count } => {
+                let formatted = format_file_count(*file_count);
+                (format!("{formatted} files"), theme::SUCCESS)
+            }
+            IndexState::Updating => ("Updating...".to_string(), theme::ACCENT),
+            IndexState::Stale { file_count } => {
+                let formatted = format_file_count(*file_count);
+                (format!("{formatted} files (stale)"), theme::ACCENT)
+            }
+            IndexState::Error { .. } => ("Index: error".to_string(), theme::ERROR),
         }
     }
 
@@ -89,6 +171,11 @@ impl StatusBar {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
+
+            // Index status segment (prepended before search stats)
+            let (index_text, index_color) = self.index_status_text();
+            ui.colored_label(index_color, &index_text);
+            ui.colored_label(theme::BORDER, "|");
 
             if self.is_searching {
                 // Live searching state
@@ -152,6 +239,7 @@ impl StatusBar {
 
     /// Format the status bar as a string (for testing).
     pub fn format_status(&self) -> String {
+        let (index_text, _) = self.index_status_text();
         let abbreviated = abbreviate_root(&self.search_root);
         let display_root = truncate_path(&abbreviated, 40);
         let mut status = if self.is_searching {
@@ -160,14 +248,16 @@ impl StatusBar {
                 .map(|start| start.elapsed())
                 .unwrap_or(Duration::ZERO);
             format!(
-                "Searching... | {} matches | {:.1}s | {}",
+                "{} | Searching... | {} matches | {:.1}s | {}",
+                index_text,
                 self.match_count,
                 live_elapsed.as_secs_f64(),
                 display_root,
             )
         } else {
             format!(
-                "{} matches in {:.1}ms | {}",
+                "{} | {} matches in {:.1}ms | {}",
+                index_text,
                 self.match_count,
                 self.elapsed.as_secs_f64() * 1000.0,
                 display_root,
@@ -200,6 +290,7 @@ mod tests {
     #[test]
     fn test_status_bar_default() {
         let bar = StatusBar::default();
+        assert!(matches!(bar.index_state, IndexState::Loading));
         assert_eq!(bar.match_count, 0);
         assert_eq!(bar.elapsed, Duration::ZERO);
         assert_eq!(bar.search_root, PathBuf::from("."));
@@ -335,5 +426,155 @@ mod tests {
         let status = bar.format_status();
         assert!(status.contains("Searching..."));
         assert!(status.contains("0.0s"));
+    }
+
+    // --- format_file_count tests ---
+
+    #[test]
+    fn test_format_file_count_exact() {
+        assert_eq!(format_file_count(0), "0");
+        assert_eq!(format_file_count(1), "1");
+        assert_eq!(format_file_count(420), "420");
+        assert_eq!(format_file_count(999), "999");
+    }
+
+    #[test]
+    fn test_format_file_count_k() {
+        assert_eq!(format_file_count(1_000), "1.0K");
+        assert_eq!(format_file_count(1_500), "1.5K");
+        assert_eq!(format_file_count(10_000), "10.0K");
+        assert_eq!(format_file_count(99_999), "100.0K");
+        assert_eq!(format_file_count(100_000), "100K");
+        assert_eq!(format_file_count(420_000), "420K");
+        assert_eq!(format_file_count(999_999), "1000K");
+    }
+
+    #[test]
+    fn test_format_file_count_m() {
+        assert_eq!(format_file_count(1_000_000), "1.0M");
+        assert_eq!(format_file_count(1_300_000), "1.3M");
+        assert_eq!(format_file_count(10_000_000), "10.0M");
+    }
+
+    // --- IndexState rendering tests ---
+
+    #[test]
+    fn test_index_status_loading() {
+        let bar = StatusBar::default();
+        let (text, color) = bar.index_status_text();
+        assert_eq!(text, "Loading...");
+        assert_eq!(color, theme::ACCENT);
+    }
+
+    #[test]
+    fn test_index_status_building() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Building { files_indexed: 420_000 };
+        let (text, color) = bar.index_status_text();
+        assert_eq!(text, "Indexing: 420K files");
+        assert_eq!(color, theme::ACCENT);
+    }
+
+    #[test]
+    fn test_index_status_ready() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Ready { file_count: 1_300_000 };
+        let (text, color) = bar.index_status_text();
+        assert_eq!(text, "1.3M files");
+        assert_eq!(color, theme::SUCCESS);
+    }
+
+    #[test]
+    fn test_index_status_updating() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Updating;
+        let (text, color) = bar.index_status_text();
+        assert_eq!(text, "Updating...");
+        assert_eq!(color, theme::ACCENT);
+    }
+
+    #[test]
+    fn test_index_status_stale() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Stale { file_count: 1_300_000 };
+        let (text, color) = bar.index_status_text();
+        assert_eq!(text, "1.3M files (stale)");
+        assert_eq!(color, theme::ACCENT);
+    }
+
+    #[test]
+    fn test_index_status_error() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Error { message: "disk full".to_string() };
+        let (text, color) = bar.index_status_text();
+        assert_eq!(text, "Index: error");
+        assert_eq!(color, theme::ERROR);
+    }
+
+    #[test]
+    fn test_format_status_includes_index_state() {
+        let mut bar = StatusBar::new(42, Duration::from_millis(5), "/project", 0);
+        bar.index_state = IndexState::Ready { file_count: 500 };
+        let status = bar.format_status();
+        assert!(
+            status.starts_with("500 files |"),
+            "Expected index state prefix in: {status}"
+        );
+        assert!(status.contains("42 matches"));
+    }
+
+    #[test]
+    fn test_format_status_building_state() {
+        let mut bar = StatusBar::new(0, Duration::ZERO, "/", 0);
+        bar.index_state = IndexState::Building { files_indexed: 1_500 };
+        let status = bar.format_status();
+        assert!(
+            status.contains("Indexing: 1.5K files"),
+            "Expected building text in: {status}"
+        );
+    }
+
+    // --- Task 5.12: Named IndexState status bar rendering tests ---
+
+    #[test]
+    fn test_index_state_ready_display() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Ready { file_count: 1_300_000 };
+        let (text, _color) = bar.index_status_text();
+        assert_eq!(text, "1.3M files");
+    }
+
+    #[test]
+    fn test_index_state_building_display() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Building { files_indexed: 420_000 };
+        let (text, _color) = bar.index_status_text();
+        assert_eq!(text, "Indexing: 420K files");
+    }
+
+    #[test]
+    fn test_index_state_stale_display() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Stale { file_count: 1_300_000 };
+        let (text, _color) = bar.index_status_text();
+        assert_eq!(text, "1.3M files (stale)");
+    }
+
+    #[test]
+    fn test_index_state_error_display() {
+        let mut bar = StatusBar::default();
+        bar.index_state = IndexState::Error { message: "corrupt".to_string() };
+        let (text, _color) = bar.index_status_text();
+        assert_eq!(text, "Index: error");
+    }
+
+    #[test]
+    fn test_file_count_k_formatting() {
+        assert_eq!(format_file_count(1_500), "1.5K");
+    }
+
+    #[test]
+    fn test_file_count_m_formatting() {
+        assert_eq!(format_file_count(1_300_000), "1.3M");
     }
 }

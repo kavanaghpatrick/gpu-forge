@@ -11,6 +11,7 @@
 //! Target: <10ms for 100K cached entries on Apple Silicon.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use objc2::rc::Retained;
@@ -18,11 +19,11 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLDevice};
 
 use crate::gpu::types::GpuPathEntry;
-use crate::index::cache::{self, CacheError, MmapIndexCache};
+use crate::index::cache::CacheError;
 use crate::index::gpu_index::GpuResidentIndex;
 use crate::index::scanner::FilesystemScanner;
 use crate::index::shared_index::SharedIndexManager;
-use crate::io::mmap::MmapBuffer;
+use crate::index::store::IndexStore;
 
 // ============================================================================
 // Errors
@@ -89,8 +90,6 @@ pub struct GpuLoadedIndex {
     from_cache: bool,
     /// Time taken to load the index
     load_time: std::time::Duration,
-    /// Optional: keep the mmap alive so the zero-copy Metal buffer remains valid
-    _mmap: Option<MmapBuffer>,
 }
 
 impl GpuLoadedIndex {
@@ -152,6 +151,9 @@ pub struct GpuIndexLoader<'a> {
     device: &'a ProtocolObject<dyn MTLDevice>,
     /// Optional custom cache directory (default: ~/.gpu-search/)
     cache_base: Option<PathBuf>,
+    /// Optional IndexStore for mmap-backed zero-copy snapshots.
+    /// When available, snapshots are preferred over the copy-based SharedIndexManager path.
+    index_store: Option<Arc<IndexStore>>,
 }
 
 impl<'a> GpuIndexLoader<'a> {
@@ -160,6 +162,7 @@ impl<'a> GpuIndexLoader<'a> {
         Self {
             device,
             cache_base: None,
+            index_store: None,
         }
     }
 
@@ -168,6 +171,16 @@ impl<'a> GpuIndexLoader<'a> {
         Self {
             device,
             cache_base: Some(cache_base),
+            index_store: None,
+        }
+    }
+
+    /// Create a loader with an IndexStore for mmap-backed zero-copy snapshots.
+    pub fn with_store(device: &'a ProtocolObject<dyn MTLDevice>, store: Arc<IndexStore>) -> Self {
+        Self {
+            device,
+            cache_base: None,
+            index_store: Some(store),
         }
     }
 
@@ -195,7 +208,72 @@ impl<'a> GpuIndexLoader<'a> {
     }
 
     /// Try to load from mmap cache (fast path).
+    ///
+    /// Checks two sources in priority order:
+    /// 1. IndexStore snapshot (mmap-backed zero-copy via bytesNoCopy) — preferred
+    /// 2. SharedIndexManager v1 format — fallback for non-Metal or pre-v2 contexts
     fn try_load_from_cache(&self, root: &Path) -> Result<GpuLoadedIndex, GpuLoaderError> {
+        // Try IndexStore snapshot first (zero-copy mmap path)
+        if let Some(ref store) = self.index_store {
+            if let Ok(loaded) = self.try_load_from_store(store, root) {
+                return Ok(loaded);
+            }
+        }
+
+        // Fallback: SharedIndexManager (copy-based v1 path)
+        self.try_load_from_manager(root)
+    }
+
+    /// Try to load from IndexStore's mmap-backed snapshot (zero-copy path).
+    ///
+    /// If the IndexStore has a valid snapshot with a Metal buffer, uses that
+    /// directly — no data copy needed. The Metal buffer was already created
+    /// via bytesNoCopy over the mmap'd region.
+    fn try_load_from_store(
+        &self,
+        store: &IndexStore,
+        root: &Path,
+    ) -> Result<GpuLoadedIndex, GpuLoaderError> {
+        let start = Instant::now();
+
+        let guard = store.snapshot();
+        let snapshot = guard.as_ref().as_ref().ok_or_else(|| {
+            GpuLoaderError::Build("IndexStore has no snapshot".into())
+        })?;
+
+        let entry_count = snapshot.entry_count();
+        if entry_count == 0 {
+            return Err(GpuLoaderError::Build("IndexStore snapshot is empty".into()));
+        }
+
+        // Get the Metal buffer from the snapshot (already created via bytesNoCopy)
+        let metal_buf = snapshot.metal_buffer().ok_or_else(|| {
+            GpuLoaderError::Metal("Snapshot has no Metal buffer".into())
+        })?;
+
+        // Retain the buffer so it outlives the guard (objc2 Retained::from(&ref) bumps refcount)
+        let buffer: Retained<ProtocolObject<dyn MTLBuffer>> = metal_buf.into();
+        let load_time = start.elapsed();
+
+        eprintln!(
+            "[gpu-loader] loaded {} entries from IndexStore snapshot (zero-copy, {:?})",
+            entry_count, load_time
+        );
+
+        Ok(GpuLoadedIndex {
+            buffer,
+            entry_count,
+            root: root.to_path_buf(),
+            from_cache: true,
+            load_time,
+        })
+    }
+
+    /// Fallback: load from SharedIndexManager (copy-based v1 path).
+    ///
+    /// Uses SharedIndexManager (v1 format) for load since scan_build_save_load
+    /// saves in v1 format. Kept as fallback for non-Metal contexts.
+    fn try_load_from_manager(&self, root: &Path) -> Result<GpuLoadedIndex, GpuLoaderError> {
         let start = Instant::now();
         let manager = self.make_manager()?;
 
@@ -204,30 +282,13 @@ impl<'a> GpuIndexLoader<'a> {
             return Err(GpuLoaderError::Build("Index is stale".into()));
         }
 
-        let idx_path = manager.index_path(root);
-        if !idx_path.exists() {
-            return Err(GpuLoaderError::Build("No cached index".into()));
-        }
+        // Load entries from v1 cache via SharedIndexManager (matches save format)
+        let mut resident = manager.load(root).map_err(|e| {
+            GpuLoaderError::Build(format!("Failed to load cached index: {}", e))
+        })?;
+        let entry_count = resident.entry_count();
 
-        // mmap the index file
-        let root_hash = cache::cache_key(root);
-        let mmap_cache = MmapIndexCache::load_mmap(&idx_path, Some(root_hash))?;
-        let entry_count = mmap_cache.entry_count();
-
-        // Use the mmap buffer to create a zero-copy Metal buffer
-        let mmap = MmapBuffer::from_file(&idx_path)?;
-
-        // The entries start at offset 64 (after the header) in the mmap'd file.
-        // We need a Metal buffer covering just the entry data.
-        // Since as_metal_buffer() maps the whole file (including header),
-        // we create the Metal buffer from the full mmap and the kernel will
-        // offset by HEADER_SIZE.
-        //
-        // Actually, for simplicity and correctness, we'll load the entries
-        // into a GpuResidentIndex and use its to_gpu_buffer() method.
-        // This copies data but is still fast (<10ms for 100K entries).
-        let resident = mmap_cache.into_resident_index();
-        let mut resident = resident;
+        // Upload entries to GPU buffer (copy path)
         let buffer = resident.to_gpu_buffer(self.device).clone();
 
         let load_time = start.elapsed();
@@ -238,7 +299,6 @@ impl<'a> GpuIndexLoader<'a> {
             root: root.to_path_buf(),
             from_cache: true,
             load_time,
-            _mmap: Some(mmap),
         })
     }
 
@@ -271,7 +331,7 @@ impl<'a> GpuIndexLoader<'a> {
             root: root.to_path_buf(),
             from_cache: false,
             load_time,
-            _mmap: None,
+
         })
     }
 
