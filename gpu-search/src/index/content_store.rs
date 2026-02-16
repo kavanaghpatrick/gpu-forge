@@ -16,6 +16,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
 use crate::io::mmap::{align_to_page, PAGE_SIZE};
+use crate::search::content::ChunkMetadata;
 
 /// Metadata for a single file stored in the content buffer.
 #[repr(C)]
@@ -189,6 +190,8 @@ pub struct ContentStore {
     /// Bytes wasted by updates (old content that is no longer referenced).
     /// Tracked for future compaction support.
     dead_bytes: u64,
+    /// Pre-built chunk metadata for GPU dispatch (cached from index build).
+    chunk_metadata: Option<Vec<ChunkMetadata>>,
 }
 
 // SAFETY: ContentBacking is Send+Sync. Retained<MTLBuffer> is thread-safe
@@ -208,6 +211,7 @@ impl ContentStore {
             total_bytes: 0,
             file_count: 0,
             dead_bytes: 0,
+            chunk_metadata: None,
         }
     }
 
@@ -221,6 +225,7 @@ impl ContentStore {
             total_bytes: 0,
             file_count: 0,
             dead_bytes: 0,
+            chunk_metadata: None,
         }
     }
 
@@ -344,6 +349,16 @@ impl ContentStore {
     /// that is no longer referenced). Useful for deciding when to compact.
     pub fn dead_bytes(&self) -> u64 {
         self.dead_bytes
+    }
+
+    /// Access the pre-built chunk metadata, if available.
+    pub fn chunk_metadata(&self) -> Option<&[ChunkMetadata]> {
+        self.chunk_metadata.as_deref()
+    }
+
+    /// Set pre-built chunk metadata for GPU dispatch caching.
+    pub fn set_chunk_metadata(&mut self, chunks: Vec<ChunkMetadata>) {
+        self.chunk_metadata = Some(chunks);
     }
 
     // ---------------------------------------------------------------
@@ -489,6 +504,7 @@ impl ContentStore {
         content_offset: usize,
         content_len: usize,
         device: Option<&ProtocolObject<dyn MTLDevice>>,
+        paths: Vec<PathBuf>,
     ) -> Self {
         let file_count = files.len() as u32;
         let total_bytes = content_len as u64;
@@ -566,10 +582,11 @@ impl ContentStore {
                 content_len,
             },
             files,
-            paths: Vec::new(), // Paths not stored in GCIX format
+            paths, // Loaded from GCIX v2 path table
             total_bytes,
             file_count,
             dead_bytes: 0,
+            chunk_metadata: None,
         }
     }
 }
@@ -842,6 +859,7 @@ impl ContentStoreBuilder {
             total_bytes,
             file_count,
             dead_bytes: 0,
+            chunk_metadata: None,
         }
     }
 
@@ -877,6 +895,7 @@ impl ContentStoreBuilder {
             total_bytes,
             file_count,
             dead_bytes: 0,
+            chunk_metadata: None,
         }
     }
 }
@@ -897,7 +916,7 @@ impl Drop for ContentStoreBuilder {
 // ChunkMetadata builder: maps ContentStore into GPU chunk format
 // ---------------------------------------------------------------------------
 
-use crate::search::content::{ChunkMetadata, CHUNK_SIZE};
+use crate::search::content::CHUNK_SIZE;
 
 /// Build GPU-compatible ChunkMetadata from a ContentStore.
 ///
@@ -944,6 +963,7 @@ pub fn build_chunk_metadata(store: &ContentStore) -> Vec<ChunkMetadata> {
                 offset_in_file: offset as u64,
                 chunk_length: chunk_len as u32,
                 flags,
+                buffer_offset: (meta.content_offset as usize + offset) as u64,
             });
         }
     }

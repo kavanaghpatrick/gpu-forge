@@ -81,7 +81,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-5, FR-6_
   - _Design: Component B_
 
-- [ ] 1.5 Add chunk_metadata field to ContentStore
+- [x] 1.5 Add chunk_metadata field to ContentStore
   - **Do**:
     1. Add field `chunk_metadata: Option<Vec<ChunkMetadata>>` to `ContentStore` struct (content_store.rs:173)
     2. Add `use crate::search::content::ChunkMetadata;` import (already exists at bottom of file for build_chunk_metadata)
