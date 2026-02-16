@@ -1561,4 +1561,454 @@ mod tests {
             assert!(m.line_number >= 1, "line_number should be >= 1");
         }
     }
+
+    // ================================================================
+    // GPU line number accuracy tests (task 3.2)
+    // ================================================================
+
+    /// Helper: compute CPU reference line number for a byte offset within file content.
+    /// Line number is 1-based: count newlines before byte_offset, then +1.
+    fn cpu_line_number(content: &[u8], byte_offset: usize) -> u32 {
+        content.iter().take(byte_offset).filter(|&&b| b == b'\n').count() as u32 + 1
+    }
+
+    /// Helper: set up a zerocopy search engine, content buffer, and chunk metadata
+    /// for a single file's content. Returns (engine, content_buffer, chunk_metas).
+    fn setup_zerocopy_single_file(
+        content: &[u8],
+    ) -> (
+        ContentSearchEngine,
+        Retained<ProtocolObject<dyn MTLBuffer>>,
+        Vec<ChunkMetadata>,
+    ) {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        let engine = ContentSearchEngine::new(&device, &pso_cache, 100);
+
+        let file_len = content.len();
+        let num_chunks = if file_len == 0 { 0 } else { file_len.div_ceil(CHUNK_SIZE) };
+
+        // Allocate buffer large enough (num_chunks * CHUNK_SIZE, but at least CHUNK_SIZE
+        // to avoid zero-length buffer)
+        let buf_size = num_chunks.max(1) * CHUNK_SIZE;
+        let options = MTLResourceOptions::StorageModeShared;
+        let content_buffer = device
+            .newBufferWithLength_options(buf_size, options)
+            .expect("Failed to allocate content buffer");
+
+        // Copy content into buffer (contiguous, not padded per-chunk for zerocopy)
+        unsafe {
+            let base = content_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(base, 0, buf_size);
+            std::ptr::copy_nonoverlapping(content.as_ptr(), base, file_len);
+        }
+
+        // Build chunk metadata with buffer_offset pointing to contiguous layout
+        let mut chunk_metas = Vec::with_capacity(num_chunks);
+        for chunk_i in 0..num_chunks {
+            let offset_in_file = chunk_i * CHUNK_SIZE;
+            let chunk_len = (file_len - offset_in_file).min(CHUNK_SIZE);
+            let mut flags = 1u32; // is_text
+            if chunk_i == 0 {
+                flags |= 2; // is_first
+            }
+            if chunk_i == num_chunks - 1 {
+                flags |= 4; // is_last
+            }
+            chunk_metas.push(ChunkMetadata {
+                file_index: 0,
+                chunk_index: chunk_i as u32,
+                offset_in_file: offset_in_file as u64,
+                chunk_length: chunk_len as u32,
+                flags,
+                buffer_offset: offset_in_file as u64,
+            });
+        }
+
+        (engine, content_buffer, chunk_metas)
+    }
+
+    /// Helper: set up zerocopy for multiple files in a contiguous buffer.
+    /// Returns (engine, content_buffer, chunk_metas, file_offsets) where
+    /// file_offsets[i] = byte offset of file i in the contiguous buffer.
+    fn setup_zerocopy_multi_file(
+        files: &[&[u8]],
+    ) -> (
+        ContentSearchEngine,
+        Retained<ProtocolObject<dyn MTLBuffer>>,
+        Vec<ChunkMetadata>,
+        Vec<usize>,
+    ) {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        let engine = ContentSearchEngine::new(&device, &pso_cache, 1000);
+
+        // Compute total size and file offsets (contiguous layout)
+        let mut file_offsets = Vec::with_capacity(files.len());
+        let mut total_len = 0usize;
+        for file_data in files {
+            file_offsets.push(total_len);
+            total_len += file_data.len();
+        }
+
+        // Compute total chunks across all files
+        let total_chunks: usize = files
+            .iter()
+            .map(|f| if f.is_empty() { 0 } else { f.len().div_ceil(CHUNK_SIZE) })
+            .sum();
+
+        let buf_size = total_chunks.max(1) * CHUNK_SIZE;
+        let options = MTLResourceOptions::StorageModeShared;
+        let content_buffer = device
+            .newBufferWithLength_options(buf_size, options)
+            .expect("Failed to allocate content buffer");
+
+        // Copy all files contiguously
+        unsafe {
+            let base = content_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(base, 0, buf_size);
+            let mut offset = 0usize;
+            for file_data in files {
+                std::ptr::copy_nonoverlapping(file_data.as_ptr(), base.add(offset), file_data.len());
+                offset += file_data.len();
+            }
+        }
+
+        // Build chunk metadata for each file
+        let mut chunk_metas = Vec::with_capacity(total_chunks);
+        for (file_idx, file_data) in files.iter().enumerate() {
+            let file_len = file_data.len();
+            let file_offset = file_offsets[file_idx];
+            let num_chunks = if file_len == 0 { 0 } else { file_len.div_ceil(CHUNK_SIZE) };
+            for chunk_i in 0..num_chunks {
+                let offset_in_file = chunk_i * CHUNK_SIZE;
+                let chunk_len = (file_len - offset_in_file).min(CHUNK_SIZE);
+                let mut flags = 1u32;
+                if chunk_i == 0 {
+                    flags |= 2;
+                }
+                if chunk_i == num_chunks - 1 {
+                    flags |= 4;
+                }
+                chunk_metas.push(ChunkMetadata {
+                    file_index: file_idx as u32,
+                    chunk_index: chunk_i as u32,
+                    offset_in_file: offset_in_file as u64,
+                    chunk_length: chunk_len as u32,
+                    flags,
+                    buffer_offset: (file_offset + offset_in_file) as u64,
+                });
+            }
+        }
+
+        (engine, content_buffer, chunk_metas, file_offsets)
+    }
+
+    /// Test GPU line numbers for matches at various positions in a multi-line file.
+    ///
+    /// Creates content with a known pattern ("MARK") on specific lines and verifies
+    /// that the GPU line_number for each match equals the CPU reference computed by
+    /// counting newlines before the match byte offset.
+    #[test]
+    fn test_gpu_line_number_basic() {
+        // Content with "MARK" on lines 1, 3, and 5
+        let content = b"MARK on line one\nsecond line here\nMARK on line three\nfourth line here\nMARK on line five\n";
+
+        let (mut engine, content_buffer, chunk_metas) = setup_zerocopy_single_file(content);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        // CPU reference: find all "MARK" positions and compute line numbers
+        let mut cpu_matches = Vec::new();
+        for i in 0..content.len().saturating_sub(3) {
+            if &content[i..i + 4] == b"MARK" {
+                let line = cpu_line_number(content, i);
+                cpu_matches.push((i, line));
+            }
+        }
+
+        println!("test_gpu_line_number_basic:");
+        println!("  CPU matches: {:?}", cpu_matches);
+        for (i, m) in results.iter().enumerate() {
+            println!(
+                "  GPU match {}: line={}, col={}, byte_offset={}",
+                i, m.line_number, m.column, m.byte_offset
+            );
+        }
+
+        assert_eq!(
+            results.len(),
+            cpu_matches.len(),
+            "GPU match count ({}) != CPU match count ({})",
+            results.len(),
+            cpu_matches.len()
+        );
+
+        // Verify each GPU line number matches CPU reference
+        for (gpu_match, (cpu_byte_off, cpu_line)) in results.iter().zip(cpu_matches.iter()) {
+            assert_eq!(
+                gpu_match.line_number, *cpu_line,
+                "GPU line_number {} != CPU line {} for match at byte offset {}",
+                gpu_match.line_number, cpu_line, cpu_byte_off
+            );
+        }
+    }
+
+    /// Test GPU line number for match on the very first line (line 1).
+    ///
+    /// No newlines before the match — line_number should be 1.
+    #[test]
+    fn test_gpu_line_number_first_line() {
+        let content = b"MARK at start\nsecond line\nthird line\n";
+
+        let (mut engine, content_buffer, chunk_metas) = setup_zerocopy_single_file(content);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        assert_eq!(results.len(), 1, "Should find exactly 1 MARK");
+        assert_eq!(
+            results[0].line_number, 1,
+            "Match on first line should have line_number=1"
+        );
+
+        // CPU reference verification
+        let cpu_line = cpu_line_number(content, 0);
+        assert_eq!(cpu_line, 1);
+        assert_eq!(results[0].line_number, cpu_line);
+    }
+
+    /// Test GPU line number for match on the last line.
+    ///
+    /// Content ends with the match on the final line (no trailing newline).
+    #[test]
+    fn test_gpu_line_number_last_line() {
+        let content = b"first line\nsecond line\nthird line\nMARK on last";
+
+        let (mut engine, content_buffer, chunk_metas) = setup_zerocopy_single_file(content);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        assert_eq!(results.len(), 1, "Should find exactly 1 MARK on last line");
+
+        let byte_offset = content
+            .windows(4)
+            .position(|w| w == b"MARK")
+            .expect("MARK should be in content");
+        let cpu_line = cpu_line_number(content, byte_offset);
+        assert_eq!(cpu_line, 4, "MARK should be on line 4");
+        assert_eq!(
+            results[0].line_number, cpu_line,
+            "GPU line_number {} != CPU line {} for last-line match",
+            results[0].line_number, cpu_line
+        );
+    }
+
+    /// Test GPU line number after consecutive empty lines (\n\n).
+    ///
+    /// Empty lines increment the line counter. Pattern after two empty lines
+    /// should have a line number reflecting those empty lines.
+    #[test]
+    fn test_gpu_line_number_after_empty_lines() {
+        let content = b"line one\n\n\nMARK after empties\nfinal line\n";
+
+        let (mut engine, content_buffer, chunk_metas) = setup_zerocopy_single_file(content);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        assert_eq!(results.len(), 1, "Should find exactly 1 MARK");
+
+        let byte_offset = content
+            .windows(4)
+            .position(|w| w == b"MARK")
+            .expect("MARK in content");
+        let cpu_line = cpu_line_number(content, byte_offset);
+        // "line one\n" = line 1, "\n" = line 2 (empty), "\n" = line 3 (empty), "MARK..." = line 4
+        assert_eq!(cpu_line, 4, "MARK should be on line 4 (after 2 empty lines)");
+        assert_eq!(
+            results[0].line_number, cpu_line,
+            "GPU line_number {} != CPU line {} after empty lines",
+            results[0].line_number, cpu_line
+        );
+    }
+
+    /// Test GPU line number with CRLF (\r\n) line endings.
+    ///
+    /// The GPU kernel counts 0x0A (\n) for line boundaries. CRLF files have
+    /// \r before each \n, but line counting should still work since only \n
+    /// is counted. The \r is part of the line content.
+    #[test]
+    fn test_gpu_line_number_crlf() {
+        let content = b"first line\r\nsecond line\r\nMARK on three\r\nfourth line\r\n";
+
+        let (mut engine, content_buffer, chunk_metas) = setup_zerocopy_single_file(content);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        assert_eq!(results.len(), 1, "Should find exactly 1 MARK in CRLF content");
+
+        let byte_offset = content
+            .windows(4)
+            .position(|w| w == b"MARK")
+            .expect("MARK in content");
+        let cpu_line = cpu_line_number(content, byte_offset);
+        assert_eq!(cpu_line, 3, "MARK should be on line 3 in CRLF content");
+        assert_eq!(
+            results[0].line_number, cpu_line,
+            "GPU line_number {} != CPU line {} for CRLF content",
+            results[0].line_number, cpu_line
+        );
+    }
+
+    /// Test GPU line numbers across multiple files in a single zerocopy dispatch.
+    ///
+    /// Each file has "MARK" on a different line. Verifies that GPU line numbers
+    /// are file-relative (restart from 1 for each file).
+    #[test]
+    fn test_gpu_line_number_multi_file() {
+        let file0: &[u8] = b"MARK on first line\nsecond line\n";
+        let file1: &[u8] = b"first line\nsecond line\nMARK on third\n";
+        let file2: &[u8] = b"aaa\nbbb\nccc\nddd\nMARK on fifth\n";
+
+        let files: &[&[u8]] = &[file0, file1, file2];
+        let (mut engine, content_buffer, chunk_metas, _file_offsets) =
+            setup_zerocopy_multi_file(files);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        assert_eq!(results.len(), 3, "Should find 1 MARK per file (3 total)");
+
+        // Expected: file0 MARK on line 1, file1 MARK on line 3, file2 MARK on line 5
+        let expected: Vec<(usize, u32)> = vec![(0, 1), (1, 3), (2, 5)];
+
+        for (file_idx, expected_line) in &expected {
+            let file_matches: Vec<_> = results
+                .iter()
+                .filter(|m| m.file_index == *file_idx)
+                .collect();
+            assert_eq!(
+                file_matches.len(),
+                1,
+                "File {} should have exactly 1 MARK match",
+                file_idx
+            );
+
+            // Compute CPU reference within the file
+            let file_data = files[*file_idx];
+            let byte_off = file_data
+                .windows(4)
+                .position(|w| w == b"MARK")
+                .expect("MARK in file");
+            let cpu_line = cpu_line_number(file_data, byte_off);
+            assert_eq!(
+                cpu_line, *expected_line,
+                "CPU line for file {} should be {}",
+                file_idx, expected_line
+            );
+            assert_eq!(
+                file_matches[0].line_number, cpu_line,
+                "File {} GPU line_number {} != CPU line {}",
+                file_idx, file_matches[0].line_number, cpu_line
+            );
+        }
+    }
+
+    /// Test GPU line numbers with multiple matches across several lines.
+    ///
+    /// Uses a pattern that appears at most once per line to avoid hitting the
+    /// MAX_MATCHES_PER_THREAD (4) limit per GPU thread's 64-byte window.
+    /// Verifies line_number is correct for every match.
+    #[test]
+    fn test_gpu_line_number_multiple_matches_per_line() {
+        // "MARK" appears once on line 1, once on line 2, once on line 3, once on line 4.
+        // Total = 4 matches, within MAX_MATCHES_PER_THREAD limit for a 64-byte window.
+        let content = b"MARK first line\nMARK second line\nMARK third line\nMARK fourth line\n";
+
+        let (mut engine, content_buffer, chunk_metas) = setup_zerocopy_single_file(content);
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, b"MARK", &search_opts);
+
+        // CPU reference: find all "MARK" positions and line numbers
+        let pattern = b"MARK";
+        let mut cpu_matches = Vec::new();
+        for i in 0..content.len().saturating_sub(pattern.len() - 1) {
+            if &content[i..i + pattern.len()] == pattern {
+                let line = cpu_line_number(content, i);
+                cpu_matches.push((i, line));
+            }
+        }
+
+        println!("test_gpu_line_number_multiple_matches_per_line:");
+        println!("  CPU matches: {:?}", cpu_matches);
+        for (i, m) in results.iter().enumerate() {
+            println!(
+                "  GPU match {}: line={}, col={}, byte_offset={}",
+                i, m.line_number, m.column, m.byte_offset
+            );
+        }
+
+        assert_eq!(
+            results.len(),
+            cpu_matches.len(),
+            "GPU count ({}) != CPU count ({})",
+            results.len(),
+            cpu_matches.len()
+        );
+
+        // Verify every match's line_number
+        for (gpu_m, (cpu_off, cpu_line)) in results.iter().zip(cpu_matches.iter()) {
+            assert_eq!(
+                gpu_m.line_number, *cpu_line,
+                "GPU line {} != CPU line {} at byte offset {}",
+                gpu_m.line_number, cpu_line, cpu_off
+            );
+        }
+
+        // Each line should have exactly 1 "MARK" match
+        for line_num in 1..=4u32 {
+            let count = results.iter().filter(|m| m.line_number == line_num).count();
+            assert_eq!(count, 1, "Line {} should have 1 'MARK' match, got {}", line_num, count);
+        }
+    }
 }

@@ -187,7 +187,7 @@ After POC validated, clean up code.
   - **Commit**: `test(content): add single-dispatch search tests`
   - _Requirements: AC-1.1, AC-1.2_
 
-- [ ] 3.2 Unit tests for GPU line number accuracy
+- [x] 3.2 Unit tests for GPU line number accuracy
   - **Do**:
     1. Add test that loads multi-line files into ContentStore, searches via zerocopy kernel, verifies GPU line numbers match CPU newline count
     2. Test edge cases: match on first line, match on last line, match after empty lines, CRLF line endings
