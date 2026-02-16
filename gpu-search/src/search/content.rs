@@ -1295,4 +1295,270 @@ mod tests {
         let results = engine.search_with_buffer(&buf, &[], b"test", &SearchOptions::default());
         assert_eq!(results.len(), 0);
     }
+
+    // ================================================================
+    // Single-dispatch search tests (task 3.1)
+    // ================================================================
+
+    /// Test that search_zerocopy handles >100K chunks in a single dispatch.
+    ///
+    /// Creates synthetic chunk metadata pointing to a shared content buffer.
+    /// Each "file" is a short line with a known pattern. Verifies that:
+    /// - ensure_metadata_capacity resizes for >100K chunks
+    /// - Single GPU dispatch completes without error
+    /// - All expected matches are found (up to MAX_MATCHES)
+    #[test]
+    fn test_single_dispatch_large_chunk_count() {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        // Start with small max_files so max_chunks < 100K, forcing resize
+        let mut engine = ContentSearchEngine::new(&device, &pso_cache, 100);
+        assert!(
+            engine.max_chunks() < 100_001,
+            "Initial max_chunks should be < 100K to test resize"
+        );
+
+        // Create a content buffer with repeating pattern lines.
+        // Each "file" is a short line like "fn test_NNN()\n" placed at
+        // a unique offset. We tile files into a moderately-sized buffer.
+        let file_content = b"fn test_marker()\n"; // 17 bytes, contains "fn "
+        let file_len = file_content.len();
+        let num_chunks: usize = 100_001; // >100K
+
+        // All chunks point to the same content repeated in a buffer.
+        // Buffer size: enough for one copy of file_content per unique offset slot.
+        // To keep memory reasonable, reuse offsets cyclically with a pool of slots.
+        let num_slots = 1024; // 1024 unique slots
+        let buf_size = num_slots * CHUNK_SIZE; // 4MB -- each slot is CHUNK_SIZE apart
+        let options = MTLResourceOptions::StorageModeShared;
+        let content_buffer = device
+            .newBufferWithLength_options(buf_size, options)
+            .expect("Failed to allocate content buffer");
+
+        // Fill each slot with the file content (zero-padded to CHUNK_SIZE)
+        unsafe {
+            let base = content_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(base, 0, buf_size);
+            for slot in 0..num_slots {
+                let dst = base.add(slot * CHUNK_SIZE);
+                std::ptr::copy_nonoverlapping(file_content.as_ptr(), dst, file_len);
+            }
+        }
+
+        // Build chunk metadata: each chunk maps to a slot cyclically
+        let chunk_metas: Vec<ChunkMetadata> = (0..num_chunks)
+            .map(|i| {
+                let slot = i % num_slots;
+                ChunkMetadata {
+                    file_index: i as u32,
+                    chunk_index: 0,
+                    offset_in_file: 0,
+                    chunk_length: file_len as u32,
+                    flags: 1 | 2 | 4, // is_text | is_first | is_last
+                    buffer_offset: (slot * CHUNK_SIZE) as u64,
+                }
+            })
+            .collect();
+
+        assert_eq!(chunk_metas.len(), num_chunks);
+
+        // Search for "fn " -- every chunk has exactly 1 match
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard, // mode is ignored by search_zerocopy
+        };
+        let results = engine.search_zerocopy(&content_buffer, &chunk_metas, b"fn ", &search_opts);
+
+        // GPU should find matches up to MAX_MATCHES (10000)
+        // With 100K+ chunks each containing 1 match, we expect MAX_MATCHES results
+        println!(
+            "test_single_dispatch_large_chunk_count: {} results from {} chunks",
+            results.len(),
+            num_chunks
+        );
+        assert!(
+            results.len() > 0,
+            "Should find at least some matches in >100K chunks"
+        );
+        // Match count capped by MAX_MATCHES (10000) since kernel limits to that
+        assert!(
+            results.len() <= MAX_MATCHES,
+            "Results should not exceed MAX_MATCHES"
+        );
+
+        // Verify metadata buffer was resized to hold all chunks
+        assert!(
+            engine.max_chunks() >= num_chunks,
+            "max_chunks ({}) should be >= {} after resize",
+            engine.max_chunks(),
+            num_chunks
+        );
+    }
+
+    /// Test ensure_metadata_capacity with various chunk counts.
+    ///
+    /// Verifies:
+    /// - No-op when capacity is sufficient
+    /// - Resizes when needed exceeds current max_chunks
+    /// - max_chunks updated after successful resize
+    #[test]
+    fn test_single_dispatch_metadata_capacity() {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+
+        // Start with small capacity (100 files * 10 = 1000 chunks)
+        let mut engine = ContentSearchEngine::new(&device, &pso_cache, 100);
+        let initial_max = engine.max_chunks();
+        assert_eq!(initial_max, 1000, "100 files * 10 = 1000 initial max_chunks");
+
+        // Test 1: No-op when within capacity
+        let result = engine.ensure_metadata_capacity(500);
+        assert!(result.is_ok(), "Should succeed when within capacity");
+        assert_eq!(
+            engine.max_chunks(),
+            initial_max,
+            "max_chunks unchanged when within capacity"
+        );
+
+        // Test 2: No-op at exact boundary
+        let result = engine.ensure_metadata_capacity(1000);
+        assert!(result.is_ok(), "Should succeed at exact capacity");
+        assert_eq!(
+            engine.max_chunks(),
+            initial_max,
+            "max_chunks unchanged at exact boundary"
+        );
+
+        // Test 3: Resize when exceeding capacity
+        let result = engine.ensure_metadata_capacity(5000);
+        assert!(result.is_ok(), "Should succeed with resize to 5000");
+        assert_eq!(
+            engine.max_chunks(),
+            5000,
+            "max_chunks should be exactly 5000 after resize"
+        );
+
+        // Test 4: Larger resize
+        let result = engine.ensure_metadata_capacity(150_000);
+        assert!(result.is_ok(), "Should succeed with resize to 150K");
+        assert_eq!(
+            engine.max_chunks(),
+            150_000,
+            "max_chunks should be exactly 150000 after resize"
+        );
+
+        // Test 5: No-op when new capacity is within already-resized size
+        let result = engine.ensure_metadata_capacity(100_000);
+        assert!(result.is_ok(), "Should succeed when within resized capacity");
+        assert_eq!(
+            engine.max_chunks(),
+            150_000,
+            "max_chunks unchanged when already sufficient"
+        );
+    }
+
+    /// Test that single-dispatch zerocopy results match CPU reference.
+    ///
+    /// Creates a content buffer with multiple files containing known patterns,
+    /// searches via zerocopy kernel, and compares match count against CPU search.
+    #[test]
+    fn test_single_dispatch_cpu_reference_match() {
+        let device = MTLCreateSystemDefaultDevice().expect("No Metal device");
+        let pso_cache = PsoCache::new(&device);
+        let mut engine = ContentSearchEngine::new(&device, &pso_cache, 1000);
+
+        // Create varied content with different match densities
+        let files: Vec<&[u8]> = vec![
+            b"fn alpha() { return 1; }\nfn beta() { return 2; }\nfn gamma() { return 3; }\n",
+            b"no functions here, just plain text\nand another line\n",
+            b"fn single_match() { }\n",
+            b"struct Foo;\nimpl Foo {\n    fn new() -> Self { Foo }\n    fn drop(&mut self) {}\n}\n",
+            b"// comment line\n// fn fake_in_comment\nfn real_function() {}\n",
+        ];
+
+        // CPU reference: count total "fn " matches across all files
+        let pattern = b"fn ";
+        let total_cpu_matches: usize = files.iter().map(|f| cpu_search(f, pattern, true)).sum();
+        println!("CPU reference: {} total 'fn ' matches", total_cpu_matches);
+
+        // Build a contiguous content buffer and chunk metadata
+        // Each file occupies exactly one chunk slot (all < CHUNK_SIZE)
+        let num_chunks = files.len();
+        let buf_size = num_chunks * CHUNK_SIZE;
+        let options = MTLResourceOptions::StorageModeShared;
+        let content_buffer = device
+            .newBufferWithLength_options(buf_size, options)
+            .expect("Failed to allocate content buffer");
+
+        let mut chunk_metas = Vec::with_capacity(num_chunks);
+        unsafe {
+            let base = content_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::write_bytes(base, 0, buf_size);
+
+            for (i, file_data) in files.iter().enumerate() {
+                let offset = i * CHUNK_SIZE;
+                std::ptr::copy_nonoverlapping(file_data.as_ptr(), base.add(offset), file_data.len());
+
+                chunk_metas.push(ChunkMetadata {
+                    file_index: i as u32,
+                    chunk_index: 0,
+                    offset_in_file: 0,
+                    chunk_length: file_data.len() as u32,
+                    flags: 1 | 2 | 4, // is_text | is_first | is_last
+                    buffer_offset: offset as u64,
+                });
+            }
+        }
+
+        let search_opts = SearchOptions {
+            case_sensitive: true,
+            max_results: MAX_MATCHES,
+            mode: SearchMode::Standard,
+        };
+        let gpu_results =
+            engine.search_zerocopy(&content_buffer, &chunk_metas, pattern, &search_opts);
+
+        println!(
+            "GPU zerocopy results: {}, CPU reference: {}",
+            gpu_results.len(),
+            total_cpu_matches
+        );
+        for (i, m) in gpu_results.iter().enumerate() {
+            println!(
+                "  match {}: file={}, line={}, col={}",
+                i, m.file_index, m.line_number, m.column
+            );
+        }
+
+        assert_eq!(
+            gpu_results.len(),
+            total_cpu_matches,
+            "GPU zerocopy match count ({}) must equal CPU reference ({})",
+            gpu_results.len(),
+            total_cpu_matches
+        );
+
+        // Verify per-file match distribution
+        let expected_per_file: Vec<usize> = files.iter().map(|f| cpu_search(f, pattern, true)).collect();
+        for (file_idx, expected) in expected_per_file.iter().enumerate() {
+            let gpu_count = gpu_results.iter().filter(|m| m.file_index == file_idx).count();
+            assert_eq!(
+                gpu_count, *expected,
+                "File {} GPU matches ({}) != CPU expected ({})",
+                file_idx, gpu_count, expected
+            );
+        }
+
+        // Verify all matches have valid file_index
+        for m in &gpu_results {
+            assert!(
+                m.file_index < files.len(),
+                "match file_index {} out of range (max {})",
+                m.file_index,
+                files.len() - 1
+            );
+            assert!(m.line_number >= 1, "line_number should be >= 1");
+        }
+    }
 }

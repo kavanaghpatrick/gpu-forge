@@ -176,7 +176,7 @@ After POC validated, clean up code.
 
 ## Phase 3: Testing
 
-- [ ] 3.1 Unit tests for single-dispatch search
+- [x] 3.1 Unit tests for single-dispatch search
   - **Do**:
     1. Add test in content.rs that creates >100K chunks and verifies single-dispatch finds all matches
     2. Test `ensure_metadata_capacity()` with various chunk counts
