@@ -163,7 +163,7 @@ After POC validated, clean up code.
   - **Commit**: `refactor(content): add error handling for metadata buffer realloc`
   - _Design: Component A, Error Handling_
 
-- [ ] 2.3 Extract line context helper into utility function
+- [x] 2.3 Extract line context helper into utility function
   - **Do**:
     1. Move the `extract_line_context()` helper from orchestrator.rs into a separate module or as an associated function
     2. Make it reusable by both `search_from_content_store()` and `search_streaming_inner()`

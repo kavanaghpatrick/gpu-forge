@@ -114,12 +114,34 @@ pub struct SearchOrchestrator {
     content_store: Option<Arc<ContentIndexStore>>,
 }
 
-/// Extract line content and context directly from raw bytes using a byte offset.
+/// Extract line content and surrounding context from raw file bytes at a given byte offset.
 ///
-/// Instead of converting entire file to String and collecting lines (O(n) per match),
-/// this scans backward/forward from the match byte_offset to find line boundaries.
-/// Returns (line_content, context_before, context_after, match_column).
-fn extract_line_context(
+/// Given a byte offset into `content` (typically from a GPU match result), this function
+/// locates the enclosing line by scanning backward and forward for `\n` boundaries, then
+/// extracts up to 2 context lines before and after the match line.
+///
+/// # Algorithm
+///
+/// 1. **Line boundaries**: Scan backward from `byte_offset` for the nearest `\n` to find
+///    `line_start`, then forward for the next `\n` to find `line_end`. This is O(line_length)
+///    per call, not O(file_size).
+/// 2. **Pattern location**: Find `pattern` within the extracted line (case-sensitive or
+///    case-insensitive) to determine the match column. Returns `None` if the pattern is not
+///    found in the line (e.g., byte offset points between multi-byte UTF-8 codepoints).
+/// 3. **Context lines**: Scan further backward/forward from the match line to collect up to
+///    2 lines of context in each direction.
+/// 4. **CRLF handling**: Trailing `\r` bytes are stripped from all extracted lines.
+///
+/// # Returns
+///
+/// `Some((line_content, context_before, context_after, match_column))` on success, or `None`
+/// if `byte_offset` is out of bounds or the pattern cannot be located within the line.
+///
+/// - `line_content`: The full text of the line containing the match.
+/// - `context_before`: Up to 2 preceding lines (closest line last, reversed to reading order).
+/// - `context_after`: Up to 2 following lines.
+/// - `match_column`: 0-based byte offset of the pattern within `line_content`.
+pub(crate) fn extract_line_context(
     content: &[u8],
     byte_offset: usize,
     pattern: &str,
