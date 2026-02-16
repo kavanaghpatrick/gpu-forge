@@ -95,7 +95,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-7_
   - _Design: Component C_
 
-- [ ] 1.6 Persist chunk metadata in GCIX v3 format
+- [x] 1.6 Persist chunk metadata in GCIX v3 format
   - **Do**:
     1. In gcix.rs: bump `GCIX_VERSION` to 3
     2. Add to `GcixHeader`: `chunks_offset: u64` and `chunks_bytes: u64` fields (before `header_crc32`)

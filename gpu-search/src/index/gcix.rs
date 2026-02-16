@@ -6,7 +6,8 @@
 //   [0 .. 16384)             GcixHeader (one full page, zero-padded)
 //   [16384 .. meta_end)      FileContentMeta table (file_count * 32 bytes)
 //   [meta_end .. content_offset)  Zero padding to next page boundary
-//   [content_offset .. EOF)  Content data (page-aligned for bytesNoCopy)
+//   [content_offset .. content_end)  Content data (page-aligned for bytesNoCopy)
+//   [content_end .. EOF)     Path table (v2): u32-len-prefixed UTF-8 strings per file_id
 
 use std::io::{self, BufWriter, Write};
 use std::mem::size_of;
@@ -18,7 +19,7 @@ use objc2_metal::MTLDevice;
 
 use crate::index::cache::CacheError;
 use crate::index::content_snapshot::ContentSnapshot;
-use crate::index::content_store::{ContentStore, FileContentMeta};
+use crate::index::content_store::{build_chunk_metadata, ContentStore, FileContentMeta};
 use crate::io::mmap::{MmapBuffer, PAGE_SIZE};
 
 /// Header size: one full Apple Silicon page (16KB).
@@ -28,19 +29,20 @@ pub const GCIX_HEADER_SIZE: usize = PAGE_SIZE; // 16384
 pub const GCIX_MAGIC: [u8; 4] = [b'G', b'C', b'I', b'X'];
 
 /// Current GCIX format version.
-pub const GCIX_VERSION: u32 = 1;
+pub const GCIX_VERSION: u32 = 3;
 
 /// Byte offset where the CRC32 field lives in the serialized header.
 /// Fields before crc32 in the serialized (packed) format:
 ///   magic(4) + version(4) + file_count(4) + content_bytes(8) +
-///   meta_offset(8) + content_offset(8) + root_hash(8) + last_fsevents(8) + saved_at(8) = 60
-const CRC32_OFFSET: usize = 60;
+///   meta_offset(8) + content_offset(8) + root_hash(8) + last_fsevents(8) + saved_at(8) +
+///   paths_offset(8) + paths_bytes(8) + chunks_offset(8) + chunks_bytes(8) = 92
+const CRC32_OFFSET: usize = 92;
 
 /// GCIX file header. Padded to 16384 bytes (one full page).
 ///
 /// On-disk serialized layout (all fields little-endian, packed):
 ///   [0..4)     magic           "GCIX"
-///   [4..8)     version         1
+///   [4..8)     version         3
 ///   [8..12)    file_count      number of files
 ///   [12..20)   content_bytes   total content data bytes
 ///   [20..28)   meta_offset     byte offset of FileContentMeta table
@@ -48,8 +50,12 @@ const CRC32_OFFSET: usize = 60;
 ///   [36..44)   root_hash       hash of the indexed root path
 ///   [44..52)   last_fsevents   macOS FSEvents event ID for resume
 ///   [52..60)   saved_at        unix timestamp (seconds)
-///   [60..64)   header_crc32    CRC32 over bytes [0..60)
-///   [64..16384) padding        zero-filled to page boundary
+///   [60..68)   paths_offset    byte offset of path table (after content data)
+///   [68..76)   paths_bytes     total bytes of path table
+///   [76..84)   chunks_offset   byte offset of chunk metadata table (v3)
+///   [84..92)   chunks_bytes    total bytes of chunk metadata table (v3)
+///   [92..96)   header_crc32    CRC32 over bytes [0..92)
+///   [96..16384) padding        zero-filled to page boundary
 ///
 /// Note: The in-memory struct uses `#[repr(C)]` which inserts 4 bytes of
 /// alignment padding between file_count (u32) and content_bytes (u64).
@@ -60,7 +66,7 @@ const CRC32_OFFSET: usize = 60;
 pub struct GcixHeader {
     /// Magic bytes: "GCIX"
     pub magic: [u8; 4],
-    /// Format version (currently 1)
+    /// Format version (currently 2)
     pub version: u32,
     /// Number of files in the content store
     pub file_count: u32,
@@ -78,10 +84,18 @@ pub struct GcixHeader {
     pub last_fsevents: u64,
     /// Unix timestamp (seconds since epoch) of save time
     pub saved_at: u64,
-    /// CRC32 over serialized header bytes [0..60)
+    /// Byte offset of path table (after content data)
+    pub paths_offset: u64,
+    /// Total bytes of path table
+    pub paths_bytes: u64,
+    /// Byte offset of chunk metadata table (v3, after path table)
+    pub chunks_offset: u64,
+    /// Total bytes of chunk metadata table (v3)
+    pub chunks_bytes: u64,
+    /// CRC32 over serialized header bytes [0..92)
     pub header_crc32: u32,
     /// Zero-filled padding to 16384 bytes
-    pub _padding: [u8; GCIX_HEADER_SIZE - 68],
+    pub _padding: [u8; GCIX_HEADER_SIZE - 100],
 }
 
 // Compile-time assertions
@@ -97,6 +111,10 @@ impl GcixHeader {
         content_offset: u64,
         root_hash: u64,
         last_fsevents: u64,
+        paths_offset: u64,
+        paths_bytes: u64,
+        chunks_offset: u64,
+        chunks_bytes: u64,
     ) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -113,13 +131,17 @@ impl GcixHeader {
             root_hash,
             last_fsevents,
             saved_at: now,
+            paths_offset,
+            paths_bytes,
+            chunks_offset,
+            chunks_bytes,
             header_crc32: 0,
-            _padding: [0u8; GCIX_HEADER_SIZE - 68],
+            _padding: [0u8; GCIX_HEADER_SIZE - 100],
         }
     }
 
     /// Serialize this header to a 16384-byte array (little-endian).
-    /// Computes CRC32 over bytes [0..60) and stores it at [60..64).
+    /// Computes CRC32 over bytes [0..76) and stores it at [76..80).
     pub fn to_bytes(&self) -> [u8; GCIX_HEADER_SIZE] {
         let mut buf = [0u8; GCIX_HEADER_SIZE];
 
@@ -133,10 +155,14 @@ impl GcixHeader {
         buf[36..44].copy_from_slice(&self.root_hash.to_le_bytes());
         buf[44..52].copy_from_slice(&self.last_fsevents.to_le_bytes());
         buf[52..60].copy_from_slice(&self.saved_at.to_le_bytes());
-        // [60..64) = crc32, computed below
-        // [64..16384) = padding, already zeroed
+        buf[60..68].copy_from_slice(&self.paths_offset.to_le_bytes());
+        buf[68..76].copy_from_slice(&self.paths_bytes.to_le_bytes());
+        buf[76..84].copy_from_slice(&self.chunks_offset.to_le_bytes());
+        buf[84..92].copy_from_slice(&self.chunks_bytes.to_le_bytes());
+        // [92..96) = crc32, computed below
+        // [96..16384) = padding, already zeroed
 
-        // Compute CRC32 over bytes [0..60)
+        // Compute CRC32 over bytes [0..76)
         let crc = crc32fast::hash(&buf[..CRC32_OFFSET]);
         buf[CRC32_OFFSET..CRC32_OFFSET + 4].copy_from_slice(&crc.to_le_bytes());
 
@@ -169,22 +195,25 @@ impl GcixHeader {
             ));
         }
 
-        // Check version
+        // Check version (accept v2 for backward compat, v3 is current)
         let version = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-        if version != GCIX_VERSION {
+        if version != 2 && version != 3 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "GCIX unsupported version: {}, expected {}",
-                    version, GCIX_VERSION,
+                    "GCIX unsupported version: {}, expected 2 or 3",
+                    version,
                 ),
             ));
         }
 
-        // Validate CRC32 over [0..60)
-        let expected_crc = crc32fast::hash(&buf[..CRC32_OFFSET]);
+        // CRC32 offset depends on version: v2 = 76, v3 = 92
+        let crc_offset = if version == 2 { 76 } else { CRC32_OFFSET };
+
+        // Validate CRC32
+        let expected_crc = crc32fast::hash(&buf[..crc_offset]);
         let stored_crc =
-            u32::from_le_bytes(buf[CRC32_OFFSET..CRC32_OFFSET + 4].try_into().unwrap());
+            u32::from_le_bytes(buf[crc_offset..crc_offset + 4].try_into().unwrap());
         if stored_crc != expected_crc {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -202,6 +231,18 @@ impl GcixHeader {
         let root_hash = u64::from_le_bytes(buf[36..44].try_into().unwrap());
         let last_fsevents = u64::from_le_bytes(buf[44..52].try_into().unwrap());
         let saved_at = u64::from_le_bytes(buf[52..60].try_into().unwrap());
+        let paths_offset = u64::from_le_bytes(buf[60..68].try_into().unwrap());
+        let paths_bytes = u64::from_le_bytes(buf[68..76].try_into().unwrap());
+
+        // v3 fields: chunks_offset and chunks_bytes (default to 0 for v2)
+        let (chunks_offset, chunks_bytes) = if version >= 3 {
+            (
+                u64::from_le_bytes(buf[76..84].try_into().unwrap()),
+                u64::from_le_bytes(buf[84..92].try_into().unwrap()),
+            )
+        } else {
+            (0, 0)
+        };
 
         // Padding is all zeros in the serialized format; no need to copy.
         Ok(Self {
@@ -215,8 +256,12 @@ impl GcixHeader {
             root_hash,
             last_fsevents,
             saved_at,
+            paths_offset,
+            paths_bytes,
+            chunks_offset,
+            chunks_bytes,
             header_crc32: stored_crc,
-            _padding: [0u8; GCIX_HEADER_SIZE - 68],
+            _padding: [0u8; GCIX_HEADER_SIZE - 100],
         })
     }
 }
@@ -245,6 +290,7 @@ pub fn save_gcix(
     let files = store.files();
     let content = store.buffer();
     let content_bytes = store.total_bytes();
+    let paths = store.paths();
 
     // Meta table starts right after the header
     let meta_offset = GCIX_HEADER_SIZE;
@@ -254,6 +300,30 @@ pub fn save_gcix(
     // Content data starts at next page boundary after meta table
     let content_offset = align_up_page(meta_end);
 
+    // Path table: after content data. Each entry is u32 len + UTF-8 bytes.
+    // Only written when paths are available (same length as file count).
+    let content_end = content_offset + content_bytes as usize;
+    let paths_offset = content_end;
+    let mut path_table_buf: Vec<u8> = Vec::new();
+    if !paths.is_empty() {
+        for file_id in 0..file_count {
+            let p = paths
+                .get(file_id as usize)
+                .map(|p| p.to_string_lossy())
+                .unwrap_or_default();
+            let p_bytes = p.as_bytes();
+            path_table_buf.extend_from_slice(&(p_bytes.len() as u32).to_le_bytes());
+            path_table_buf.extend_from_slice(p_bytes);
+        }
+    }
+    let paths_bytes = path_table_buf.len() as u64;
+
+    // Build chunk metadata table (v3)
+    let chunk_metas = build_chunk_metadata(store);
+    let chunks_table_offset = paths_offset + path_table_buf.len();
+    let chunk_meta_size = size_of::<crate::search::content::ChunkMetadata>();
+    let chunks_table_bytes = chunk_metas.len() * chunk_meta_size;
+
     // Build header
     let header = GcixHeader::new(
         file_count,
@@ -261,6 +331,10 @@ pub fn save_gcix(
         content_offset as u64,
         root_hash,
         fsevents_id,
+        paths_offset as u64,
+        paths_bytes,
+        chunks_table_offset as u64,
+        chunks_table_bytes as u64,
     );
     let header_bytes = header.to_bytes();
 
@@ -296,6 +370,18 @@ pub fn save_gcix(
     // 4. Write content data
     writer.write_all(content)?;
 
+    // 5. Write path table
+    writer.write_all(&path_table_buf)?;
+
+    // 6. Write chunk metadata table (v3)
+    for cm in &chunk_metas {
+        // SAFETY: ChunkMetadata is #[repr(C)], exactly 32 bytes, no padding issues.
+        let cm_bytes: &[u8; 32] = unsafe {
+            &*(cm as *const crate::search::content::ChunkMetadata as *const [u8; 32])
+        };
+        writer.write_all(cm_bytes)?;
+    }
+
     // Flush and fsync
     writer.flush()?;
     let file = writer.into_inner().map_err(|e| e.into_error())?;
@@ -311,11 +397,12 @@ pub fn save_gcix(
 /// Load a ContentSnapshot from a GCIX file via mmap.
 ///
 /// 1. Memory-maps the file via `MmapBuffer::from_file()`
-/// 2. Validates header: magic ("GCIX"), version (1), CRC32
+/// 2. Validates header: magic ("GCIX"), version (2), CRC32
 /// 3. Extracts FileContentMeta table via pointer arithmetic
 /// 4. Creates Metal buffer from content region via bytesNoCopy
 ///    (content_offset is page-aligned for zero-copy GPU access)
-/// 5. Constructs ContentStore and ContentSnapshot
+/// 5. Parses path table (GCIX v2: file_id -> path mapping)
+/// 6. Constructs ContentStore and ContentSnapshot
 ///
 /// # Arguments
 /// * `path` - Path to the .gcix file
@@ -404,16 +491,94 @@ pub fn load_gcix(
         files.push(meta);
     }
 
-    // 5. Construct ContentStore from mmap'd data with optional Metal buffer
-    let store = ContentStore::from_gcix_mmap(
+    // 5. Parse path table (GCIX v2: stored after content data)
+    let paths_offset = header.paths_offset as usize;
+    let paths_bytes = header.paths_bytes as usize;
+    let mut paths: Vec<std::path::PathBuf> = Vec::with_capacity(file_count);
+
+    if paths_bytes > 0 {
+        let paths_end = paths_offset + paths_bytes;
+        if data.len() < paths_end {
+            return Err(CacheError::InvalidFormat(format!(
+                "GCIX file too small for path table: {} bytes, need {}",
+                data.len(),
+                paths_end,
+            )));
+        }
+
+        let path_data = &data[paths_offset..paths_end];
+        let mut cursor = 0usize;
+        while cursor + 4 <= path_data.len() {
+            let len = u32::from_le_bytes(
+                path_data[cursor..cursor + 4].try_into().unwrap(),
+            ) as usize;
+            cursor += 4;
+            if cursor + len > path_data.len() {
+                return Err(CacheError::InvalidFormat(format!(
+                    "GCIX path table truncated at offset {}",
+                    paths_offset + cursor,
+                )));
+            }
+            let path_str = std::str::from_utf8(&path_data[cursor..cursor + len])
+                .map_err(|e| {
+                    CacheError::InvalidFormat(format!("GCIX path table invalid UTF-8: {}", e))
+                })?;
+            paths.push(std::path::PathBuf::from(path_str));
+            cursor += len;
+        }
+    }
+
+    // 6. Parse chunk metadata table (GCIX v3)
+    let chunks_offset = header.chunks_offset as usize;
+    let chunks_bytes_len = header.chunks_bytes as usize;
+    let chunk_meta_size = size_of::<crate::search::content::ChunkMetadata>();
+
+    let chunk_metadata: Option<Vec<crate::search::content::ChunkMetadata>> =
+        if header.version >= 3 && chunks_bytes_len > 0 && chunk_meta_size > 0 {
+            let chunks_end = chunks_offset + chunks_bytes_len;
+            if data.len() < chunks_end {
+                return Err(CacheError::InvalidFormat(format!(
+                    "GCIX file too small for chunk metadata table: {} bytes, need {}",
+                    data.len(),
+                    chunks_end,
+                )));
+            }
+
+            let chunk_count = chunks_bytes_len / chunk_meta_size;
+            let mut chunks = Vec::with_capacity(chunk_count);
+            for i in 0..chunk_count {
+                let offset = chunks_offset + i * chunk_meta_size;
+                // SAFETY: ChunkMetadata is #[repr(C)], exactly 32 bytes. We verified
+                // the file is large enough above. read_unaligned handles any alignment.
+                let cm: crate::search::content::ChunkMetadata = unsafe {
+                    std::ptr::read_unaligned(
+                        data[offset..].as_ptr()
+                            as *const crate::search::content::ChunkMetadata,
+                    )
+                };
+                chunks.push(cm);
+            }
+            Some(chunks)
+        } else {
+            None // v2 files or empty chunk table: rebuilt on first search
+        };
+
+    // 7. Construct ContentStore from mmap'd data with optional Metal buffer
+    let mut store = ContentStore::from_gcix_mmap(
         mmap,
         files,
         content_offset,
         content_bytes,
         device,
+        paths,
     );
 
-    // 6. Wrap in ContentSnapshot
+    // 8. Set chunk metadata if loaded from v3
+    if let Some(chunks) = chunk_metadata {
+        store.set_chunk_metadata(chunks);
+    }
+
+    // 9. Wrap in ContentSnapshot
     let snapshot = ContentSnapshot::new(store, header.saved_at);
 
     Ok(snapshot)
@@ -431,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_gcix_header_serialization_roundtrip() {
-        let header = GcixHeader::new(42, 100_000, 32768, 0xDEAD_BEEF_CAFE_1234, 999);
+        let header = GcixHeader::new(42, 100_000, 32768, 0xDEAD_BEEF_CAFE_1234, 999, 0, 0, 0, 0);
         let bytes = header.to_bytes();
         let recovered = GcixHeader::from_bytes(&bytes).expect("roundtrip should succeed");
 
@@ -452,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_gcix_header_magic_bytes() {
-        let header = GcixHeader::new(0, 0, 16384, 0, 0);
+        let header = GcixHeader::new(0, 0, 16384, 0, 0, 0, 0, 0, 0);
         let bytes = header.to_bytes();
         assert_eq!(bytes[0], b'G');
         assert_eq!(bytes[1], b'C');
@@ -462,14 +627,14 @@ mod tests {
 
     #[test]
     fn test_gcix_header_rejects_bad_magic() {
-        let mut bytes = GcixHeader::new(0, 0, 16384, 0, 0).to_bytes();
+        let mut bytes = GcixHeader::new(0, 0, 16384, 0, 0, 0, 0, 0, 0).to_bytes();
         bytes[0] = 0xFF;
         assert!(GcixHeader::from_bytes(&bytes).is_err());
     }
 
     #[test]
     fn test_gcix_header_rejects_bad_version() {
-        let mut bytes = GcixHeader::new(0, 0, 16384, 0, 0).to_bytes();
+        let mut bytes = GcixHeader::new(0, 0, 16384, 0, 0, 0, 0, 0, 0).to_bytes();
         bytes[4..8].copy_from_slice(&99u32.to_le_bytes());
         // Recompute CRC so only version check triggers
         let crc = crc32fast::hash(&bytes[..CRC32_OFFSET]);
@@ -480,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_gcix_header_rejects_bad_crc() {
-        let mut bytes = GcixHeader::new(10, 1000, 32768, 0x1234, 0).to_bytes();
+        let mut bytes = GcixHeader::new(10, 1000, 32768, 0x1234, 0, 0, 0, 0, 0).to_bytes();
         // Corrupt a data byte without updating CRC
         bytes[8] = 0xFF;
         let err = GcixHeader::from_bytes(&bytes).unwrap_err();
@@ -948,6 +1113,165 @@ mod tests {
             assert_eq!(meta.path_id, i);
             assert_eq!(meta.content_hash, i * 7);
             assert_eq!(meta.mtime, i * 13);
+        }
+    }
+
+    // ================================================================
+    // GCIX v2 path table tests
+    // ================================================================
+
+    #[test]
+    fn test_save_load_gcix_path_roundtrip() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("paths.gcix");
+
+        // Build a content store with paths
+        let mut store = ContentStore::new();
+        store.add_file_with_path(
+            b"hello world",
+            std::path::PathBuf::from("/Users/test/src/main.rs"),
+            0,
+            0xAAAA,
+            1000,
+        );
+        store.add_file_with_path(
+            b"fn search() {}",
+            std::path::PathBuf::from("/Users/test/src/lib.rs"),
+            1,
+            0xBBBB,
+            2000,
+        );
+        store.add_file_with_path(
+            b"# README",
+            std::path::PathBuf::from("/Users/test/README.md"),
+            2,
+            0xCCCC,
+            3000,
+        );
+
+        save_gcix(&store, &gcix_path, 0x1234, 42).expect("save should succeed");
+
+        // Load and verify paths survive roundtrip
+        let snapshot = load_gcix(&gcix_path, None).expect("load should succeed");
+        let loaded = snapshot.content_store();
+
+        assert_eq!(loaded.file_count(), 3);
+
+        // Verify paths
+        assert_eq!(
+            loaded.path_for(0).unwrap().to_str().unwrap(),
+            "/Users/test/src/main.rs"
+        );
+        assert_eq!(
+            loaded.path_for(1).unwrap().to_str().unwrap(),
+            "/Users/test/src/lib.rs"
+        );
+        assert_eq!(
+            loaded.path_for(2).unwrap().to_str().unwrap(),
+            "/Users/test/README.md"
+        );
+
+        // Out of bounds
+        assert!(loaded.path_for(3).is_none());
+
+        // Verify content still works
+        assert_eq!(loaded.content_for(0).unwrap(), b"hello world");
+        assert_eq!(loaded.content_for(1).unwrap(), b"fn search() {}");
+        assert_eq!(loaded.content_for(2).unwrap(), b"# README");
+    }
+
+    #[test]
+    fn test_save_load_gcix_empty_paths() {
+        // Store with NO paths should still roundtrip (paths_bytes = 0)
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("no_paths.gcix");
+
+        let mut store = ContentStore::new();
+        store.insert(b"content", 0, 0, 0);
+
+        save_gcix(&store, &gcix_path, 0, 0).expect("save");
+
+        let snapshot = load_gcix(&gcix_path, None).expect("load");
+        let loaded = snapshot.content_store();
+
+        assert_eq!(loaded.file_count(), 1);
+        assert!(loaded.path_for(0).is_none()); // No paths stored
+        assert_eq!(loaded.content_for(0).unwrap(), b"content");
+    }
+
+    #[test]
+    fn test_save_load_gcix_paths_with_metal() {
+        use objc2_metal::MTLCreateSystemDefaultDevice;
+
+        let device = MTLCreateSystemDefaultDevice()
+            .expect("No Metal device (test requires Apple Silicon)");
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("paths_metal.gcix");
+
+        let mut store = ContentStore::new();
+        store.add_file_with_path(
+            b"GPU content",
+            std::path::PathBuf::from("/src/gpu.rs"),
+            0,
+            0xAA,
+            100,
+        );
+        store.add_file_with_path(
+            b"Metal content",
+            std::path::PathBuf::from("/src/metal.rs"),
+            1,
+            0xBB,
+            200,
+        );
+
+        save_gcix(&store, &gcix_path, 0xFACE, 7).expect("save");
+
+        let snapshot = load_gcix(&gcix_path, Some(&device)).expect("load with device");
+        let loaded = snapshot.content_store();
+
+        assert!(loaded.has_metal_buffer());
+        assert_eq!(loaded.path_for(0).unwrap().to_str().unwrap(), "/src/gpu.rs");
+        assert_eq!(loaded.path_for(1).unwrap().to_str().unwrap(), "/src/metal.rs");
+        assert_eq!(loaded.content_for(0).unwrap(), b"GPU content");
+        assert_eq!(loaded.content_for(1).unwrap(), b"Metal content");
+    }
+
+    #[test]
+    fn test_save_load_gcix_50_files_with_paths() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("50paths.gcix");
+
+        let mut store = ContentStore::new();
+        for i in 0..50u32 {
+            let content = format!("content_for_file_{:04}", i);
+            let path = std::path::PathBuf::from(format!("/project/src/module_{:04}.rs", i));
+            store.add_file_with_path(content.as_bytes(), path, i, i * 7, i * 13);
+        }
+
+        save_gcix(&store, &gcix_path, 0xBEEF, 123).expect("save");
+
+        let snapshot = load_gcix(&gcix_path, None).expect("load");
+        let loaded = snapshot.content_store();
+
+        assert_eq!(loaded.file_count(), 50);
+
+        for i in 0..50u32 {
+            let expected_path = format!("/project/src/module_{:04}.rs", i);
+            let expected_content = format!("content_for_file_{:04}", i);
+
+            assert_eq!(
+                loaded.path_for(i).unwrap().to_str().unwrap(),
+                expected_path,
+                "path mismatch for file {}",
+                i,
+            );
+            assert_eq!(
+                loaded.content_for(i).unwrap(),
+                expected_content.as_bytes(),
+                "content mismatch for file {}",
+                i,
+            );
         }
     }
 }
