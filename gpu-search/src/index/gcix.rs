@@ -1275,4 +1275,275 @@ mod tests {
             );
         }
     }
+
+    // ================================================================
+    // GCIX v3 chunk metadata persistence tests
+    // ================================================================
+
+    /// Helper: compare two ChunkMetadata slices field-by-field
+    /// (ChunkMetadata does not derive PartialEq).
+    fn chunk_metadata_eq(a: &[crate::search::content::ChunkMetadata], b: &[crate::search::content::ChunkMetadata]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            if x.file_index != y.file_index
+                || x.chunk_index != y.chunk_index
+                || x.offset_in_file != y.offset_in_file
+                || x.chunk_length != y.chunk_length
+                || x.flags != y.flags
+                || x.buffer_offset != y.buffer_offset
+            {
+                panic!(
+                    "ChunkMetadata mismatch at index {}: {:?} vs {:?}",
+                    i, x, y
+                );
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn test_gcix_v3_chunk_metadata_roundtrip() {
+        // Save a ContentStore to GCIX v3, reload, verify chunk_metadata() matches
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("v3_chunks.gcix");
+
+        let mut store = ContentStore::new();
+        store.add_file_with_path(
+            b"hello world\nsecond line\nthird line here",
+            std::path::PathBuf::from("/src/a.rs"),
+            0,
+            0xAA,
+            1000,
+        );
+        store.add_file_with_path(
+            b"another file with content",
+            std::path::PathBuf::from("/src/b.rs"),
+            1,
+            0xBB,
+            2000,
+        );
+
+        // Build expected chunk metadata BEFORE saving
+        let expected_chunks = build_chunk_metadata(&store);
+        assert!(!expected_chunks.is_empty(), "should have chunks");
+
+        save_gcix(&store, &gcix_path, 0xDEAD, 42).expect("save v3");
+
+        // Verify header says v3
+        let raw = std::fs::read(&gcix_path).unwrap();
+        let header = GcixHeader::from_bytes(&raw).expect("parse header");
+        assert_eq!(header.version, 3);
+        assert!(header.chunks_bytes > 0, "chunks_bytes should be > 0");
+
+        // Load and verify chunk_metadata is present
+        let snapshot = load_gcix(&gcix_path, None).expect("load v3");
+        let loaded = snapshot.content_store();
+
+        let loaded_chunks = loaded
+            .chunk_metadata()
+            .expect("v3 GCIX should have chunk_metadata");
+
+        assert_eq!(
+            loaded_chunks.len(),
+            expected_chunks.len(),
+            "chunk count mismatch"
+        );
+        assert!(chunk_metadata_eq(loaded_chunks, &expected_chunks));
+
+        // Also verify content and paths survived
+        assert_eq!(loaded.content_for(0).unwrap(), b"hello world\nsecond line\nthird line here");
+        assert_eq!(loaded.content_for(1).unwrap(), b"another file with content");
+        assert_eq!(loaded.path_for(0).unwrap().to_str().unwrap(), "/src/a.rs");
+        assert_eq!(loaded.path_for(1).unwrap().to_str().unwrap(), "/src/b.rs");
+    }
+
+    #[test]
+    fn test_gcix_v3_chunk_metadata_large_files() {
+        // Test with files larger than CHUNK_SIZE to produce multiple chunks per file
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("v3_large.gcix");
+
+        let mut store = ContentStore::new();
+        // File 0: 10000 bytes = 3 chunks (4096 + 4096 + 1808)
+        let big_content: Vec<u8> = (0..10000u32).map(|i| (i % 256) as u8).collect();
+        store.add_file_with_path(
+            &big_content,
+            std::path::PathBuf::from("/big.bin"),
+            0,
+            0xCC,
+            3000,
+        );
+        // File 1: small file = 1 chunk
+        store.add_file_with_path(
+            b"small",
+            std::path::PathBuf::from("/small.txt"),
+            1,
+            0xDD,
+            4000,
+        );
+
+        let expected_chunks = build_chunk_metadata(&store);
+        // 3 chunks for big file + 1 for small = 4
+        assert_eq!(expected_chunks.len(), 3 + 1);
+
+        save_gcix(&store, &gcix_path, 0xBEEF, 99).expect("save");
+
+        let snapshot = load_gcix(&gcix_path, None).expect("load");
+        let loaded = snapshot.content_store();
+        let loaded_chunks = loaded.chunk_metadata().expect("should have chunks");
+
+        assert!(chunk_metadata_eq(loaded_chunks, &expected_chunks));
+
+        // Verify per-chunk fields for multi-chunk file
+        assert_eq!(loaded_chunks[0].file_index, 0);
+        assert_eq!(loaded_chunks[0].chunk_index, 0);
+        assert_eq!(loaded_chunks[0].offset_in_file, 0);
+        assert_eq!(loaded_chunks[0].chunk_length, 4096);
+        assert_eq!(loaded_chunks[0].flags & 2, 2); // is_first
+
+        assert_eq!(loaded_chunks[1].file_index, 0);
+        assert_eq!(loaded_chunks[1].chunk_index, 1);
+        assert_eq!(loaded_chunks[1].offset_in_file, 4096);
+        assert_eq!(loaded_chunks[1].chunk_length, 4096);
+
+        assert_eq!(loaded_chunks[2].file_index, 0);
+        assert_eq!(loaded_chunks[2].chunk_index, 2);
+        assert_eq!(loaded_chunks[2].offset_in_file, 8192);
+        assert_eq!(loaded_chunks[2].chunk_length, 10000 - 8192);
+        assert_eq!(loaded_chunks[2].flags & 4, 4); // is_last
+    }
+
+    #[test]
+    fn test_gcix_v3_empty_store_no_chunks() {
+        // Empty store should produce empty chunk metadata (but still be v3)
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("v3_empty.gcix");
+
+        let store = ContentStore::new();
+        save_gcix(&store, &gcix_path, 0, 0).expect("save empty v3");
+
+        let raw = std::fs::read(&gcix_path).unwrap();
+        let header = GcixHeader::from_bytes(&raw).expect("parse header");
+        assert_eq!(header.version, 3);
+        assert_eq!(header.chunks_bytes, 0, "empty store should have 0 chunk bytes");
+
+        let snapshot = load_gcix(&gcix_path, None).expect("load empty v3");
+        let loaded = snapshot.content_store();
+        // chunks_bytes == 0, so load_gcix won't set chunk_metadata
+        assert!(
+            loaded.chunk_metadata().is_none(),
+            "empty store should have None chunk_metadata"
+        );
+    }
+
+    #[test]
+    fn test_gcix_v2_backward_compat_no_chunk_metadata() {
+        // Create a v3 GCIX file, then manually downgrade to v2 format:
+        // - Set version to 2
+        // - Zero out chunks_offset/chunks_bytes fields (bytes 76..92)
+        // - Move CRC to offset 76 (v2 CRC position)
+        // - Recompute CRC over first 76 bytes
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("v2_compat.gcix");
+
+        let mut store = ContentStore::new();
+        store.add_file_with_path(
+            b"v2 content here",
+            std::path::PathBuf::from("/v2/file.rs"),
+            0,
+            0xAA,
+            500,
+        );
+        save_gcix(&store, &gcix_path, 0x1234, 10).expect("save v3");
+
+        // Manually patch to v2 format
+        let mut data = std::fs::read(&gcix_path).unwrap();
+
+        // Set version to 2
+        data[4..8].copy_from_slice(&2u32.to_le_bytes());
+
+        // Zero the v3 chunk fields at [76..92)
+        data[76..92].fill(0);
+
+        // Recompute CRC over [0..76) and write at [76..80) (v2 CRC offset)
+        let crc = crc32fast::hash(&data[..76]);
+        data[76..80].copy_from_slice(&crc.to_le_bytes());
+
+        std::fs::write(&gcix_path, &data).unwrap();
+
+        // Load as v2 — should succeed with no chunk metadata
+        let snapshot = load_gcix(&gcix_path, None).expect("load v2 file");
+        let loaded = snapshot.content_store();
+
+        assert_eq!(loaded.file_count(), 1);
+        assert_eq!(loaded.content_for(0).unwrap(), b"v2 content here");
+        assert!(
+            loaded.chunk_metadata().is_none(),
+            "v2 GCIX should have None chunk_metadata"
+        );
+    }
+
+    #[test]
+    fn test_gcix_v3_build_save_load_compare() {
+        // Full round-trip: build_chunk_metadata -> save_gcix -> load_gcix -> compare
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let gcix_path = dir.path().join("v3_full_rt.gcix");
+
+        let mut store = ContentStore::new();
+        // Multiple files with varying sizes to exercise chunking edge cases
+        let contents: Vec<Vec<u8>> = vec![
+            b"short".to_vec(),                                // 5 bytes = 1 chunk
+            vec![b'A'; 4096],                                 // exactly CHUNK_SIZE = 1 chunk
+            vec![b'B'; 4097],                                 // CHUNK_SIZE+1 = 2 chunks
+            vec![b'C'; 8192],                                 // 2*CHUNK_SIZE = 2 chunks
+            b"line1\nline2\nline3\nline4\nline5\n".to_vec(),  // multi-line
+        ];
+
+        for (i, content) in contents.iter().enumerate() {
+            let path = std::path::PathBuf::from(format!("/project/file_{}.txt", i));
+            store.add_file_with_path(content, path, i as u32, (i as u32) * 0x11, (i as u32) * 100);
+        }
+
+        // Step 1: build chunk metadata from store
+        let pre_save_chunks = build_chunk_metadata(&store);
+
+        // Verify expected chunk counts:
+        // file0: 5 bytes -> 1 chunk
+        // file1: 4096 bytes -> 1 chunk
+        // file2: 4097 bytes -> 2 chunks
+        // file3: 8192 bytes -> 2 chunks
+        // file4: 31 bytes -> 1 chunk
+        assert_eq!(pre_save_chunks.len(), 1 + 1 + 2 + 2 + 1, "expected 7 chunks total");
+
+        // Step 2: save GCIX v3
+        save_gcix(&store, &gcix_path, 0xCAFE, 77).expect("save");
+
+        // Step 3: load GCIX v3
+        let snapshot = load_gcix(&gcix_path, None).expect("load");
+        let loaded = snapshot.content_store();
+
+        // Step 4: compare chunk metadata
+        let loaded_chunks = loaded
+            .chunk_metadata()
+            .expect("loaded store should have chunk_metadata");
+
+        assert_eq!(
+            loaded_chunks.len(),
+            pre_save_chunks.len(),
+            "chunk count should match"
+        );
+        assert!(chunk_metadata_eq(loaded_chunks, &pre_save_chunks));
+
+        // Verify content integrity too
+        for (i, content) in contents.iter().enumerate() {
+            assert_eq!(
+                loaded.content_for(i as u32).unwrap(),
+                content.as_slice(),
+                "content mismatch for file {}",
+                i,
+            );
+        }
+    }
 }

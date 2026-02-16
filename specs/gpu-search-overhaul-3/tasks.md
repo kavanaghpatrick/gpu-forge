@@ -198,7 +198,7 @@ After POC validated, clean up code.
   - **Commit**: `test(content): add GPU line number accuracy tests`
   - _Requirements: AC-2.1, AC-2.3_
 
-- [ ] 3.3 Unit tests for GCIX v3 chunk metadata persistence
+- [x] 3.3 Unit tests for GCIX v3 chunk metadata persistence
   - **Do**:
     1. Add test in gcix.rs that saves a ContentStore to GCIX v3, reloads it, verifies chunk_metadata() returns the same data
     2. Test v2 backward compat: create a v2 GCIX file, load it, verify chunk_metadata() returns None
