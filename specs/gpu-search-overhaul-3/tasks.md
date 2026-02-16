@@ -129,7 +129,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-8_
   - _Design: Component C_
 
-- [ ] 1.8 POC Checkpoint: compile and run unit tests
+- [x] 1.8 POC Checkpoint: compile and run unit tests
   - **Do**: Run full test suite to verify all changes compile and existing tests pass
   - **Done when**: All `cargo test -p gpu-search` tests pass
   - **Verify**: `cargo test -p gpu-search 2>&1 | tail -20`

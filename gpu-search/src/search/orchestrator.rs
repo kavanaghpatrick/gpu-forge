@@ -1616,7 +1616,7 @@ impl SearchOrchestrator {
                 None => { reject_no_content += 1; continue; },
             };
 
-            // byte_offset is already file-relative (translated in search_zerocopy batch collection)
+            // byte_offset is file-relative from zerocopy collect_results (context_start + column)
             let file_byte_offset = m.byte_offset as usize;
 
             // Log first few matches for debugging
