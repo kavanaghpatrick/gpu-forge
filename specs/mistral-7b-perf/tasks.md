@@ -21,7 +21,7 @@ Focus: Native Q6_K matvec kernel + integration. Proves Q6_K works, eliminates 40
   - _Requirements: FR-1_
   - _Design: Component 1_
 
-- [ ] 1.2 Create multi_token_matvec_q6_k.metal shader
+- [x] 1.2 Create multi_token_matvec_q6_k.metal shader
   - **Do**: Create batched variant following `multi_token_matvec_q4_0.metal`. Add batch_size param at buffer(5). Outer loop over tokens, inner loop over Q6_K blocks. Same dequant math as 1.1. Two variants: overwrite and accumulate. Both reuse weight data from SLC across tokens.
   - **Files**: `crates/metal-attention-kernels/shaders/multi_token_matvec_q6_k.metal`
   - **Done when**: File compiles alongside matvec_q6_k.metal
