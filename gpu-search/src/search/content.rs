@@ -53,6 +53,7 @@ pub struct ChunkMetadata {
     pub offset_in_file: u64,
     pub chunk_length: u32,
     pub flags: u32, // Bit 0: is_text, Bit 1: is_first, Bit 2: is_last
+    pub buffer_offset: u64, // Absolute byte offset in contiguous buffer (zero-copy path)
 }
 
 /// Search parameters -- matches Metal `SearchParams` in search_types.h.
@@ -83,7 +84,7 @@ struct GpuMatchResult {
 // Compile-time layout assertions
 const _: () = assert!(mem::size_of::<GpuSearchParams>() == 16);
 const _: () = assert!(mem::size_of::<GpuMatchResult>() == 32);
-const _: () = assert!(mem::size_of::<ChunkMetadata>() == 24);
+const _: () = assert!(mem::size_of::<ChunkMetadata>() == 32);
 
 // ============================================================================
 // Public API types
@@ -141,11 +142,11 @@ impl Default for SearchOptions {
 /// Buffers are allocated once and reused across searches to avoid
 /// per-search allocation overhead.
 pub struct ContentSearchEngine {
-    #[allow(dead_code)]
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     content_search_pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     turbo_search_pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    zerocopy_search_pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
 
     // Pre-allocated GPU buffers
     chunks_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -172,7 +173,7 @@ impl ContentSearchEngine {
         pso_cache: &PsoCache,
         max_files: usize,
     ) -> Self {
-        let max_chunks = (max_files * 10).min(100_000); // Cap at 100K chunks (~400MB)
+        let max_chunks = max_files * 10; // No cap -- dynamically resized if needed
 
         let command_queue = device.newCommandQueue().expect("Failed to create command queue");
 
@@ -183,6 +184,9 @@ impl ContentSearchEngine {
         let turbo_search_pso = pso_cache
             .get("turbo_search_kernel")
             .expect("turbo_search_kernel PSO not in cache");
+        let zerocopy_search_pso = pso_cache
+            .get("content_search_zerocopy_kernel")
+            .expect("content_search_zerocopy_kernel PSO not in cache");
 
         let options = MTLResourceOptions::StorageModeShared;
 
@@ -209,12 +213,14 @@ impl ContentSearchEngine {
         // Retain PSOs (they come as references from cache)
         let content_search_pso = Retained::from(content_search_pso);
         let turbo_search_pso = Retained::from(turbo_search_pso);
+        let zerocopy_search_pso = Retained::from(zerocopy_search_pso);
 
         Self {
             device: Retained::from(device),
             command_queue,
             content_search_pso,
             turbo_search_pso,
+            zerocopy_search_pso,
             chunks_buffer,
             metadata_buffer,
             params_buffer,
@@ -226,6 +232,23 @@ impl ContentSearchEngine {
             total_data_bytes: 0,
             file_count: 0,
         }
+    }
+
+    /// Ensure the metadata buffer can hold at least `needed` chunk entries.
+    ///
+    /// If `needed > self.max_chunks`, reallocates the metadata buffer on the
+    /// GPU with capacity for `needed` entries and updates `self.max_chunks`.
+    fn ensure_metadata_capacity(&mut self, needed: usize) {
+        if needed <= self.max_chunks {
+            return;
+        }
+        let options = MTLResourceOptions::StorageModeShared;
+        let new_buffer = self
+            .device
+            .newBufferWithLength_options(needed * mem::size_of::<ChunkMetadata>(), options)
+            .expect("Failed to reallocate metadata buffer");
+        self.metadata_buffer = new_buffer;
+        self.max_chunks = needed;
     }
 
     /// Load raw content bytes for searching.
@@ -280,6 +303,7 @@ impl ContentSearchEngine {
                     offset_in_file: offset as u64,
                     chunk_length: chunk_len as u32,
                     flags,
+                    buffer_offset: 0, // Not used in padded path
                 };
             }
         }
@@ -535,6 +559,145 @@ impl ContentSearchEngine {
 
         // (6) Read back matches
         self.collect_results(options)
+    }
+
+    /// Zero-copy search: dispatch the zerocopy kernel directly on a contiguous
+    /// content buffer (e.g. from ContentStore::metal_buffer()). No padding, no
+    /// CPU memcpy. Each ChunkMetadata must have `buffer_offset` set to the
+    /// absolute byte offset within the contiguous buffer.
+    ///
+    /// Buffer layout:
+    /// - buffer(0) = contiguous content buffer (raw bytes, NOT padded)
+    /// - buffer(1) = chunk metadata (with buffer_offset populated)
+    /// - buffer(2) = search params
+    /// - buffer(3) = pattern
+    /// - buffer(4) = match output
+    /// - buffer(5) = match count
+    pub fn search_zerocopy(
+        &mut self,
+        content_buffer: &ProtocolObject<dyn MTLBuffer>,
+        chunk_metas: &[ChunkMetadata],
+        pattern: &[u8],
+        options: &SearchOptions,
+    ) -> Vec<ContentMatch> {
+        if pattern.is_empty() || pattern.len() > MAX_PATTERN_LEN || chunk_metas.is_empty() {
+            return vec![];
+        }
+
+        // Ensure metadata buffer can hold all chunks
+        self.ensure_metadata_capacity(chunk_metas.len());
+
+        let pattern_bytes: Vec<u8> = if options.case_sensitive {
+            pattern.to_vec()
+        } else {
+            pattern.iter().map(|b| b.to_ascii_lowercase()).collect()
+        };
+
+        // Write pattern once (shared across all batches)
+        unsafe {
+            let pattern_ptr = self.pattern_buffer.contents().as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(
+                pattern_bytes.as_ptr(),
+                pattern_ptr,
+                pattern_bytes.len(),
+            );
+        }
+
+        let mut all_results: Vec<ContentMatch> = Vec::new();
+        let batch_size = self.max_chunks;
+
+        // Process chunks in batches that fit in metadata_buffer
+        for batch_start in (0..chunk_metas.len()).step_by(batch_size) {
+            let batch_end = (batch_start + batch_size).min(chunk_metas.len());
+            let batch = &chunk_metas[batch_start..batch_end];
+            let batch_count = batch.len();
+            let batch_bytes = batch_count * CHUNK_SIZE;
+
+            unsafe {
+                // Write search params for this batch
+                let params_ptr = self.params_buffer.contents().as_ptr() as *mut GpuSearchParams;
+                *params_ptr = GpuSearchParams {
+                    chunk_count: batch_count as u32,
+                    pattern_len: pattern_bytes.len() as u32,
+                    case_sensitive: if options.case_sensitive { 1 } else { 0 },
+                    total_bytes: batch_bytes as u32,
+                };
+
+                // Write batch chunk metadata
+                let meta_ptr = self.metadata_buffer.contents().as_ptr() as *mut ChunkMetadata;
+                std::ptr::copy_nonoverlapping(batch.as_ptr(), meta_ptr, batch_count);
+
+                // Reset match count
+                let count_ptr = self.match_count_buffer.contents().as_ptr() as *mut u32;
+                *count_ptr = 0;
+            }
+
+            self.current_chunk_count = batch_count;
+            self.total_data_bytes = batch_bytes;
+
+            // Dispatch this batch
+            autoreleasepool(|_| {
+                let cmd = self
+                    .command_queue
+                    .commandBuffer()
+                    .expect("Failed to create command buffer");
+                let encoder = cmd
+                    .computeCommandEncoder()
+                    .expect("Failed to create compute encoder");
+
+                encoder.setComputePipelineState(&self.zerocopy_search_pso);
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(content_buffer), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(&*self.metadata_buffer), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(&*self.pattern_buffer), 0, 3);
+                    encoder.setBuffer_offset_atIndex(Some(&*self.matches_buffer), 0, 4);
+                    encoder.setBuffer_offset_atIndex(Some(&*self.match_count_buffer), 0, 5);
+                }
+
+                let total_threads = batch_bytes.div_ceil(BYTES_PER_THREAD);
+                let grid_size = MTLSize {
+                    width: total_threads,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg_size = MTLSize {
+                    width: THREADGROUP_SIZE,
+                    height: 1,
+                    depth: 1,
+                };
+
+                encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
+                encoder.endEncoding();
+
+                cmd.commit();
+                cmd.waitUntilCompleted();
+            });
+
+            let mut batch_results = self.collect_results(options);
+
+            // Translate byte_offset from batch-virtual-space to file-relative offset.
+            // The GPU kernel writes chunk_index as batch-local (0..batch_size).
+            // byte_offset = batch_local_chunk * CHUNK_SIZE + context_start + column.
+            // We recover the batch-local chunk, look up its offset_in_file, and
+            // recompute byte_offset as a file-relative position.
+            for result in &mut batch_results {
+                let batch_chunk = (result.byte_offset as usize) / CHUNK_SIZE;
+                let intra_chunk = (result.byte_offset as usize) % CHUNK_SIZE;
+                if let Some(cm) = batch.get(batch_chunk) {
+                    result.byte_offset = (cm.offset_in_file as usize + intra_chunk) as u32;
+                }
+            }
+
+            all_results.extend(batch_results);
+
+            if all_results.len() >= options.max_results {
+                all_results.truncate(options.max_results);
+                break;
+            }
+        }
+
+        all_results
     }
 
     /// Read match results from GPU buffers.
@@ -928,7 +1091,7 @@ mod tests {
     fn test_layout_assertions() {
         assert_eq!(mem::size_of::<GpuSearchParams>(), 16);
         assert_eq!(mem::size_of::<GpuMatchResult>(), 32);
-        assert_eq!(mem::size_of::<ChunkMetadata>(), 24);
+        assert_eq!(mem::size_of::<ChunkMetadata>(), 32);
     }
 
     #[test]
@@ -971,6 +1134,7 @@ mod tests {
                     offset_in_file: offset_in_file as u64,
                     chunk_length: chunk_len as u32,
                     flags,
+                    buffer_offset: 0, // Not used in padded path
                 });
             }
         }
@@ -1077,6 +1241,7 @@ mod tests {
             offset_in_file: 0,
             chunk_length: content.len() as u32,
             flags: 1 | 2 | 4, // is_text | is_first | is_last
+            buffer_offset: 0,
         }];
 
         // Create padded buffer with content
@@ -1108,6 +1273,7 @@ mod tests {
             offset_in_file: 0,
             chunk_length: 100,
             flags: 7,
+            buffer_offset: 0,
         }];
 
         let options = MTLResourceOptions::StorageModeShared;
