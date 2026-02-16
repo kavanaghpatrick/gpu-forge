@@ -10,6 +10,129 @@
 // SIMD groups (32 threads) share a single atomic for match counting.
 // Achieves 79-110 GB/s on M4 Pro (exceeds raw bandwidth via early exits!)
 
+// =============================================================================
+// ZERO-COPY KERNEL — reads from contiguous buffer via buffer_offset
+// =============================================================================
+//
+// Same search logic as content_search_kernel, but reads data from a contiguous
+// (non-padded) buffer. Each chunk's position is given by ChunkMetadata.buffer_offset
+// instead of assuming chunk_idx * CHUNK_SIZE layout.
+// This allows zero-copy search from ContentStore's Metal buffer.
+
+kernel void content_search_zerocopy_kernel(
+    device const uchar* raw_data [[buffer(0)]],           // Contiguous content buffer
+    device const ChunkMetadata* metadata [[buffer(1)]],
+    constant SearchParams& params [[buffer(2)]],
+    constant uchar* pattern [[buffer(3)]],
+    device MatchResult* matches [[buffer(4)]],
+    device atomic_uint& match_count [[buffer(5)]],
+    uint gid [[thread_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]]
+) {
+    // Map gid to chunk_idx + offset_in_chunk (same logical layout as padded kernel)
+    uint logical_byte = gid * BYTES_PER_THREAD;
+    if (logical_byte >= params.total_bytes) return;
+
+    uint chunk_idx = logical_byte / CHUNK_SIZE;
+    uint offset_in_chunk = logical_byte % CHUNK_SIZE;
+
+    if (chunk_idx >= params.chunk_count) return;
+
+    ChunkMetadata meta = metadata[chunk_idx];
+    uint chunk_len = meta.chunk_length;
+    if (offset_in_chunk >= chunk_len) return;
+
+    // KEY DIFFERENCE: read from buffer_offset (contiguous) instead of chunk_idx * CHUNK_SIZE
+    ulong actual_byte = meta.buffer_offset + offset_in_chunk;
+    uint valid_bytes = min((uint)BYTES_PER_THREAD, chunk_len - offset_in_chunk);
+
+    // Load 64 bytes from contiguous buffer
+    uchar local_data[BYTES_PER_THREAD];
+    for (uint i = 0; i < valid_bytes; i++) {
+        local_data[i] = raw_data[actual_byte + i];
+    }
+
+    // Search within local data
+    uint local_matches_pos[MAX_MATCHES_PER_THREAD];
+    uint local_match_count = 0;
+
+    bool case_sensitive = params.case_sensitive != 0;
+    uint search_end = (valid_bytes >= params.pattern_len) ? (valid_bytes - params.pattern_len + 1) : 0;
+
+    for (uint pos = 0; pos < search_end && local_match_count < MAX_MATCHES_PER_THREAD; pos++) {
+        bool match_found = true;
+        for (uint j = 0; j < params.pattern_len && match_found; j++) {
+            if (!char_eq_fast(local_data[pos + j], pattern[j], case_sensitive)) {
+                match_found = false;
+            }
+        }
+        if (match_found) {
+            local_matches_pos[local_match_count++] = pos;
+        }
+    }
+
+    // SIMD reduction
+    uint simd_total = simd_sum(local_match_count);
+    uint my_offset = simd_prefix_exclusive_sum(local_match_count);
+
+    uint group_base = 0;
+    if (simd_lane == 0 && simd_total > 0) {
+        group_base = atomic_fetch_add_explicit(&match_count, simd_total, memory_order_relaxed);
+    }
+    group_base = simd_broadcast_first(group_base);
+
+    for (uint i = 0; i < local_match_count; i++) {
+        uint global_idx = group_base + my_offset + i;
+        if (global_idx < 10000) {
+            uint local_pos = local_matches_pos[i];
+            uint global_pos = offset_in_chunk + local_pos;
+
+            // Compute file-relative line number by scanning from file start
+            uint file_line = 1;
+            ulong match_abs = meta.buffer_offset + offset_in_chunk + local_pos;
+            // Scan from file start to match position for newlines
+            for (ulong s = meta.buffer_offset; s < match_abs; s++) {
+                if (raw_data[s] == 0x0A) { file_line++; }
+            }
+
+            // Find start of current line (last newline before match position)
+            ulong line_start_abs = meta.buffer_offset; // default: file start
+            if (match_abs > meta.buffer_offset) {
+                for (ulong s = match_abs - 1; s >= meta.buffer_offset; s--) {
+                    if (raw_data[s] == 0x0A) {
+                        line_start_abs = s + 1;
+                        break;
+                    }
+                    if (s == meta.buffer_offset) break; // prevent underflow
+                }
+            }
+            uint col = (uint)(match_abs - line_start_abs);
+
+            uint context_end = local_pos + params.pattern_len;
+            for (uint scan = context_end; scan < valid_bytes && scan < local_pos + MAX_CONTEXT; scan++) {
+                context_end = scan + 1;
+                if (local_data[scan] == '\n') break;
+            }
+
+            MatchResult result;
+            result.file_index = meta.file_index;
+            result.chunk_index = chunk_idx;
+            result.line_number = file_line;
+            result.column = col;
+            result.match_length = params.pattern_len;
+            result.context_start = (uint)(line_start_abs - meta.buffer_offset);
+            result.context_len = min((uint)(match_abs - line_start_abs) + context_end - local_pos, (uint)MAX_CONTEXT);
+            result._padding = 0;
+
+            matches[global_idx] = result;
+        }
+    }
+}
+
+// =============================================================================
+// PADDED KERNEL — original, reads from padded chunk layout
+// =============================================================================
+
 kernel void content_search_kernel(
     device const uchar4* data [[buffer(0)]],          // Vectorized data access
     device const ChunkMetadata* metadata [[buffer(1)]],

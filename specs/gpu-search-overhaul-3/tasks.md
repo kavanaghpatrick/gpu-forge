@@ -41,7 +41,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-3_
   - _Design: Component A_
 
-- [ ] 1.3 Add file-relative line number computation to zerocopy kernel
+- [x] 1.3 Add file-relative line number computation to zerocopy kernel
   - **Do**:
     1. In `content_search_zerocopy_kernel` (content_search.metal:90-97): replace the local-window newline scan with a scan from file start:
        ```metal
