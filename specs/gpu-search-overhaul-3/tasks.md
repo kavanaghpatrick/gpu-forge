@@ -112,7 +112,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-7, FR-8, FR-9_
   - _Design: Component C_
 
-- [ ] 1.7 Use pre-built chunk metadata in orchestrator
+- [x] 1.7 Use pre-built chunk metadata in orchestrator
   - **Do**:
     1. In `search_from_content_store()` (orchestrator.rs:1396-1398): replace `let chunk_metas = build_chunk_metadata(content_store)` with:
        ```rust

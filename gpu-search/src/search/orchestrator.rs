@@ -1499,12 +1499,16 @@ impl SearchOrchestrator {
         // The zerocopy kernel reads directly from the contiguous content buffer
         // using ChunkMetadata.buffer_offset — NO padded buffer, NO CPU memcpy.
         let chunks_start = Instant::now();
-        let chunk_metas = build_chunk_metadata(content_store);
+        let (chunk_metas, meta_source) = match content_store.chunk_metadata() {
+            Some(cached) => (cached.to_vec(), "cached"),
+            None => (build_chunk_metadata(content_store), "rebuilt"),
+        };
         profile.batch_us = chunks_start.elapsed().as_micros() as u64;
 
         eprintln!(
-            "[gpu-search] content store: {} chunks from {} files, buffer={:.1}GB, metadata built in {:.1}ms",
+            "[gpu-search] content store: {} chunks ({}) from {} files, buffer={:.1}GB, metadata in {:.1}ms",
             chunk_metas.len(),
+            meta_source,
             content_store.file_count(),
             content_store.total_bytes() as f64 / (1024.0 * 1024.0 * 1024.0),
             chunks_start.elapsed().as_secs_f64() * 1000.0,
