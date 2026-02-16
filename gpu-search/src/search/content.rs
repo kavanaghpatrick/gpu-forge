@@ -240,17 +240,33 @@ impl ContentSearchEngine {
     ///
     /// If `needed > self.max_chunks`, reallocates the metadata buffer on the
     /// GPU with capacity for `needed` entries and updates `self.max_chunks`.
-    fn ensure_metadata_capacity(&mut self, needed: usize) {
+    ///
+    /// Returns `Err` if the GPU fails to allocate the new buffer, in which
+    /// case the old buffer and `max_chunks` are left unchanged.
+    fn ensure_metadata_capacity(&mut self, needed: usize) -> Result<(), &'static str> {
         if needed <= self.max_chunks {
-            return;
+            return Ok(());
         }
         let options = MTLResourceOptions::StorageModeShared;
         let new_buffer = self
             .device
-            .newBufferWithLength_options(needed * mem::size_of::<ChunkMetadata>(), options)
-            .expect("Failed to reallocate metadata buffer");
-        self.metadata_buffer = new_buffer;
-        self.max_chunks = needed;
+            .newBufferWithLength_options(needed * mem::size_of::<ChunkMetadata>(), options);
+        match new_buffer {
+            Some(buf) => {
+                self.metadata_buffer = buf;
+                self.max_chunks = needed;
+                Ok(())
+            }
+            None => {
+                eprintln!(
+                    "[gpu-search] WARNING: metadata buffer reallocation failed \
+                     (requested {} entries, {} bytes)",
+                    needed,
+                    needed * mem::size_of::<ChunkMetadata>()
+                );
+                Err("metadata buffer reallocation failed")
+            }
+        }
     }
 
     /// Load raw content bytes for searching.
@@ -593,8 +609,10 @@ impl ContentSearchEngine {
             return vec![];
         }
 
-        // Ensure metadata buffer can hold all chunks
-        self.ensure_metadata_capacity(chunk_metas.len());
+        // Ensure metadata buffer can hold all chunks; return empty on failure
+        if self.ensure_metadata_capacity(chunk_metas.len()).is_err() {
+            return vec![];
+        }
 
         let pattern_bytes: Vec<u8> = if options.case_sensitive {
             pattern.to_vec()

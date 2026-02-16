@@ -152,7 +152,7 @@ After POC validated, clean up code.
   - **Commit**: `refactor(content): clean up search_zerocopy single-dispatch path`
   - _Design: Component A_
 
-- [ ] 2.2 Add error handling for metadata buffer reallocation
+- [x] 2.2 Add error handling for metadata buffer reallocation
   - **Do**:
     1. In `ensure_metadata_capacity()`: handle `None` from `newBufferWithLength_options` gracefully
     2. Return `Result<(), &'static str>` or log warning and keep old buffer
