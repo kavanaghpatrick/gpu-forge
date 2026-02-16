@@ -217,7 +217,7 @@ After POC validated, clean up code.
   - **Done when**: All three commands pass with zero warnings/errors
   - **Commit**: `fix(gpu-search): address lint/type issues` (if needed)
 
-- [ ] 4.2 Create PR and verify CI
+- [x] 4.2 Create PR and verify CI
   - **Do**: Push branch, create PR with gh CLI, watch CI
   - **Verify**: `gh pr checks --watch` all green
   - **Done when**: PR created, CI green, ready for review
