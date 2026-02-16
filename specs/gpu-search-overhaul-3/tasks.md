@@ -211,7 +211,7 @@ After POC validated, clean up code.
 
 ## Phase 4: Quality Gates
 
-- [ ] 4.1 Full quality check (clippy, test, build)
+- [x] 4.1 Full quality check (clippy, test, build)
   - **Do**: Run all quality gates locally
   - **Verify**: `cargo clippy -p gpu-search -- -D warnings && cargo test -p gpu-search && cargo build -p gpu-search --release`
   - **Done when**: All three commands pass with zero warnings/errors
