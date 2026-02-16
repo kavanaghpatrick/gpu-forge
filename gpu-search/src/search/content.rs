@@ -593,7 +593,7 @@ impl ContentSearchEngine {
             pattern.iter().map(|b| b.to_ascii_lowercase()).collect()
         };
 
-        // Write pattern once (shared across all batches)
+        // Write pattern once
         unsafe {
             let pattern_ptr = self.pattern_buffer.contents().as_ptr() as *mut u8;
             std::ptr::copy_nonoverlapping(
@@ -603,98 +603,76 @@ impl ContentSearchEngine {
             );
         }
 
-        let mut all_results: Vec<ContentMatch> = Vec::new();
-        let batch_size = self.max_chunks;
+        let chunk_count = chunk_metas.len();
+        let total_bytes = chunk_count * CHUNK_SIZE;
 
-        // Process chunks in batches that fit in metadata_buffer
-        for batch_start in (0..chunk_metas.len()).step_by(batch_size) {
-            let batch_end = (batch_start + batch_size).min(chunk_metas.len());
-            let batch = &chunk_metas[batch_start..batch_end];
-            let batch_count = batch.len();
-            let batch_bytes = batch_count * CHUNK_SIZE;
+        unsafe {
+            // Write search params for all chunks at once
+            let params_ptr = self.params_buffer.contents().as_ptr() as *mut GpuSearchParams;
+            *params_ptr = GpuSearchParams {
+                chunk_count: chunk_count as u32,
+                pattern_len: pattern_bytes.len() as u32,
+                case_sensitive: if options.case_sensitive { 1 } else { 0 },
+                total_bytes: total_bytes as u32,
+            };
 
+            // Write ALL chunk metadata to buffer at once (no batching)
+            let meta_ptr = self.metadata_buffer.contents().as_ptr() as *mut ChunkMetadata;
+            std::ptr::copy_nonoverlapping(chunk_metas.as_ptr(), meta_ptr, chunk_count);
+
+            // Reset match count
+            let count_ptr = self.match_count_buffer.contents().as_ptr() as *mut u32;
+            *count_ptr = 0;
+        }
+
+        self.current_chunk_count = chunk_count;
+        self.total_data_bytes = total_bytes;
+
+        // Single GPU dispatch for all chunks
+        autoreleasepool(|_| {
+            let cmd = self
+                .command_queue
+                .commandBuffer()
+                .expect("Failed to create command buffer");
+            let encoder = cmd
+                .computeCommandEncoder()
+                .expect("Failed to create compute encoder");
+
+            encoder.setComputePipelineState(&self.zerocopy_search_pso);
             unsafe {
-                // Write search params for this batch
-                let params_ptr = self.params_buffer.contents().as_ptr() as *mut GpuSearchParams;
-                *params_ptr = GpuSearchParams {
-                    chunk_count: batch_count as u32,
-                    pattern_len: pattern_bytes.len() as u32,
-                    case_sensitive: if options.case_sensitive { 1 } else { 0 },
-                    total_bytes: batch_bytes as u32,
-                };
-
-                // Write batch chunk metadata
-                let meta_ptr = self.metadata_buffer.contents().as_ptr() as *mut ChunkMetadata;
-                std::ptr::copy_nonoverlapping(batch.as_ptr(), meta_ptr, batch_count);
-
-                // Reset match count
-                let count_ptr = self.match_count_buffer.contents().as_ptr() as *mut u32;
-                *count_ptr = 0;
+                encoder.setBuffer_offset_atIndex(Some(content_buffer), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(&*self.metadata_buffer), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(&*self.pattern_buffer), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(&*self.matches_buffer), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(&*self.match_count_buffer), 0, 5);
             }
 
-            self.current_chunk_count = batch_count;
-            self.total_data_bytes = batch_bytes;
+            let total_threads = total_bytes.div_ceil(BYTES_PER_THREAD);
+            let grid_size = MTLSize {
+                width: total_threads,
+                height: 1,
+                depth: 1,
+            };
+            let tg_size = MTLSize {
+                width: THREADGROUP_SIZE,
+                height: 1,
+                depth: 1,
+            };
 
-            // Dispatch this batch
-            autoreleasepool(|_| {
-                let cmd = self
-                    .command_queue
-                    .commandBuffer()
-                    .expect("Failed to create command buffer");
-                let encoder = cmd
-                    .computeCommandEncoder()
-                    .expect("Failed to create compute encoder");
+            encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
+            encoder.endEncoding();
 
-                encoder.setComputePipelineState(&self.zerocopy_search_pso);
-                unsafe {
-                    encoder.setBuffer_offset_atIndex(Some(content_buffer), 0, 0);
-                    encoder.setBuffer_offset_atIndex(Some(&*self.metadata_buffer), 0, 1);
-                    encoder.setBuffer_offset_atIndex(Some(&*self.params_buffer), 0, 2);
-                    encoder.setBuffer_offset_atIndex(Some(&*self.pattern_buffer), 0, 3);
-                    encoder.setBuffer_offset_atIndex(Some(&*self.matches_buffer), 0, 4);
-                    encoder.setBuffer_offset_atIndex(Some(&*self.match_count_buffer), 0, 5);
-                }
+            cmd.commit();
+            cmd.waitUntilCompleted();
+        });
 
-                let total_threads = batch_bytes.div_ceil(BYTES_PER_THREAD);
-                let grid_size = MTLSize {
-                    width: total_threads,
-                    height: 1,
-                    depth: 1,
-                };
-                let tg_size = MTLSize {
-                    width: THREADGROUP_SIZE,
-                    height: 1,
-                    depth: 1,
-                };
+        // Collect results from single dispatch
+        let mut all_results = self.collect_results(options);
 
-                encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
-                encoder.endEncoding();
-
-                cmd.commit();
-                cmd.waitUntilCompleted();
-            });
-
-            let mut batch_results = self.collect_results(options);
-
-            // Translate byte_offset from batch-virtual-space to file-relative offset.
-            // The GPU kernel writes chunk_index as batch-local (0..batch_size).
-            // byte_offset = batch_local_chunk * CHUNK_SIZE + context_start + column.
-            // We recover the batch-local chunk, look up its offset_in_file, and
-            // recompute byte_offset as a file-relative position.
-            for result in &mut batch_results {
-                let batch_chunk = (result.byte_offset as usize) / CHUNK_SIZE;
-                let intra_chunk = (result.byte_offset as usize) % CHUNK_SIZE;
-                if let Some(cm) = batch.get(batch_chunk) {
-                    result.byte_offset = (cm.offset_in_file as usize + intra_chunk) as u32;
-                }
-            }
-
-            all_results.extend(batch_results);
-
-            if all_results.len() >= options.max_results {
-                all_results.truncate(options.max_results);
-                break;
-            }
+        // Truncate to max_results if needed
+        if all_results.len() > options.max_results {
+            all_results.truncate(options.max_results);
         }
 
         all_results

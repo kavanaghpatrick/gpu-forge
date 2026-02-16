@@ -24,7 +24,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-1, FR-2_
   - _Design: Component A_
 
-- [ ] 1.2 Eliminate serial batch loop in search_zerocopy
+- [x] 1.2 Eliminate serial batch loop in search_zerocopy
   - **Do**:
     1. In `search_zerocopy()` (content.rs:587-682): replace the batch loop `for batch_start in (0..chunk_metas.len()).step_by(batch_size)` with a single-pass dispatch:
        - Write ALL chunk_metas to metadata_buffer at once (no batching)
