@@ -63,7 +63,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
   - _Requirements: FR-4_
   - _Design: Component B_
 
-- [ ] 1.4 Remove CPU resolve loop, use GPU line numbers directly
+- [x] 1.4 Remove CPU resolve loop, use GPU line numbers directly
   - **Do**:
     1. In `search_from_content_store()` (orchestrator.rs:1491-1581): replace the `String::from_utf8_lossy` + `lines().collect()` loop with a new resolve function that:
        - Takes `file_content: &[u8]`, `byte_offset: usize`, `gpu_line_number: u32`, `pattern: &str`

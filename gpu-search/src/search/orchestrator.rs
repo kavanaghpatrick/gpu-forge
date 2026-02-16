@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel as channel;
 use objc2::rc::autoreleasepool;
 use objc2::runtime::ProtocolObject;
-use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
+use objc2_metal::MTLDevice;
 
 use crate::gpu::pipeline::PsoCache;
 use crate::index::cache::MmapIndexCache;
@@ -41,7 +41,7 @@ use crate::index::store::IndexStore;
 use crate::ui::watchdog::DiagState;
 use super::binary::BinaryDetector;
 use super::cancel::{CancellationToken, SearchSession};
-use super::content::{SearchOptions, CHUNK_SIZE};
+use super::content::SearchOptions;
 use super::ignore::GitignoreFilter;
 use super::profile::PipelineProfile;
 use super::streaming::StreamingSearchEngine;
@@ -112,6 +112,111 @@ pub struct SearchOrchestrator {
     /// disk-based pipeline and dispatches GPU search directly from the
     /// content store's Metal buffer.
     content_store: Option<Arc<ContentIndexStore>>,
+}
+
+/// Extract line content and context directly from raw bytes using a byte offset.
+///
+/// Instead of converting entire file to String and collecting lines (O(n) per match),
+/// this scans backward/forward from the match byte_offset to find line boundaries.
+/// Returns (line_content, context_before, context_after, match_column).
+fn extract_line_context(
+    content: &[u8],
+    byte_offset: usize,
+    pattern: &str,
+    case_sensitive: bool,
+) -> Option<(String, Vec<String>, Vec<String>, usize)> {
+    if byte_offset >= content.len() {
+        return None;
+    }
+
+    // Find start of the matched line: scan backward for \n
+    let line_start = if byte_offset == 0 {
+        0
+    } else {
+        match content[..byte_offset].iter().rposition(|&b| b == b'\n') {
+            Some(pos) => pos + 1,
+            None => 0,
+        }
+    };
+
+    // Find end of the matched line: scan forward for \n
+    let line_end = match content[byte_offset..].iter().position(|&b| b == b'\n') {
+        Some(pos) => byte_offset + pos,
+        None => content.len(),
+    };
+
+    // Strip trailing \r if present (CRLF)
+    let line_end_trimmed = if line_end > line_start && content.get(line_end.wrapping_sub(1)) == Some(&b'\r') {
+        line_end - 1
+    } else {
+        line_end
+    };
+
+    let line_content = String::from_utf8_lossy(&content[line_start..line_end_trimmed]).to_string();
+
+    // Find pattern match column within the extracted line
+    let match_col = if case_sensitive {
+        line_content.find(pattern)
+    } else {
+        line_content.to_lowercase().find(&pattern.to_lowercase())
+    };
+
+    let match_col = match_col?;
+
+    // Extract 2 context lines before
+    let mut context_before = Vec::new();
+    let mut scan_pos = line_start;
+    for _ in 0..2 {
+        if scan_pos == 0 {
+            break;
+        }
+        // Move past the \n before current line
+        let prev_end = scan_pos - 1;
+        // Handle \r\n
+        let prev_end_content = if prev_end > 0 && content[prev_end - 1] == b'\r' {
+            prev_end - 1
+        } else {
+            prev_end
+        };
+        // Find start of previous line
+        let prev_start = if prev_end_content == 0 {
+            0
+        } else {
+            match content[..prev_end_content].iter().rposition(|&b| b == b'\n') {
+                Some(pos) => pos + 1,
+                None => 0,
+            }
+        };
+        let prev_line = String::from_utf8_lossy(&content[prev_start..prev_end_content]).to_string();
+        context_before.push(prev_line);
+        scan_pos = prev_start;
+    }
+    context_before.reverse();
+
+    // Extract 2 context lines after
+    let mut context_after = Vec::new();
+    let mut after_pos = if line_end < content.len() { line_end + 1 } else { content.len() };
+    for _ in 0..2 {
+        if after_pos >= content.len() {
+            break;
+        }
+        let next_start = after_pos;
+        let next_end = match content[next_start..].iter().position(|&b| b == b'\n') {
+            Some(pos) => next_start + pos,
+            None => content.len(),
+        };
+        // Strip trailing \r
+        let next_end_trimmed = if next_end > next_start && content.get(next_end.wrapping_sub(1)) == Some(&b'\r') {
+            next_end - 1
+        } else {
+            next_end
+        };
+        let next_line = String::from_utf8_lossy(&content[next_start..next_end_trimmed]).to_string();
+        context_after.push(next_line);
+        after_pos = if next_end < content.len() { next_end + 1 } else { content.len() };
+    }
+
+    Some((line_content, context_before, context_after, match_col))
 }
 
 impl SearchOrchestrator {
@@ -1389,14 +1494,21 @@ impl SearchOrchestrator {
             };
         }
 
-        // (3) Build ChunkMetadata and padded GPU buffer from content store.
+        // (3) Build ChunkMetadata from content store (zero-copy path).
         //
-        // The GPU kernel reads data at chunk_index * CHUNK_SIZE from buffer(0).
-        // ContentStore stores files contiguously (NOT padded to CHUNK_SIZE).
-        // We build a padded Metal buffer with each chunk at the correct offset.
+        // The zerocopy kernel reads directly from the contiguous content buffer
+        // using ChunkMetadata.buffer_offset — NO padded buffer, NO CPU memcpy.
         let chunks_start = Instant::now();
         let chunk_metas = build_chunk_metadata(content_store);
         profile.batch_us = chunks_start.elapsed().as_micros() as u64;
+
+        eprintln!(
+            "[gpu-search] content store: {} chunks from {} files, buffer={:.1}GB, metadata built in {:.1}ms",
+            chunk_metas.len(),
+            content_store.file_count(),
+            content_store.total_bytes() as f64 / (1024.0 * 1024.0 * 1024.0),
+            chunks_start.elapsed().as_secs_f64() * 1000.0,
+        );
 
         if chunk_metas.is_empty() {
             profile.total_us = start.elapsed().as_micros() as u64;
@@ -1417,52 +1529,30 @@ impl SearchOrchestrator {
             return response;
         }
 
-        // (4) Build padded Metal buffer for GPU dispatch.
-        // GPU kernel reads chunk N from byte offset N*CHUNK_SIZE in buffer(0).
-        // ContentStore buffer is contiguous, so we copy each chunk into the
-        // correct padded position.
-        let padded_len = chunk_metas.len() * CHUNK_SIZE;
-        let options = MTLResourceOptions::StorageModeShared;
-
-        // We need a device reference to create the padded buffer.
-        // Get it from the StreamingSearchEngine's inner ContentSearchEngine.
-        let padded_buffer = autoreleasepool(|_| {
-            let engine = self.engine.content_engine_mut();
-            let device = engine.device();
-
-            let padded_buf = device
-                .newBufferWithLength_options(padded_len, options)
-                .expect("Failed to allocate padded GPU buffer");
-
-            // Copy content data into padded positions
-            unsafe {
-                let dst_base = padded_buf.contents().as_ptr() as *mut u8;
-                std::ptr::write_bytes(dst_base, 0, padded_len);
-
-                let src = content_store.buffer();
-                let mut chunk_idx = 0usize;
-                for meta in content_store.files().iter() {
-                    let file_start = meta.content_offset as usize;
-                    let file_len = meta.content_len as usize;
-                    let num_chunks = if file_len == 0 { 0 } else { file_len.div_ceil(CHUNK_SIZE) };
-                    for c in 0..num_chunks {
-                        let src_offset = file_start + c * CHUNK_SIZE;
-                        let copy_len = (file_len - c * CHUNK_SIZE).min(CHUNK_SIZE);
-                        let dst = dst_base.add(chunk_idx * CHUNK_SIZE);
-                        std::ptr::copy_nonoverlapping(
-                            src[src_offset..src_offset + copy_len].as_ptr(),
-                            dst,
-                            copy_len,
-                        );
-                        chunk_idx += 1;
-                    }
-                }
+        // (4) Zero-copy GPU dispatch: pass content store's Metal buffer directly.
+        // No allocation, no CPU copy. The zerocopy kernel reads from buffer_offset.
+        let metal_buf = match content_store.metal_buffer() {
+            Some(buf) => buf,
+            None => {
+                eprintln!("[gpu-search] content store: no Metal buffer available, falling back");
+                profile.total_us = start.elapsed().as_micros() as u64;
+                let fm_count = file_matches.len() as u64;
+                let response = SearchResponse {
+                    file_matches,
+                    content_matches: vec![],
+                    total_files_searched: total_files,
+                    total_matches: fm_count,
+                    elapsed: start.elapsed(),
+                    profile,
+                };
+                let _ = update_tx.send(StampedUpdate {
+                    generation: session.guard.generation_id(),
+                    update: SearchUpdate::Complete(response.clone()),
+                });
+                return response;
             }
+        };
 
-            padded_buf
-        });
-
-        // (5) Dispatch GPU search with padded content buffer
         let search_options = SearchOptions {
             case_sensitive: request.case_sensitive,
             max_results: request.max_results,
@@ -1471,8 +1561,8 @@ impl SearchOrchestrator {
 
         let gpu_start = Instant::now();
         let gpu_matches = autoreleasepool(|_| {
-            self.engine.content_engine_mut().search_with_buffer(
-                &padded_buffer,
+            self.engine.content_engine_mut().search_zerocopy(
+                metal_buf,
                 &chunk_metas,
                 request.pattern.as_bytes(),
                 &search_options,
@@ -1485,7 +1575,7 @@ impl SearchOrchestrator {
         profile.bytes_searched = content_store.total_bytes();
 
         eprintln!(
-            "[gpu-search] content store: GPU returned {} raw matches from {} chunks ({} files, {:.1}ms)",
+            "[gpu-search] content store: GPU zerocopy returned {} raw matches from {} chunks ({} files, {:.1}ms)",
             gpu_matches.len(),
             chunk_metas.len(),
             content_store.file_count(),
@@ -1498,7 +1588,12 @@ impl SearchOrchestrator {
         let resolve_start = Instant::now();
         let mut content_matches: Vec<ContentMatch> = Vec::new();
 
-        for m in &gpu_matches {
+        let mut reject_no_path = 0u32;
+        let mut reject_no_content = 0u32;
+        let mut reject_offset_oob = 0u32;
+        let mut reject_pattern_miss = 0u32;
+
+        for (mi, m) in gpu_matches.iter().enumerate() {
             if content_matches.len() >= request.max_results {
                 break;
             }
@@ -1508,82 +1603,47 @@ impl SearchOrchestrator {
             // Resolve file_id to path
             let path = match content_store.path_for(file_id) {
                 Some(p) => p,
-                None => continue,
+                None => { reject_no_path += 1; continue; },
             };
 
             // Get file content from the content store (zero disk I/O)
             let file_content = match content_store.content_for(file_id) {
                 Some(c) => c,
-                None => continue,
+                None => { reject_no_content += 1; continue; },
             };
 
-            // Convert GPU byte_offset (in padded buffer space) to file-relative offset.
-            // GPU byte_offset = chunk_index * CHUNK_SIZE + context_start + column.
-            // 1. Find the chunk in the padded buffer
-            // 2. Look up its offset_in_file from ChunkMetadata
-            // 3. Add the intra-chunk offset
-            let padded_chunk_idx = m.byte_offset as usize / CHUNK_SIZE;
-            let offset_in_chunk = m.byte_offset as usize % CHUNK_SIZE;
+            // byte_offset is already file-relative (translated in search_zerocopy batch collection)
+            let file_byte_offset = m.byte_offset as usize;
 
-            let file_byte_offset = if let Some(cm) = chunk_metas.get(padded_chunk_idx) {
-                cm.offset_in_file as usize + offset_in_chunk
-            } else {
-                continue; // chunk index out of range
-            };
+            // Log first few matches for debugging
+            if mi < 3 {
+                eprintln!(
+                    "[resolve-debug] match[{}]: file_id={} byte_offset={} file_len={} path={}",
+                    mi, file_id, file_byte_offset, file_content.len(),
+                    path.display()
+                );
+            }
 
             // If file-relative byte_offset exceeds file length, skip
             if file_byte_offset >= file_content.len() {
+                reject_offset_oob += 1;
                 continue;
             }
 
-            // Resolve to line number and content using in-memory data
-            let text = String::from_utf8_lossy(file_content);
-            let lines: Vec<&str> = text.lines().collect();
-            let offset = file_byte_offset as usize;
-
-            let mut cumulative = 0usize;
-            let mut target_line = 0usize;
-            for (i, line) in lines.iter().enumerate() {
-                let after_line = cumulative + line.len();
-                let newline_len = if file_content.get(after_line) == Some(&b'\r') { 2 } else { 1 };
-                let line_end = after_line + newline_len;
-                if offset < line_end {
-                    target_line = i;
-                    break;
-                }
-                cumulative = line_end;
-                if i == lines.len() - 1 {
-                    target_line = i;
-                }
-            }
-
-            let line_content = lines.get(target_line).unwrap_or(&"").to_string();
-
-            // Find the pattern in the line for match_range
-            let match_col = if request.case_sensitive {
-                line_content.find(&request.pattern)
-            } else {
-                line_content.to_lowercase().find(&pattern_lower)
-            };
-
-            let match_col = match match_col {
-                Some(c) => c,
-                None => continue, // pattern not on this line -- skip
-            };
+            // Resolve line content and context directly from raw bytes using byte offset.
+            // No String::from_utf8_lossy or lines().collect() -- just scan for \n boundaries.
+            let (line_content, context_before, context_after, match_col) =
+                match extract_line_context(file_content, file_byte_offset, &request.pattern, request.case_sensitive) {
+                    Some(result) => result,
+                    None => { reject_pattern_miss += 1; continue; },
+                };
 
             let match_end = match_col + request.pattern.len();
 
-            // Context lines
-            let context_before: Vec<String> = (target_line.saturating_sub(2)..target_line)
-                .filter_map(|i| lines.get(i).map(|l| l.to_string()))
-                .collect();
-            let context_after: Vec<String> = (target_line + 1..=(target_line + 2).min(lines.len().saturating_sub(1)))
-                .filter_map(|i| lines.get(i).map(|l| l.to_string()))
-                .collect();
-
+            // Use GPU-computed line number directly (trust the kernel)
             content_matches.push(ContentMatch {
                 path: path.clone(),
-                line_number: (target_line + 1) as u32,
+                line_number: m.line_number,
                 line_content,
                 context_before,
                 context_after,
@@ -1601,6 +1661,12 @@ impl SearchOrchestrator {
             profile.matches_rejected,
             resolve_start.elapsed().as_secs_f64() * 1000.0
         );
+        if reject_no_path > 0 || reject_no_content > 0 || reject_offset_oob > 0 || reject_pattern_miss > 0 {
+            eprintln!(
+                "[gpu-search] rejection breakdown: no_path={} no_content={} offset_oob={} pattern_miss={}",
+                reject_no_path, reject_no_content, reject_offset_oob, reject_pattern_miss
+            );
+        }
 
         // (7) Send results
         if !content_matches.is_empty() {
