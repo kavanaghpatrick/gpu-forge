@@ -139,7 +139,7 @@ Focus: Get all three fixes working end-to-end. Accept shortcuts, skip tests.
 
 After POC validated, clean up code.
 
-- [ ] 2.1 Clean up search_zerocopy and remove dead batch code
+- [x] 2.1 Clean up search_zerocopy and remove dead batch code
   - **Do**:
     1. Remove any remaining batch-related variables (`batch_size`, `batch_start`, `batch_end`) from `search_zerocopy()`
     2. Remove the old byte_offset translation loop that was batch-specific

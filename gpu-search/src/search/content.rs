@@ -6,9 +6,11 @@
 //! VECTORIZED: Each GPU thread processes 64 bytes using uchar4 loads.
 //! Achieves 79-110 GB/s on M4 Pro.
 //!
-//! Two search modes:
-//! - **Standard** (`content_search_kernel`): GPU computes line numbers in-kernel
-//! - **Turbo** (`turbo_search_kernel`): Defers line number calc to CPU for max throughput
+//! Three search paths:
+//! - **Standard** (`content_search_kernel`): Padded chunks, GPU computes line numbers in-kernel
+//! - **Turbo** (`turbo_search_kernel`): Padded chunks, defers line number calc to CPU
+//! - **Zerocopy** (`content_search_zerocopy_kernel`): Single-dispatch on contiguous buffer,
+//!   no padding or batching, GPU computes file-relative line numbers
 
 use std::mem;
 
@@ -561,10 +563,17 @@ impl ContentSearchEngine {
         self.collect_results(options, false)
     }
 
-    /// Zero-copy search: dispatch the zerocopy kernel directly on a contiguous
-    /// content buffer (e.g. from ContentStore::metal_buffer()). No padding, no
-    /// CPU memcpy. Each ChunkMetadata must have `buffer_offset` set to the
-    /// absolute byte offset within the contiguous buffer.
+    /// Zero-copy single-dispatch search on a contiguous content buffer.
+    ///
+    /// Dispatches the zerocopy kernel directly on the caller's Metal buffer
+    /// (e.g. from `ContentStore::metal_buffer()`) in a single GPU dispatch.
+    /// No padding, no CPU memcpy, no batching. All chunk metadata is written
+    /// at once and the entire search completes in one `commit()` + `waitUntilCompleted()`.
+    ///
+    /// Each `ChunkMetadata` must have `buffer_offset` set to the absolute byte
+    /// offset within the contiguous buffer.
+    ///
+    /// Flow: write metadata -> write params -> single dispatch -> collect results.
     ///
     /// Buffer layout:
     /// - buffer(0) = contiguous content buffer (raw bytes, NOT padded)
@@ -593,7 +602,7 @@ impl ContentSearchEngine {
             pattern.iter().map(|b| b.to_ascii_lowercase()).collect()
         };
 
-        // Write pattern once
+        // Step 1: Write pattern
         unsafe {
             let pattern_ptr = self.pattern_buffer.contents().as_ptr() as *mut u8;
             std::ptr::copy_nonoverlapping(
@@ -606,8 +615,11 @@ impl ContentSearchEngine {
         let chunk_count = chunk_metas.len();
         let total_bytes = chunk_count * CHUNK_SIZE;
 
+        // Step 2: Write metadata and params
         unsafe {
-            // Write search params for all chunks at once
+            let meta_ptr = self.metadata_buffer.contents().as_ptr() as *mut ChunkMetadata;
+            std::ptr::copy_nonoverlapping(chunk_metas.as_ptr(), meta_ptr, chunk_count);
+
             let params_ptr = self.params_buffer.contents().as_ptr() as *mut GpuSearchParams;
             *params_ptr = GpuSearchParams {
                 chunk_count: chunk_count as u32,
@@ -616,11 +628,6 @@ impl ContentSearchEngine {
                 total_bytes: total_bytes as u32,
             };
 
-            // Write ALL chunk metadata to buffer at once (no batching)
-            let meta_ptr = self.metadata_buffer.contents().as_ptr() as *mut ChunkMetadata;
-            std::ptr::copy_nonoverlapping(chunk_metas.as_ptr(), meta_ptr, chunk_count);
-
-            // Reset match count
             let count_ptr = self.match_count_buffer.contents().as_ptr() as *mut u32;
             *count_ptr = 0;
         }
@@ -628,7 +635,7 @@ impl ContentSearchEngine {
         self.current_chunk_count = chunk_count;
         self.total_data_bytes = total_bytes;
 
-        // Single GPU dispatch for all chunks
+        // Step 3: Single GPU dispatch
         autoreleasepool(|_| {
             let cmd = self
                 .command_queue
@@ -667,10 +674,8 @@ impl ContentSearchEngine {
             cmd.waitUntilCompleted();
         });
 
-        // Collect results from single dispatch (zerocopy: file-relative byte_offset)
+        // Step 4: Collect results (zerocopy: file-relative byte_offset)
         let mut all_results = self.collect_results(options, true);
-
-        // Truncate to max_results if needed
         if all_results.len() > options.max_results {
             all_results.truncate(options.max_results);
         }

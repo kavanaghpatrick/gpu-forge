@@ -199,7 +199,7 @@ impl ContentBuilder {
                 .fetch_add(1, Ordering::Relaxed) + 1;
 
             // Log progress every 100K files during walk
-            if scanned % 100_000 == 0 {
+            if scanned.is_multiple_of(100_000) {
                 eprintln!(
                     "[ContentBuilder] walk: {} files scanned, {} text candidates, {:.1}s",
                     scanned, file_paths.len(), walk_start.elapsed().as_secs_f32()
@@ -308,7 +308,7 @@ impl ContentBuilder {
                 .fetch_add(content_len, Ordering::Relaxed);
 
             // Log progress every 10K files during read
-            if indexed % 10_000 == 0 {
+            if indexed.is_multiple_of(10_000) {
                 let bytes_total = self.build_progress.bytes_indexed.load(Ordering::Relaxed);
                 eprintln!(
                     "[ContentBuilder] read: {}/{} files indexed ({} MB), {:.1}s",

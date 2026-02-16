@@ -105,6 +105,7 @@ const _: () = assert!(size_of::<FileContentMeta>() == 32);
 
 impl GcixHeader {
     /// Create a new GcixHeader with the given parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         file_count: u32,
         content_bytes: u64,
