@@ -4,23 +4,26 @@
 //! for u32 keys. Each pass: histogram -> prefix scan -> scatter.
 //! Double-buffers with ping-pong between passes.
 //!
+//! Single command buffer for all 8 passes with blit fill for histogram zeroing.
+//! Multi-level GPU scan for histogram prefix sums (handles up to 100M+ elements).
+//!
 //! CPU baselines: std::sort_unstable (single-threaded) and rayon par_sort_unstable.
 
 use std::collections::HashMap;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2_foundation::NSRange;
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLComputeCommandEncoder,
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
-    MetalContext, PsoCache, ScanParams, SortParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer, MetalContext,
+    PsoCache, ScanParams, SortParams,
 };
 
-use crate::cpu_baselines::sequential;
 use crate::data_gen::DataGenerator;
 
 use super::Experiment;
@@ -37,11 +40,11 @@ const RADIX_BINS: usize = 16;
 /// Total passes for u32 (32 bits / 4 bits per pass = 8).
 const NUM_PASSES: usize = 8;
 
-/// Elements per threadgroup for scan (256 threads * 2 elements).
-const SCAN_ELEMENTS_PER_TG: usize = 512;
+/// Elements per threadgroup for scan (256 threads * 4 elements).
+const SCAN_ELEMENTS_PER_TG: usize = 1024;
 
-/// Maximum partials for GPU scan (single threadgroup).
-const MAX_GPU_PARTIALS: usize = 512;
+/// Maximum partials for GPU scan (256 threads * 4 elements/thread).
+const MAX_GPU_PARTIALS: usize = 1024;
 
 /// Radix sort experiment comparing GPU radix sort vs CPU baselines.
 pub struct SortExperiment {
@@ -57,6 +60,23 @@ pub struct SortExperiment {
     scanned_histogram_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Partials buffer for scan of histogram.
     scan_partials_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Pre-allocated SortParams buffers for each pass (8 total).
+    sort_params_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Pre-allocated ScanParams buffers for each pass (8 total).
+    scan_params_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Pre-allocated ScanParams buffers for scan_partials (8 total).
+    partials_params_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    // --- Multi-level scan buffers (for large histogram sizes) ---
+    /// Buffer for locally-scanned L1 partials.
+    l1_scanned_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Buffer for L2 partial sums.
+    l2_partials_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// ScanParams for scan_local on L1 partials.
+    l1_scan_params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// ScanParams for scan_partials on L2.
+    l2_params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// ScanParams for scan_add_offsets on L1 scanned.
+    l1_addoffsets_params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// PSO cache for kernel lookup.
     pso_cache: PsoCache,
     /// GPU result from last run.
@@ -80,24 +100,20 @@ impl SortExperiment {
             histogram_buffer: None,
             scanned_histogram_buffer: None,
             scan_partials_buffer: None,
+            sort_params_buffers: Vec::new(),
+            scan_params_buffers: Vec::new(),
+            partials_params_buffers: Vec::new(),
+            l1_scanned_buffer: None,
+            l2_partials_buffer: None,
+            l1_scan_params_buffer: None,
+            l2_params_buffer: None,
+            l1_addoffsets_params_buffer: None,
             pso_cache: PsoCache::new(),
             gpu_result: Vec::new(),
             cpu_result: Vec::new(),
             size: 0,
             num_sort_tgs: 0,
             histogram_size: 0,
-        }
-    }
-
-    /// Zero the histogram buffer before each pass.
-    fn zero_histogram_buffer(&self) {
-        if let Some(ref buf) = self.histogram_buffer {
-            unsafe {
-                let ptr = buf.contents().as_ptr() as *mut u32;
-                for i in 0..self.histogram_size {
-                    *ptr.add(i) = 0;
-                }
-            }
         }
     }
 }
@@ -145,12 +161,95 @@ impl Experiment for SortExperiment {
             self.histogram_size * std::mem::size_of::<u32>(),
         ));
 
-        // Partials buffer for scan: ceil(histogram_size / 512) elements
+        // Partials buffer for scan: ceil(histogram_size / SCAN_ELEMENTS_PER_TG) elements
         let scan_tgs = self.histogram_size.div_ceil(SCAN_ELEMENTS_PER_TG);
         self.scan_partials_buffer = Some(alloc_buffer(
             &ctx.device,
             scan_tgs.max(1) * std::mem::size_of::<u32>(),
         ));
+
+        // Pre-allocate 8 SortParams buffers (one per pass)
+        self.sort_params_buffers.clear();
+        for pass in 0..NUM_PASSES {
+            let sort_params = SortParams {
+                element_count: size as u32,
+                bit_offset: (pass * RADIX_BITS) as u32,
+                num_threadgroups: self.num_sort_tgs as u32,
+                _pad: 0,
+            };
+            self.sort_params_buffers
+                .push(alloc_buffer_with_data(&ctx.device, &[sort_params]));
+        }
+
+        // Pre-allocate 8 ScanParams buffers (one per pass, for scan_local + scan_add_offsets)
+        self.scan_params_buffers.clear();
+        for _pass in 0..NUM_PASSES {
+            let scan_params = ScanParams {
+                element_count: self.histogram_size as u32,
+                pass: 0,
+                _pad: [0; 2],
+            };
+            self.scan_params_buffers
+                .push(alloc_buffer_with_data(&ctx.device, &[scan_params]));
+        }
+
+        // Pre-allocate 8 partials ScanParams buffers (for scan_partials)
+        self.partials_params_buffers.clear();
+        for _pass in 0..NUM_PASSES {
+            let partials_params = ScanParams {
+                element_count: scan_tgs as u32,
+                pass: 1,
+                _pad: [0; 2],
+            };
+            self.partials_params_buffers
+                .push(alloc_buffer_with_data(&ctx.device, &[partials_params]));
+        }
+
+        // Multi-level scan buffers (when scan_tgs > MAX_GPU_PARTIALS)
+        if scan_tgs > MAX_GPU_PARTIALS {
+            let num_l2_groups = scan_tgs.div_ceil(SCAN_ELEMENTS_PER_TG);
+
+            self.l1_scanned_buffer = Some(alloc_buffer(
+                &ctx.device,
+                scan_tgs * std::mem::size_of::<u32>(),
+            ));
+            self.l2_partials_buffer = Some(alloc_buffer(
+                &ctx.device,
+                num_l2_groups * std::mem::size_of::<u32>(),
+            ));
+
+            // ScanParams for scan_local on L1 partials (element_count = scan_tgs)
+            let l1_scan_params = ScanParams {
+                element_count: scan_tgs as u32,
+                pass: 0,
+                _pad: [0; 2],
+            };
+            self.l1_scan_params_buffer =
+                Some(alloc_buffer_with_data(&ctx.device, &[l1_scan_params]));
+
+            // ScanParams for scan_partials on L2
+            let l2_params = ScanParams {
+                element_count: num_l2_groups as u32,
+                pass: 2,
+                _pad: [0; 2],
+            };
+            self.l2_params_buffer = Some(alloc_buffer_with_data(&ctx.device, &[l2_params]));
+
+            // ScanParams for scan_add_offsets on L1 scanned
+            let l1_addoffsets_params = ScanParams {
+                element_count: scan_tgs as u32,
+                pass: 3,
+                _pad: [0; 2],
+            };
+            self.l1_addoffsets_params_buffer =
+                Some(alloc_buffer_with_data(&ctx.device, &[l1_addoffsets_params]));
+        } else {
+            self.l1_scanned_buffer = None;
+            self.l2_partials_buffer = None;
+            self.l1_scan_params_buffer = None;
+            self.l2_params_buffer = None;
+            self.l1_addoffsets_params_buffer = None;
+        }
 
         // Pre-warm PSO cache
         self.pso_cache
@@ -166,9 +265,7 @@ impl Experiment for SortExperiment {
     }
 
     fn run_gpu(&mut self, ctx: &MetalContext) -> f64 {
-        // Extract buffer references into local variables to avoid borrow conflicts
-        // with &mut self calls (zero_histogram_buffer, pso_cache).
-        // Clone the Retained pointers (cheap - just reference count bump).
+        // Clone buffer references to avoid borrow conflicts with &mut self.
         let keys_a = self.keys_a.clone().expect("setup not called");
         let keys_b = self.keys_b.clone().expect("setup not called");
         let histogram_buf = self.histogram_buffer.clone().expect("setup not called");
@@ -186,7 +283,11 @@ impl Experiment for SortExperiment {
             std::ptr::copy_nonoverlapping(self.data.as_ptr(), ptr, size);
         }
 
-        let timer = BenchTimer::start();
+        // Single command buffer for all 8 passes
+        let cmd_buf = ctx
+            .queue
+            .commandBuffer()
+            .expect("Failed to create command buffer");
 
         // 8 radix passes, ping-pong between keys_a and keys_b
         for pass in 0..NUM_PASSES {
@@ -196,43 +297,28 @@ impl Experiment for SortExperiment {
                 (&keys_b, &keys_a)
             };
 
-            let bit_offset = (pass * RADIX_BITS) as u32;
+            let sort_params_buf = &self.sort_params_buffers[pass];
+            let scan_params_buf = &self.scan_params_buffers[pass];
+            let partials_params_buf = &self.partials_params_buffers[pass];
 
-            // Zero histogram buffer
-            unsafe {
-                let ptr = histogram_buf.contents().as_ptr() as *mut u32;
-                for i in 0..histogram_size {
-                    *ptr.add(i) = 0;
-                }
+            // --- Blit fill: zero histogram buffer on GPU ---
+            {
+                let blit_encoder = cmd_buf
+                    .blitCommandEncoder()
+                    .expect("Failed to create blit encoder");
+                blit_encoder.fillBuffer_range_value(
+                    histogram_buf.as_ref(),
+                    NSRange::new(0, histogram_size * std::mem::size_of::<u32>()),
+                    0u8,
+                );
+                blit_encoder.endEncoding();
             }
-
-            // Create SortParams buffer for this pass
-            let sort_params = SortParams {
-                element_count: size as u32,
-                bit_offset,
-                num_threadgroups: num_sort_tgs as u32,
-                _pad: 0,
-            };
-            let sort_params_buf = alloc_buffer_with_data(&ctx.device, &[sort_params]);
-
-            // ScanParams for histogram scan
-            let scan_params = ScanParams {
-                element_count: histogram_size as u32,
-                pass: 0,
-                _pad: [0; 2],
-            };
-            let scan_params_buf = alloc_buffer_with_data(&ctx.device, &[scan_params]);
-
-            // === Command buffer 1: Histogram + Scan + Scatter ===
-            // (or split if CPU fallback needed for partials scan)
-            let cmd_buf = ctx
-                .queue
-                .commandBuffer()
-                .expect("Failed to create command buffer");
 
             // --- Step 1: radix_histogram ---
             {
-                let pso = self.pso_cache.get_or_create(ctx.library(), "radix_histogram");
+                let pso = self
+                    .pso_cache
+                    .get_or_create(ctx.library(), "radix_histogram");
                 let encoder = cmd_buf
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");
@@ -289,16 +375,11 @@ impl Experiment for SortExperiment {
             }
 
             if scan_tgs <= MAX_GPU_PARTIALS {
-                // GPU scan of partials (single threadgroup)
-                let partials_params = ScanParams {
-                    element_count: scan_tgs as u32,
-                    pass: 1,
-                    _pad: [0; 2],
-                };
-                let partials_params_buf = alloc_buffer_with_data(&ctx.device, &[partials_params]);
-
+                // Simple: scan_partials in single threadgroup
                 {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_partials");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -306,7 +387,8 @@ impl Experiment for SortExperiment {
                     encoder.setComputePipelineState(pso);
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 0);
-                        encoder.setBuffer_offset_atIndex(Some(partials_params_buf.as_ref()), 0, 1);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(partials_params_buf.as_ref()), 0, 1);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -323,9 +405,11 @@ impl Experiment for SortExperiment {
                     encoder.endEncoding();
                 }
 
-                // scan_add_offsets
+                // scan_add_offsets on scanned histogram
                 {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_add_offsets");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -334,7 +418,8 @@ impl Experiment for SortExperiment {
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 0);
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -350,70 +435,139 @@ impl Experiment for SortExperiment {
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
-
-                // --- Step 3: radix_scatter ---
-                {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
-                    let encoder = cmd_buf
-                        .computeCommandEncoder()
-                        .expect("Failed to create compute encoder");
-
-                    encoder.setComputePipelineState(pso);
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(input_buf.as_ref()), 0, 0);
-                        encoder.setBuffer_offset_atIndex(Some(output_buf.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 2);
-                        encoder.setBuffer_offset_atIndex(Some(sort_params_buf.as_ref()), 0, 3);
-                    }
-
-                    let grid = objc2_metal::MTLSize {
-                        width: num_sort_tgs,
-                        height: 1,
-                        depth: 1,
-                    };
-                    let tg = objc2_metal::MTLSize {
-                        width: SORT_TG_SIZE,
-                        height: 1,
-                        depth: 1,
-                    };
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
-                    encoder.endEncoding();
-                }
-
-                cmd_buf.commit();
-                cmd_buf.waitUntilCompleted();
             } else {
-                // CPU fallback: commit histogram + scan_local, do CPU partials scan, then scatter
-                cmd_buf.commit();
-                cmd_buf.waitUntilCompleted();
+                // Multi-level scan for large histogram sizes.
+                // 3-level: scan_local(L1) -> scan_partials(L2) -> scan_add_offsets(L1)
+                let l1_scanned = self.l1_scanned_buffer.as_ref().expect("setup not called");
+                let l2_partials = self.l2_partials_buffer.as_ref().expect("setup not called");
+                let l1_scan_params = self
+                    .l1_scan_params_buffer
+                    .as_ref()
+                    .expect("setup not called");
+                let l2_params = self.l2_params_buffer.as_ref().expect("setup not called");
+                let l1_addoffsets_params = self
+                    .l1_addoffsets_params_buffer
+                    .as_ref()
+                    .expect("setup not called");
 
-                // CPU scan of partials
-                let partials_data: Vec<u32> =
-                    unsafe { read_buffer_slice(partials_buf.as_ref(), scan_tgs) };
-                let scanned_partials = sequential::sequential_exclusive_scan(&partials_data);
-                unsafe {
-                    let ptr = partials_buf.contents().as_ptr() as *mut u32;
-                    std::ptr::copy_nonoverlapping(scanned_partials.as_ptr(), ptr, scan_tgs);
-                }
+                let num_l2_groups = scan_tgs.div_ceil(SCAN_ELEMENTS_PER_TG);
 
-                // New command buffer: scan_add_offsets + scatter
-                let cmd_buf2 = ctx
-                    .queue
-                    .commandBuffer()
-                    .expect("Failed to create command buffer");
-
-                // scan_add_offsets
+                // Pass 2a: scan_local on L1 partials
                 {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
-                    let encoder = cmd_buf2
+                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_local");
+                    let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
 
                     encoder.setComputePipelineState(pso);
                     unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 0);
-                        encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 0);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 2);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l1_scan_params.as_ref()), 0, 3);
+                    }
+
+                    let grid = objc2_metal::MTLSize {
+                        width: num_l2_groups,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: 256,
+                        height: 1,
+                        depth: 1,
+                    };
+                    encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+                    encoder.endEncoding();
+                }
+
+                // Pass 2b: scan_partials on L2
+                {
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_partials");
+                    let encoder = cmd_buf
+                        .computeCommandEncoder()
+                        .expect("Failed to create compute encoder");
+
+                    encoder.setComputePipelineState(pso);
+                    unsafe {
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 0);
+                        encoder.setBuffer_offset_atIndex(Some(l2_params.as_ref()), 0, 1);
+                    }
+
+                    let grid = objc2_metal::MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: 256,
+                        height: 1,
+                        depth: 1,
+                    };
+                    encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+                    encoder.endEncoding();
+                }
+
+                // Pass 2c: scan_add_offsets on L1 scanned using L2 partials
+                {
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_add_offsets");
+                    let encoder = cmd_buf
+                        .computeCommandEncoder()
+                        .expect("Failed to create compute encoder");
+
+                    encoder.setComputePipelineState(pso);
+                    unsafe {
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 0);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 1);
+                        encoder.setBuffer_offset_atIndex(
+                            Some(l1_addoffsets_params.as_ref()),
+                            0,
+                            2,
+                        );
+                    }
+
+                    let grid = objc2_metal::MTLSize {
+                        width: num_l2_groups,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: 256,
+                        height: 1,
+                        depth: 1,
+                    };
+                    encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+                    encoder.endEncoding();
+                }
+
+                // scan_add_offsets on scanned histogram using l1_scanned as partials
+                {
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_add_offsets");
+                    let encoder = cmd_buf
+                        .computeCommandEncoder()
+                        .expect("Failed to create compute encoder");
+
+                    encoder.setComputePipelineState(pso);
+                    unsafe {
+                        encoder
+                            .setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 0);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
+                        encoder
+                            .setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -429,42 +583,45 @@ impl Experiment for SortExperiment {
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
+            }
 
-                // radix_scatter
-                {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
-                    let encoder = cmd_buf2
-                        .computeCommandEncoder()
-                        .expect("Failed to create compute encoder");
+            // --- Step 3: radix_scatter ---
+            {
+                let pso = self
+                    .pso_cache
+                    .get_or_create(ctx.library(), "radix_scatter");
+                let encoder = cmd_buf
+                    .computeCommandEncoder()
+                    .expect("Failed to create compute encoder");
 
-                    encoder.setComputePipelineState(pso);
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(input_buf.as_ref()), 0, 0);
-                        encoder.setBuffer_offset_atIndex(Some(output_buf.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 2);
-                        encoder.setBuffer_offset_atIndex(Some(sort_params_buf.as_ref()), 0, 3);
-                    }
-
-                    let grid = objc2_metal::MTLSize {
-                        width: num_sort_tgs,
-                        height: 1,
-                        depth: 1,
-                    };
-                    let tg = objc2_metal::MTLSize {
-                        width: SORT_TG_SIZE,
-                        height: 1,
-                        depth: 1,
-                    };
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
-                    encoder.endEncoding();
+                encoder.setComputePipelineState(pso);
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(input_buf.as_ref()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(output_buf.as_ref()), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(sort_params_buf.as_ref()), 0, 3);
                 }
 
-                cmd_buf2.commit();
-                cmd_buf2.waitUntilCompleted();
+                let grid = objc2_metal::MTLSize {
+                    width: num_sort_tgs,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = objc2_metal::MTLSize {
+                    width: SORT_TG_SIZE,
+                    height: 1,
+                    depth: 1,
+                };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+                encoder.endEncoding();
             }
         }
 
-        let elapsed = timer.stop();
+        // Single commit + wait for all 8 passes
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        let elapsed = GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0);
 
         // After 8 passes (even number), result is in keys_a
         self.gpu_result = unsafe { read_buffer_slice(keys_a.as_ref(), size) };

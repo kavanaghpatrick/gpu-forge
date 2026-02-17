@@ -162,7 +162,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-10, AC-6.1, AC-6.2_
   - _Design: Kernel 4 - Radix Sort Scatter SIMD Prefix_
 
-- [ ] 2.2 Update sort.rs: single command buffer + blit fill + GpuTimer
+- [x] 2.2 Update sort.rs: single command buffer + blit fill + GpuTimer
   - **Do**:
     1. Replace per-pass command buffer creation with single cmd_buf for all 8 passes
     2. Replace CPU histogram zeroing loop with `blitCommandEncoder().fillBuffer_range_value()` before each pass's histogram encoder
