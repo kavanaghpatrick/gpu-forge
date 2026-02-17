@@ -265,7 +265,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - _Requirements: AC-2.2, AC-2.4_
   - _Design: Test Strategy - Unit Tests_
 
-- [ ] 3.3 [VERIFY] Quality checkpoint: all tests pass
+- [x] 3.3 [VERIFY] Quality checkpoint: all tests pass
   - **Do**: Run all workspace unit tests and eagle integration tests
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-attention && cargo test --workspace --lib 2>&1 | tail -10 && cargo test --test eagle_test -- --ignored --test-threads=1 2>&1 | tail -10`
   - **Done when**: All tests pass
@@ -288,7 +288,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - _Requirements: AC-3.1, AC-3.5, NFR-5_
   - _Design: Test Strategy - Integration Tests_
 
-- [ ] 3.5 Benchmark: EAGLE decode vs baseline
+- [x] 3.5 Benchmark: EAGLE decode vs baseline
   - **Do**:
     1. In `benches/inference.rs`, add benchmark group `eagle_decode`:
        a. `bench_eagle_random_decode_100tok`: EagleDecoder with random weights, 100 tokens. Reports effective tok/s.
