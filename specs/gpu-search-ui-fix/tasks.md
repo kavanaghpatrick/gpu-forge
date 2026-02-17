@@ -48,7 +48,7 @@ Focus: Fix GPU kernel context extraction, verify path prefix, add cache persiste
   - _Requirements: FR-4, FR-5_
   - _Design: Component C_
 
-- [ ] 1.5 Integrate PathCache into app.rs index_thread
+- [x] 1.5 Integrate PathCache into app.rs index_thread
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/app.rs`, at the start of `index_thread()`, call `PathCache::load(&root)`. If it returns `Some(paths)`, send them via `batch_tx` and `index_tx.send(IndexUpdate::Complete)`, then return early. After the existing walk loop completes, call `PathCache::save(&root, &all_collected_paths)` where `all_collected_paths` is built by collecting all sent batches. Import `PathCache` from `crate::engine::index`.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/app.rs`
   - **Done when**: App loads cached index on second launch; first launch still walks and saves cache
