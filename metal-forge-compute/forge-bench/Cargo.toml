@@ -1,0 +1,8 @@
+[package]
+name = "forge-bench"
+version = "0.1.0"
+edition = "2021"
+description = "GPU compute benchmark harness for Apple Silicon"
+
+[dependencies]
+forge-primitives = { path = "../forge-primitives" }
