@@ -44,7 +44,8 @@ struct CompactParams {
 struct SortParams {
     uint element_count;
     uint bit_offset;
-    uint _pad[2];
+    uint num_threadgroups;
+    uint _pad;
 };
 
 #endif // FORGE_TYPES_H

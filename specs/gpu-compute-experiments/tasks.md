@@ -181,7 +181,7 @@ Focus: Complete all P0 primitive kernels. Each follows the pattern: write shader
   - **Done when**: All experiments pass validation, no compile errors
   - **Commit**: `chore(forge): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.4 Radix sort kernel + experiment
+- [x] 2.4 Radix sort kernel + experiment
   - **Do**:
     1. Ensure SortParams already in types: `{ element_count: u32, bit_offset: u32, descending: u32, _pad: u32 }`
     2. Create `forge-primitives/shaders/radix_sort.metal` with 2 kernels:

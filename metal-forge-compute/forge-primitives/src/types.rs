@@ -44,7 +44,8 @@ pub struct CompactParams {
 pub struct SortParams {
     pub element_count: u32,
     pub bit_offset: u32,
-    pub _pad: [u32; 2],
+    pub num_threadgroups: u32,
+    pub _pad: u32,
 }
 
 #[cfg(test)]
@@ -169,13 +170,16 @@ mod tests {
         let p = SortParams {
             element_count: 0,
             bit_offset: 0,
-            _pad: [0; 2],
+            num_threadgroups: 0,
+            _pad: 0,
         };
         let base = &p as *const _ as usize;
         let element_count_offset =
             &p.element_count as *const _ as usize - base;
         let bit_offset_offset = &p.bit_offset as *const _ as usize - base;
+        let num_tg_offset = &p.num_threadgroups as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(bit_offset_offset, 4, "bit_offset at offset 4");
+        assert_eq!(num_tg_offset, 8, "num_threadgroups at offset 8");
     }
 }
