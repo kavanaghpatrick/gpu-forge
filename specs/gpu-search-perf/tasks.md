@@ -160,7 +160,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
   - _Requirements: FR-1, FR-12_
   - _Design: Component 2a, 2b_
 
-- [ ] 1.3 Initialize path pipeline and buffer in `GpuContentSearch::new()`
+- [x] 1.3 Initialize path pipeline and buffer in `GpuContentSearch::new()`
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
     2. In `new()` after `direct_pipeline` creation (line 192), compile path shader and create pipeline:
@@ -177,7 +177,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
   - _Requirements: FR-1, FR-12_
   - _Design: Component 2c_
 
-- [ ] 1.4 Add `score_file_extension_cpu()` function
+- [x] 1.4 Add `score_file_extension_cpu()` function
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
     2. After the `impl GpuContentSearch` block closing brace (after the last method), add the free function `score_file_extension_cpu(path: &str) -> u32`
