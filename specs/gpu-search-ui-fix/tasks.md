@@ -75,7 +75,7 @@ After POC validated, clean up code.
   - **Commit**: `refactor(shader): extract find_line_bounds() inline function`
   - _Design: Component A_
 
-- [ ] 2.2 Add error handling to PathCache
+- [x] 2.2 Add error handling to PathCache
   - **Do**: Add proper error logging to PathCache::save() (log if cache dir creation fails, if write fails). Add validation to load() (check magic bytes, version, CRC or at least file_count sanity). Handle edge cases: empty path list, root path with spaces, very large caches.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/index.rs`
   - **Done when**: PathCache handles all error cases gracefully with eprintln diagnostics
