@@ -41,7 +41,7 @@ Focus: Validate end-to-end EAGLE-3 infrastructure with random weights. Prove hid
   - _Requirements: FR-7_
   - _Design: Component 5 - concat_buffers Metal kernel_
 
-- [ ] 1.3 Create eagle_head.rs with EagleHead struct and random-weight initialization
+- [x] 1.3 Create eagle_head.rs with EagleHead struct and random-weight initialization
   - **Do**:
     1. Create `eagle_head.rs` in `crates/metal-attention/src/`
     2. Define `EagleHead` struct with fields: `fc_fuse_weight: WeightBuffer` [4096,12288], `fc_concat_weight: WeightBuffer` [4096,8192], `decoder_attn_norm`, `decoder_attn: AttnProjBuffers`, `decoder_ffn_norm`, `decoder_ffn: FfnBuffers`, `eagle_kv_cache: GpuKVCache`, plus scratch buffers (hidden_a/b, q/k/v/attn_out/gate/up/silu, fused_buf [12288], combined_buf [8192], logits_buf, argmax bufs)
