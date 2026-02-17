@@ -85,7 +85,7 @@ After POC validated, clean up code.
 
 ## Phase 3: Testing
 
-- [ ] 3.1 Create comprehensive GPU correctness test suite
+- [x] 3.1 Create comprehensive GPU correctness test suite
   - **Do**: Create `/Users/patrickkavanagh/gpu-search-ui/tests/test_gpu_correctness.rs` with tests: (1) `test_context_no_truncation` — load paths > 64 bytes, verify full path returned. (2) `test_chunk_boundary_path` — create paths that land exactly at 4096-byte boundary, verify correct extraction. (3) `test_long_paths` — paths 200-400 bytes. (4) `test_unicode_paths` — paths with accented characters, CJK. (5) `test_case_insensitive_search` — mixed case paths, case_sensitive=false. (6) `test_absolute_prefix_preserved` — verify leading `/` on all results.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/tests/test_gpu_correctness.rs`
   - **Done when**: All 6+ tests pass
