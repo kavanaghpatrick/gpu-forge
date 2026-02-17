@@ -2,6 +2,9 @@
 
 use std::time::Instant;
 
+use objc2::runtime::ProtocolObject;
+use objc2_metal::MTLCommandBuffer;
+
 /// Simple wall-clock timer for benchmarking.
 pub struct BenchTimer {
     start: Instant,
@@ -19,6 +22,28 @@ impl BenchTimer {
     pub fn stop(&self) -> f64 {
         let elapsed = self.start.elapsed();
         elapsed.as_secs_f64() * 1000.0
+    }
+}
+
+/// GPU-side timing using Metal's GPUStartTime/GPUEndTime.
+///
+/// Provides accurate GPU execution time by reading hardware timestamps
+/// from a completed command buffer, avoiding ~300us firmware overhead
+/// inherent in wall-clock timing.
+pub struct GpuTimer;
+
+impl GpuTimer {
+    /// Return GPU execution time in milliseconds for a completed command buffer.
+    ///
+    /// Returns `None` if the command buffer has not yet completed (timestamps are 0.0).
+    /// Must be called after `commit()` + `waitUntilCompleted()`.
+    pub fn elapsed_ms(cmd_buf: &ProtocolObject<dyn MTLCommandBuffer>) -> Option<f64> {
+        let start = cmd_buf.GPUStartTime();
+        let end = cmd_buf.GPUEndTime();
+        if start == 0.0 || end == 0.0 {
+            return None;
+        }
+        Some((end - start) * 1000.0)
     }
 }
 

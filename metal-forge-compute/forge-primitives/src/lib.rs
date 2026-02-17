@@ -12,6 +12,7 @@ pub use hardware::HardwareInfo;
 pub use metal_ctx::MetalContext;
 pub use pso_cache::PsoCache;
 pub use timing::BenchTimer;
+pub use timing::GpuTimer;
 pub use types::ReduceParams;
 pub use types::ScanParams;
 pub use types::HistogramParams;
