@@ -77,6 +77,42 @@ pub fn dispatch_threads_1d(
     encoder.dispatchThreads_threadsPerThreadgroup(grid_size, tg_size);
 }
 
+/// Encode a compute pass: set pipeline, set buffers, dispatch 2D threadgroups.
+///
+/// `buffers` is a slice of (buffer, index) pairs to bind.
+/// `grid_width` and `grid_height` are threadgroup counts in X and Y.
+/// `tg_width` and `tg_height` are threads per threadgroup in X and Y.
+pub fn dispatch_2d(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    pipeline: &ProtocolObject<dyn MTLComputePipelineState>,
+    buffers: &[(&ProtocolObject<dyn MTLBuffer>, usize)],
+    grid_width: usize,
+    grid_height: usize,
+    tg_width: usize,
+    tg_height: usize,
+) {
+    encoder.setComputePipelineState(pipeline);
+
+    unsafe {
+        for (buffer, index) in buffers {
+            encoder.setBuffer_offset_atIndex(Some(*buffer), 0, *index);
+        }
+    }
+
+    let grid_size = MTLSize {
+        width: grid_width,
+        height: grid_height,
+        depth: 1,
+    };
+    let tg_size = MTLSize {
+        width: tg_width,
+        height: tg_height,
+        depth: 1,
+    };
+
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(grid_size, tg_size);
+}
+
 /// Allocate a Metal buffer of `size` bytes with StorageModeShared.
 pub fn alloc_buffer(
     device: &ProtocolObject<dyn MTLDevice>,

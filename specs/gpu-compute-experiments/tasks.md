@@ -306,7 +306,7 @@ Focus: Relational operations and competitive benchmarks. Validate product direct
   - **Done when**: Both experiments pass validation, no compile errors
   - **Commit**: `chore(forge): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 3.4 GEMM kernel + experiment
+- [x] 3.4 GEMM kernel + experiment
   - **Do**:
     1. Add `GemmParams` to types: `{ M: u32, N: u32, K: u32, _pad: u32 }`
     2. Create `forge-primitives/shaders/gemm.metal`:
