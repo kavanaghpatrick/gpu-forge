@@ -300,7 +300,7 @@ Focus: Add `-Os` shader compilation for the path kernel (the one optimization no
   - _Requirements: FR-9_
   - _Design: Component 5_
 
-- [ ] 2.3 [VERIFY] Quality checkpoint: build + tests after -Os
+- [x] 2.3 [VERIFY] Quality checkpoint: build + tests after -Os
   - **Do**:
     1. `cd /Users/patrickkavanagh/gpu-search-ui && cargo build --release`
     2. `cd /Users/patrickkavanagh/gpu-search-ui && cargo test`
@@ -313,7 +313,7 @@ Focus: Add `-Os` shader compilation for the path kernel (the one optimization no
 
 Focus: Add unit tests for new components. Existing integration tests already validate correctness.
 
-- [ ] 3.1 Add shader unit tests for `get_path_search_shader()`
+- [x] 3.1 Add shader unit tests for `get_path_search_shader()`
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/shader.rs`
     2. In the existing `#[cfg(test)] mod tests` block (line 708), add tests:
