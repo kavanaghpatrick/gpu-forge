@@ -109,4 +109,25 @@ struct CsvBenchParams {
     uint _pad[3];
 };
 
+/// Vectorized load helpers with bounds checking.
+/// Return zero-initialized vector, then conditionally load each of 4 elements.
+
+inline uint4 load_uint4_safe(device const uint* data, uint base_idx, uint element_count) {
+    uint4 result = uint4(0);
+    if (base_idx     < element_count) result.x = data[base_idx];
+    if (base_idx + 1 < element_count) result.y = data[base_idx + 1];
+    if (base_idx + 2 < element_count) result.z = data[base_idx + 2];
+    if (base_idx + 3 < element_count) result.w = data[base_idx + 3];
+    return result;
+}
+
+inline float4 load_float4_safe(device const float* data, uint base_idx, uint element_count) {
+    float4 result = float4(0.0);
+    if (base_idx     < element_count) result.x = data[base_idx];
+    if (base_idx + 1 < element_count) result.y = data[base_idx + 1];
+    if (base_idx + 2 < element_count) result.z = data[base_idx + 2];
+    if (base_idx + 3 < element_count) result.w = data[base_idx + 3];
+    return result;
+}
+
 #endif // FORGE_TYPES_H

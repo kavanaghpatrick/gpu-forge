@@ -38,7 +38,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-3, AC-2.1, AC-2.2_
   - _Design: Component 2 - PSO Descriptor Upgrade_
 
-- [ ] 1.3 Add vectorized load helpers to types.h
+- [x] 1.3 Add vectorized load helpers to types.h
   - **Do**:
     1. Add `load_uint4_safe(device const uint*, uint base_idx, uint element_count) -> uint4` inline function before `#endif`
     2. Add `load_float4_safe(device const float*, uint base_idx, uint element_count) -> float4` inline function
