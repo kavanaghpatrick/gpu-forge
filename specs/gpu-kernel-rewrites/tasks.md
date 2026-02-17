@@ -71,7 +71,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-9, FR-8, AC-5.1, AC-5.2, AC-5.3_
   - _Design: Kernel 1 - Reduce Two-Pass Atomic-Free_
 
-- [ ] 1.6 Update reduce.rs to use two-pass dispatch + GpuTimer
+- [x] 1.6 Update reduce.rs to use two-pass dispatch + GpuTimer
   - **Do**:
     1. Add `partials_buffer` field to `ReduceExperiment` struct (sized `ceil(N / 1024) * sizeof(u32)`)
     2. Add `partials_params_buffer` field for the second pass params
