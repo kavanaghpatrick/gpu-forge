@@ -58,7 +58,7 @@ Focus: Validate end-to-end EAGLE-3 infrastructure with random weights. Prove hid
   - _Requirements: FR-2, FR-3, FR-4, FR-8, AC-2.1, AC-2.5_
   - _Design: Component 2 - EAGLE Head_
 
-- [ ] 1.4 Implement forward_draft_token GPU pipeline in EagleHead
+- [x] 1.4 Implement forward_draft_token GPU pipeline in EagleHead
   - **Do**:
     1. Implement `pub fn forward_draft_token(&mut self, feat_low, feat_mid, feat_high, prev_token, target_embed_buf, target_lm_head, target_lm_head_is_f32, target_lm_head_q6k, target_lm_head_q8) -> Result<u32, String>`
     2. Pipeline steps (all in single command buffer + encoder):
