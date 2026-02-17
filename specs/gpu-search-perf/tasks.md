@@ -191,7 +191,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
   - _Requirements: FR-7_
   - _Design: Component 3_
 
-- [ ] 1.5 Rewrite `search_paths()` to use new path pipeline with `set_bytes()`
+- [x] 1.5 Rewrite `search_paths()` to use new path pipeline with `set_bytes()`
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
     2. Replace the entire `search_paths()` method body (lines 325-438) with the new implementation from design.md Component 2d
