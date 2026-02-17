@@ -128,10 +128,23 @@ fn main() {
     // Render table output
     render_all_tables(&all_results);
 
+    // Print summary with verdicts
+    output::summary::print_summary(&all_results);
+
+    // Print ASCII roofline diagram
+    output::roofline::print_roofline(&all_results, &hardware);
+
     // Write JSON if requested
     if let Some(ref path) = args.json_file {
         if let Err(e) = output::json::write_json(path, &all_results, &hardware) {
             eprintln!("Error writing JSON: {}", e);
+        }
+    }
+
+    // Write CSV if requested
+    if let Some(ref path) = args.csv_file {
+        if let Err(e) = output::csv::write_csv(path, &all_results) {
+            eprintln!("Error writing CSV: {}", e);
         }
     }
 }

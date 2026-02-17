@@ -228,7 +228,7 @@ Focus: Complete all P0 primitive kernels. Each follows the pattern: write shader
   - **Done when**: All 5 experiments produce correct results
   - **Commit**: `chore(forge): pass quality checkpoint -- all foundation primitives validated`
 
-- [ ] 2.7 Output: CSV, summary, roofline
+- [x] 2.7 Output: CSV, summary, roofline
   - **Do**:
     1. Create `forge-bench/src/output/csv.rs` -- write DataPoint vec to CSV file
     2. Create `forge-bench/src/output/summary.rs` -- print summary table: experiment | size | speedup | verdict (>5x=STRONG, 2-5x=SOLID, 1-2x=MARGINAL, <1x=SLOWER)
