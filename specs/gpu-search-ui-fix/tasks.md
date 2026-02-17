@@ -102,7 +102,7 @@ After POC validated, clean up code.
   - **Commit**: `test(search): add performance regression gate`
   - _Requirements: AC-4.6, NFR-1_
 
-- [ ] 3.3 Add PathCache unit tests
+- [x] 3.3 Add PathCache unit tests
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/engine/index.rs`, add tests: `test_path_cache_round_trip` (save + load returns same paths), `test_path_cache_stale` (set timestamp to 2 hours ago, verify load returns None), `test_path_cache_wrong_root` (save with root A, load with root B returns None), `test_path_cache_corrupt` (write garbage, verify load returns None).
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/index.rs`
   - **Done when**: All 4 cache tests pass
