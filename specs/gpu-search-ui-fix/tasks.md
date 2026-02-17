@@ -94,7 +94,7 @@ After POC validated, clean up code.
   - _Requirements: FR-6, AC-4.1 through AC-4.5_
   - _Design: Component D_
 
-- [ ] 3.2 Add performance regression test
+- [x] 3.2 Add performance regression test
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/tests/test_gpu_correctness.rs`, add `test_perf_500k_under_10ms` that generates 500K paths, loads them, runs `search_paths("friendship")` 10 times, asserts average < 10ms. Mark with `#[ignore]` so it only runs explicitly. Also add `test_perf_improvement` that compares GPU-context search vs manual CPU scan (by timing search_paths with 50K max_results and verifying < 5ms at 1M paths).
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/tests/test_gpu_correctness.rs`
   - **Done when**: Performance tests pass and show improvement
