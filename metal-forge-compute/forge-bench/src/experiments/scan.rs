@@ -1,10 +1,14 @@
-//! Prefix scan experiment: GPU 3-pass Blelloch vs CPU sequential scan.
+//! Prefix scan experiment: GPU multi-pass SIMD scan vs CPU sequential scan.
 //!
 //! Tests exclusive prefix scan on u32 data. The GPU implementation uses
-//! a 3-pass reduce-then-scan approach:
-//!   1. scan_local: per-threadgroup Blelloch scan + write partial sums
-//!   2. scan_partials: scan the partials array (GPU if <= 512, else CPU)
+//! a multi-pass SIMD prefix scan approach:
+//!   1. scan_local: per-threadgroup SIMD prefix scan + write partial sums
+//!   2. scan_partials: scan the partials array (single TG, up to 1024 partials)
+//!      OR multi-level: scan_local on partials -> scan_partials on L2 -> add offsets
 //!   3. scan_add_offsets: add scanned partials to each threadgroup's elements
+//!
+//! At 10M elements with 1024 elem/TG = 9766 partials. Since 9766 > 1024,
+//! a 3-level scan is used: 9766 -> 10 -> 1 via scan_local + scan_partials.
 //!
 //! Validates exact match between GPU and CPU results.
 
@@ -18,7 +22,7 @@ use objc2_metal::{
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer,
     MetalContext, PsoCache, ScanParams,
 };
 
@@ -27,13 +31,14 @@ use crate::data_gen::DataGenerator;
 
 use super::Experiment;
 
-/// Number of elements each threadgroup processes (256 threads * 2 elements).
-const ELEMENTS_PER_TG: usize = 512;
+/// Number of elements each threadgroup processes (256 threads * 4 elements).
+const ELEMENTS_PER_TG: usize = 1024;
 
-/// Maximum partials that can be scanned on GPU in a single threadgroup.
-const MAX_GPU_PARTIALS: usize = 512;
+/// Maximum partials that can be scanned on GPU in a single threadgroup
+/// (256 threads * 4 elements/thread).
+const MAX_GPU_PARTIALS: usize = 1024;
 
-/// Prefix scan experiment comparing GPU 3-pass scan vs sequential CPU scan.
+/// Prefix scan experiment comparing GPU multi-pass scan vs sequential CPU scan.
 pub struct ScanExperiment {
     /// Input data kept for CPU baseline and validation.
     data: Vec<u32>,
@@ -41,12 +46,21 @@ pub struct ScanExperiment {
     input_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for scan output.
     output_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    /// Metal buffer for threadgroup partial sums.
+    /// Metal buffer for threadgroup partial sums (level 1).
     partials_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for ScanParams (used by scan_local and scan_add_offsets).
     params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for ScanParams (used by scan_partials, element_count = num_threadgroups).
     partials_params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    // --- Multi-level scan buffers (only used when num_threadgroups > MAX_GPU_PARTIALS) ---
+    /// Metal buffer for scanned L1 partials (output of scan_local on partials).
+    l1_scanned_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Metal buffer for level-2 partial sums from scanning L1 partials.
+    l2_partials_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// ScanParams for scan_partials on L2 partials (element_count = num_l2_groups).
+    l2_params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// ScanParams for scan_add_offsets on L1 scanned (element_count = num_threadgroups).
+    l1_addoffsets_params_buffer: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// PSO cache for kernel lookup.
     pso_cache: PsoCache,
     /// GPU result from last run.
@@ -68,6 +82,10 @@ impl ScanExperiment {
             partials_buffer: None,
             params_buffer: None,
             partials_params_buffer: None,
+            l1_scanned_buffer: None,
+            l2_partials_buffer: None,
+            l2_params_buffer: None,
+            l1_addoffsets_params_buffer: None,
             pso_cache: PsoCache::new(),
             gpu_result: Vec::new(),
             cpu_result: Vec::new(),
@@ -83,7 +101,7 @@ impl Experiment for ScanExperiment {
     }
 
     fn description(&self) -> &str {
-        "Exclusive prefix scan (u32): 3-pass Blelloch reduce-then-scan"
+        "Exclusive prefix scan (u32): SIMD prefix reduce-then-scan"
     }
 
     fn supported_sizes(&self) -> Vec<usize> {
@@ -143,6 +161,45 @@ impl Experiment for ScanExperiment {
         };
         self.partials_params_buffer = Some(alloc_buffer_with_data(&ctx.device, &[partials_params]));
 
+        // Multi-level scan buffers (only needed when num_threadgroups > MAX_GPU_PARTIALS)
+        if self.num_threadgroups > MAX_GPU_PARTIALS {
+            let num_l2_groups = self.num_threadgroups.div_ceil(ELEMENTS_PER_TG);
+
+            // Buffer for locally-scanned L1 partials (output of scan_local on partials)
+            self.l1_scanned_buffer = Some(alloc_buffer(
+                &ctx.device,
+                self.num_threadgroups * std::mem::size_of::<u32>(),
+            ));
+
+            // Buffer for L2 partial sums
+            self.l2_partials_buffer = Some(alloc_buffer(
+                &ctx.device,
+                num_l2_groups * std::mem::size_of::<u32>(),
+            ));
+
+            // ScanParams for scan_partials on L2 (element_count = num_l2_groups)
+            let l2_params = ScanParams {
+                element_count: num_l2_groups as u32,
+                pass: 2,
+                _pad: [0; 2],
+            };
+            self.l2_params_buffer = Some(alloc_buffer_with_data(&ctx.device, &[l2_params]));
+
+            // ScanParams for scan_add_offsets on L1 scanned (element_count = num_threadgroups)
+            let l1_addoffsets_params = ScanParams {
+                element_count: self.num_threadgroups as u32,
+                pass: 3,
+                _pad: [0; 2],
+            };
+            self.l1_addoffsets_params_buffer =
+                Some(alloc_buffer_with_data(&ctx.device, &[l1_addoffsets_params]));
+        } else {
+            self.l1_scanned_buffer = None;
+            self.l2_partials_buffer = None;
+            self.l2_params_buffer = None;
+            self.l1_addoffsets_params_buffer = None;
+        }
+
         // Pre-warm PSO cache
         self.pso_cache
             .get_or_create(ctx.library(), "scan_local");
@@ -162,15 +219,13 @@ impl Experiment for ScanExperiment {
             .as_ref()
             .expect("setup not called");
 
-        let timer = BenchTimer::start();
-
-        // Create single command buffer for all 3 passes
+        // Create single command buffer for all passes
         let cmd_buf = ctx
             .queue
             .commandBuffer()
             .expect("Failed to create command buffer");
 
-        // --- Pass 1: scan_local ---
+        // --- Pass 1: scan_local on input data ---
         {
             let pso = self.pso_cache.get_or_create(ctx.library(), "scan_local");
             let encoder = cmd_buf
@@ -199,9 +254,13 @@ impl Experiment for ScanExperiment {
             encoder.endEncoding();
         }
 
-        // --- Pass 2: scan partials ---
+        // --- Pass 2: scan the partials ---
+        // After this block, the buffer used for the final scan_add_offsets
+        // contains the fully-scanned partials.
+        let final_partials: &ProtocolObject<dyn MTLBuffer>;
+
         if self.num_threadgroups <= MAX_GPU_PARTIALS {
-            // GPU scan of partials (single threadgroup)
+            // Simple case: scan_partials in-place (single threadgroup)
             let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
             let encoder = cmd_buf
                 .computeCommandEncoder()
@@ -225,43 +284,38 @@ impl Experiment for ScanExperiment {
             };
             encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
             encoder.endEncoding();
+
+            final_partials = partials.as_ref();
         } else {
-            // Too many partials for single threadgroup -- commit, CPU scan, then continue
-            cmd_buf.commit();
-            cmd_buf.waitUntilCompleted();
+            // Multi-level scan for large partials count.
+            // 3-level: scan_local(L1) -> scan_partials(L2) -> scan_add_offsets(L1)
+            let l1_scanned = self.l1_scanned_buffer.as_ref().expect("setup not called");
+            let l2_partials = self.l2_partials_buffer.as_ref().expect("setup not called");
+            let l2_params = self.l2_params_buffer.as_ref().expect("setup not called");
+            let l1_addoffsets_params = self
+                .l1_addoffsets_params_buffer
+                .as_ref()
+                .expect("setup not called");
 
-            // CPU scan of partials
-            let partials_data: Vec<u32> = unsafe {
-                read_buffer_slice(partials.as_ref(), self.num_threadgroups)
-            };
-            let scanned = sequential::sequential_exclusive_scan(&partials_data);
-            // Write back scanned partials
-            unsafe {
-                let ptr = partials.contents().as_ptr() as *mut u32;
-                std::ptr::copy_nonoverlapping(scanned.as_ptr(), ptr, self.num_threadgroups);
-            }
+            let num_l2_groups = self.num_threadgroups.div_ceil(ELEMENTS_PER_TG);
 
-            // New command buffer for pass 3
-            let cmd_buf2 = ctx
-                .queue
-                .commandBuffer()
-                .expect("Failed to create command buffer");
-
+            // Pass 2a: scan_local on L1 partials -> locally-scanned L1 + L2 partials
             {
-                let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
-                let encoder = cmd_buf2
+                let pso = self.pso_cache.get_or_create(ctx.library(), "scan_local");
+                let encoder = cmd_buf
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");
 
                 encoder.setComputePipelineState(pso);
                 unsafe {
-                    encoder.setBuffer_offset_atIndex(Some(output.as_ref()), 0, 0);
-                    encoder.setBuffer_offset_atIndex(Some(partials.as_ref()), 0, 1);
-                    encoder.setBuffer_offset_atIndex(Some(params.as_ref()), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(partials.as_ref()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(partials_params.as_ref()), 0, 3);
                 }
 
                 let grid = objc2_metal::MTLSize {
-                    width: self.num_threadgroups,
+                    width: num_l2_groups,
                     height: 1,
                     depth: 1,
                 };
@@ -274,17 +328,72 @@ impl Experiment for ScanExperiment {
                 encoder.endEncoding();
             }
 
-            cmd_buf2.commit();
-            cmd_buf2.waitUntilCompleted();
+            // Pass 2b: scan_partials on L2 partials (in-place, single TG)
+            {
+                let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
+                let encoder = cmd_buf
+                    .computeCommandEncoder()
+                    .expect("Failed to create compute encoder");
 
-            let elapsed = timer.stop();
-            self.gpu_result = unsafe { read_buffer_slice(output.as_ref(), self.size) };
-            return elapsed;
+                encoder.setComputePipelineState(pso);
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(l2_params.as_ref()), 0, 1);
+                }
+
+                let grid = objc2_metal::MTLSize {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = objc2_metal::MTLSize {
+                    width: 256,
+                    height: 1,
+                    depth: 1,
+                };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+                encoder.endEncoding();
+            }
+
+            // Pass 2c: scan_add_offsets on L1 scanned using L2 partials
+            {
+                let pso = self
+                    .pso_cache
+                    .get_or_create(ctx.library(), "scan_add_offsets");
+                let encoder = cmd_buf
+                    .computeCommandEncoder()
+                    .expect("Failed to create compute encoder");
+
+                encoder.setComputePipelineState(pso);
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(l1_addoffsets_params.as_ref()), 0, 2);
+                }
+
+                let grid = objc2_metal::MTLSize {
+                    width: num_l2_groups,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = objc2_metal::MTLSize {
+                    width: 256,
+                    height: 1,
+                    depth: 1,
+                };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+                encoder.endEncoding();
+            }
+
+            // l1_scanned now contains the fully-scanned L1 partials
+            final_partials = l1_scanned.as_ref();
         }
 
-        // --- Pass 3: scan_add_offsets ---
+        // --- Pass 3: scan_add_offsets on main output ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "scan_add_offsets");
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -292,7 +401,7 @@ impl Experiment for ScanExperiment {
             encoder.setComputePipelineState(pso);
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(output.as_ref()), 0, 0);
-                encoder.setBuffer_offset_atIndex(Some(partials.as_ref()), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(final_partials), 0, 1);
                 encoder.setBuffer_offset_atIndex(Some(params.as_ref()), 0, 2);
             }
 
@@ -313,7 +422,7 @@ impl Experiment for ScanExperiment {
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
+        let elapsed = GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0);
 
         // Read back result
         self.gpu_result = unsafe { read_buffer_slice(output.as_ref(), self.size) };

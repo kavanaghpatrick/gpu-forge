@@ -101,7 +101,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-11, FR-8, AC-7.1, AC-7.2_
   - _Design: Kernel 3 - Scan SIMD Prefix Replacement_
 
-- [ ] 1.8 Update scan.rs for new dispatch grid + GpuTimer
+- [x] 1.8 Update scan.rs for new dispatch grid + GpuTimer
   - **Do**:
     1. Change `ELEMENTS_PER_TG` from 512 to 1024
     2. Change `MAX_GPU_PARTIALS` from 512 to 1024 (scan_partials now handles 4 elem/thread)
