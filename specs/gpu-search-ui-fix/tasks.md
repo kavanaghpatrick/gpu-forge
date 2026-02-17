@@ -21,7 +21,7 @@ Focus: Fix GPU kernel context extraction, verify path prefix, add cache persiste
   - _Requirements: FR-1_
   - _Design: Component A_
 
-- [ ] 1.2 Update search_paths() to use GPU-provided context offsets
+- [x] 1.2 Update search_paths() to use GPU-provided context offsets
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`, replace the CPU backward/forward newline scan in `search_paths()` (lines 401-412) with direct slice using GPU-provided `m.context_start` and `m.context_len`. Calculate `abs_start = chunk_idx * CHUNK_SIZE + m.context_start as usize`, `abs_end = (abs_start + m.context_len as usize).min(self.chunk_data.len())`. Slice `&self.chunk_data[abs_start..abs_end]` and convert to string. Remove the backward/forward while loops.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
   - **Done when**: search_paths() uses GPU offsets instead of CPU scan; existing tests still pass
