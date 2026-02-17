@@ -118,7 +118,7 @@ After POC validated, clean up code.
   - **Done when**: All tests pass, no clippy warnings
   - **Commit**: `fix(search): address lint/type issues` (if needed)
 
-- [ ] 4.2 Run performance benchmark comparison
+- [x] 4.2 Run performance benchmark comparison
   - **Do**: Run criterion benchmarks before and after to quantify improvement. Compare search_latency at 500K and 1M scales. Verify throughput >= 30 GB/s.
   - **Verify**: `cd /Users/patrickkavanagh/gpu-search-ui && cargo bench --bench gpu_search_bench -- --sample-size 50 2>&1 | tail -30`
   - **Done when**: Benchmarks show measurable improvement in search latency
