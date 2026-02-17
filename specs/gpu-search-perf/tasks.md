@@ -213,7 +213,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
   - _Requirements: FR-6, FR-7, FR-8, FR-10, FR-11, FR-12_
   - _Design: Component 2d_
 
-- [ ] 1.6 [VERIFY] Quality checkpoint: build + all existing tests pass
+- [x] 1.6 [VERIFY] Quality checkpoint: build + all existing tests pass
   - **Do**:
     1. `cd /Users/patrickkavanagh/gpu-search-ui && cargo build --release`
     2. `cd /Users/patrickkavanagh/gpu-search-ui && cargo test -- --nocapture`
@@ -225,7 +225,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
   - **Commit**: `chore(search): pass quality checkpoint` (only if fixes needed)
   - _Requirements: AC-2.1, AC-3.1, AC-3.2, AC-3.3_
 
-- [ ] 1.7 POC Checkpoint: measure throughput improvement
+- [x] 1.7 POC Checkpoint: measure throughput improvement
   - **Do**:
     1. Run the 200K-path scale test with timing to validate measurable improvement:
        ```bash
