@@ -4,6 +4,7 @@
 //! implementations of the same computation for comparison.
 
 pub mod compact;
+pub mod duckdb;
 pub mod filter;
 pub mod gemm;
 pub mod gemv;
@@ -68,5 +69,6 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         Box::new(hash_join::HashJoinExperiment::new()),
         Box::new(json_parse::JsonParseExperiment::new()),
         Box::new(pipeline::PipelineExperiment::new()),
+        Box::new(duckdb::DuckDbExperiment::new()),
     ]
 }

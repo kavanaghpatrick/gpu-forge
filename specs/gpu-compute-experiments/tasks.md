@@ -345,7 +345,7 @@ Focus: Relational operations and competitive benchmarks. Validate product direct
   - _Requirements: FR-14, AC-5.1, AC-5.2, AC-5.4, AC-5.5_
   - _Design: End-to-End Pipeline, Implementation Step 17_
 
-- [ ] 3.6 DuckDB comparison experiment
+- [x] 3.6 DuckDB comparison experiment
   - **Do**:
     1. Create `forge-bench/src/experiments/duckdb.rs` -- DuckDbExperiment:
        - `setup`: generate same columnar data as pipeline, write to Parquet file using `parquet` crate (or CSV as fallback)
