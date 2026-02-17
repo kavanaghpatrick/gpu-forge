@@ -112,7 +112,7 @@ Focus: Validate end-to-end EAGLE-3 infrastructure with random weights. Prove hid
   - _Requirements: FR-5, AC-3.1, AC-3.3_
   - _Design: Component 6 - EagleDecoder Integration_
 
-- [ ] 1.7 Register eagle modules in lib.rs
+- [x] 1.7 Register eagle modules in lib.rs
   - **Do**:
     1. Add `pub mod eagle;` and `pub mod eagle_head;` to `crates/metal-attention/src/lib.rs`
     2. Add re-exports: `pub use eagle::EagleDecoder;` and `pub use eagle_head::EagleHead;`
@@ -122,13 +122,13 @@ Focus: Validate end-to-end EAGLE-3 infrastructure with random weights. Prove hid
   - **Commit**: `feat(eagle): register eagle modules in lib.rs`
   - _Design: File Structure_
 
-- [ ] 1.8 [VERIFY] Quality checkpoint: full workspace build + clippy
+- [x] 1.8 [VERIFY] Quality checkpoint: full workspace build + clippy
   - **Do**: Compile entire workspace including new eagle modules, run clippy
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-attention && cargo build --workspace 2>&1 | tail -10 && cargo clippy --workspace -- -D warnings 2>&1 | tail -10`
   - **Done when**: Zero compile errors, zero clippy warnings across workspace
   - **Commit**: `chore(eagle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.9 POC end-to-end test: run EagleDecoder with random weights on Mistral-7B
+- [x] 1.9 POC end-to-end test: run EagleDecoder with random weights on Mistral-7B
   - **Do**:
     1. Create a minimal integration test in `crates/metal-attention/tests/eagle_test.rs`
     2. Test `test_eagle_random_weights_runs`: constructs `EagleDecoder::new_random()` with Mistral-7B path, calls `generate(prompt, 20, callback)`, asserts no crash and returns 20 tokens
