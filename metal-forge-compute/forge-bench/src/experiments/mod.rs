@@ -3,6 +3,7 @@
 //! Each experiment implements the `Experiment` trait, providing GPU and CPU
 //! implementations of the same computation for comparison.
 
+pub mod histogram;
 pub mod reduce;
 
 use std::collections::HashMap;
@@ -42,5 +43,6 @@ pub trait Experiment {
 pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
     vec![
         Box::new(reduce::ReduceExperiment::new()),
+        Box::new(histogram::HistogramExperiment::new()),
     ]
 }

@@ -92,7 +92,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
   - _Requirements: FR-3, AC-1.3, AC-1.6, AC-1.7, NFR-3_
   - _Design: Experiment trait, Reduce kernel, CPU Baseline Implementation_
 
-- [ ] 1.5 [VERIFY] Quality checkpoint: cargo build workspace
+- [x] 1.5 [VERIFY] Quality checkpoint: cargo build workspace
   - **Do**: Build entire workspace, fix any compile errors
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build 2>&1 | tail -5`
   - **Done when**: Workspace builds with no errors
@@ -114,7 +114,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
   - _Requirements: FR-16, NFR-1, NFR-7_
   - _Design: Data Flow, Harness measurement loop_
 
-- [ ] 1.7 POC Checkpoint: reduce experiment end-to-end
+- [x] 1.7 POC Checkpoint: reduce experiment end-to-end
   - **Do**:
     1. Run reduce at 1M with quick profile, verify table prints correctly
     2. Run reduce at 10M to see real speedup numbers
@@ -203,7 +203,7 @@ Focus: Complete all P0 primitive kernels. Each follows the pattern: write shader
   - _Requirements: FR-1, AC-1.1, AC-1.6_
   - _Design: Radix Sort, Implementation Step 13_
 
-- [ ] 2.5 Histogram kernel + experiment
+- [x] 2.5 Histogram kernel + experiment
   - **Do**:
     1. Add `HistogramParams` to types: `{ element_count: u32, num_bins: u32, _pad: [u32; 2] }`
     2. Create `forge-primitives/shaders/histogram.metal`:

@@ -15,4 +15,20 @@ struct ReduceParams {
     uint _pad[3];
 };
 
+/// Parameters for prefix scan kernels.
+/// Matches Rust ScanParams in types.rs.
+struct ScanParams {
+    uint element_count;
+    uint pass;
+    uint _pad[2];
+};
+
+/// Parameters for histogram kernels.
+/// Matches Rust HistogramParams in types.rs.
+struct HistogramParams {
+    uint element_count;
+    uint num_bins;
+    uint _pad[2];
+};
+
 #endif // FORGE_TYPES_H

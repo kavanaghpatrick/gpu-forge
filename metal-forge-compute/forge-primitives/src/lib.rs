@@ -13,3 +13,5 @@ pub use metal_ctx::MetalContext;
 pub use pso_cache::PsoCache;
 pub use timing::BenchTimer;
 pub use types::ReduceParams;
+pub use types::ScanParams;
+pub use types::HistogramParams;
