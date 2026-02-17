@@ -1,6 +1,8 @@
 mod cli;
 mod config;
+mod cpu_baselines;
 mod data_gen;
+mod experiments;
 mod stats;
 
 use clap::Parser;

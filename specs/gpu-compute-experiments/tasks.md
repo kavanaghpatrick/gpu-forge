@@ -62,7 +62,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
   - _Requirements: FR-16, NFR-1, NFR-5, NFR-7_
   - _Design: forge-bench module structure, Data Generation, CLI_
 
-- [ ] 1.4 Experiment trait + reduce experiment + CPU baseline
+- [x] 1.4 Experiment trait + reduce experiment + CPU baseline
   - **Do**:
     1. Create `forge-bench/src/experiments/mod.rs` -- define `Experiment` trait:
        ```rust
