@@ -5,6 +5,7 @@
 
 pub mod histogram;
 pub mod reduce;
+pub mod scan;
 
 use std::collections::HashMap;
 
@@ -44,5 +45,6 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
     vec![
         Box::new(reduce::ReduceExperiment::new()),
         Box::new(histogram::HistogramExperiment::new()),
+        Box::new(scan::ScanExperiment::new()),
     ]
 }

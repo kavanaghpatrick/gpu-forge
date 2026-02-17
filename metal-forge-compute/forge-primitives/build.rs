@@ -112,6 +112,7 @@ fn main() {
 
     // Also re-run if shared headers change
     println!("cargo:rerun-if-changed=shaders/types.h");
+    println!("cargo:rerun-if-changed=shaders/scan_helpers.h");
 
     // Link all .air files into a single .metallib
     let metallib_path = out_dir.join("shaders.metallib");

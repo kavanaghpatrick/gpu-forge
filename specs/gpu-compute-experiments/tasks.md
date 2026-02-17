@@ -131,7 +131,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
 
 Focus: Complete all P0 primitive kernels. Each follows the pattern: write shader -> implement experiment -> add CPU baseline -> verify correctness.
 
-- [ ] 2.1 Prefix scan kernel + experiment
+- [x] 2.1 Prefix scan kernel + experiment
   - **Do**:
     1. Add `ScanParams` to `forge-primitives/src/types.rs` and `shaders/types.h`: `{ element_count: u32, pass: u32, _pad: [u32; 2] }`
     2. Create `forge-primitives/shaders/scan_helpers.h` -- Blelloch threadgroup scan utility

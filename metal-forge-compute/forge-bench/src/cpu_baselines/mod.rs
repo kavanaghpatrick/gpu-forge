@@ -4,3 +4,4 @@
 //! matching the GPU kernels.
 
 pub mod rayon_reduce;
+pub mod sequential;
