@@ -106,40 +106,64 @@ kernel void radix_scatter(
     device const uint*       scanned_hist    [[buffer(2)]],
     constant SortParams&     params          [[buffer(3)]],
     uint tid_in_tg                           [[thread_position_in_threadgroup]],
-    uint tg_idx                              [[threadgroup_position_in_grid]]
+    uint tg_idx                              [[threadgroup_position_in_grid]],
+    uint simd_lane                           [[thread_index_in_simdgroup]],
+    uint simd_group_id                       [[simdgroup_index_in_threadgroup]]
 ) {
-    // Shared memory to store each thread's digit for stable offset computation.
-    threadgroup uchar shared_digits[SORT_THREADS_PER_TG];
+    // Per-SIMD-group digit counts for cross-SIMD offset computation.
+    // Layout: simd_digit_counts[simd_group][digit]
+    constexpr uint NUM_SIMD_GROUPS = SORT_THREADS_PER_TG / 32; // 8
+    threadgroup uint simd_digit_counts[NUM_SIMD_GROUPS][RADIX_BINS];
 
     uint num_tgs = params.num_threadgroups;
     uint gid = tg_idx * SORT_THREADS_PER_TG + tid_in_tg;
     bool valid = (gid < params.element_count);
 
     uint key = 0;
-    uint digit = RADIX_BINS; // sentinel for invalid threads
+    uint my_digit = RADIX_BINS; // sentinel for invalid threads
 
     if (valid) {
         key = keys_in[gid];
-        digit = (key >> params.bit_offset) & 0xF;
+        my_digit = (key >> params.bit_offset) & 0xF;
     }
 
-    // Store digit in shared memory
-    shared_digits[tid_in_tg] = (uchar)digit;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Phase 1: Compute intra-SIMD rank using SIMD prefix sum.
+    // For each of 16 digit values, compute prefix count within this SIMD group.
+    uint my_rank_in_simd = 0;
+    for (uint d = 0; d < RADIX_BINS; d++) {
+        uint match = (my_digit == d) ? 1u : 0u;
+        uint prefix = simd_prefix_exclusive_sum(match);
+        uint count = simd_sum(match);
 
-    if (valid) {
-        // Count how many threads before this one have the same digit.
-        // This gives a stable local offset.
-        uint local_pos = 0;
-        for (uint j = 0; j < tid_in_tg; j++) {
-            if (shared_digits[j] == (uchar)digit) {
-                local_pos++;
-            }
+        // Record rank for the thread's own digit
+        if (my_digit == d) {
+            my_rank_in_simd = prefix;
         }
 
-        // Global position = scanned prefix for (digit, tg_idx) + local offset
-        // Digit-major layout: scanned_hist[digit * num_tg + tg_idx]
-        uint global_base = scanned_hist[digit * num_tgs + tg_idx];
+        // Last lane in SIMD group stores the digit count
+        if (simd_lane == 31) {
+            simd_digit_counts[simd_group_id][d] = count;
+        }
+    }
+
+    // Synchronize: all SIMD groups must have written their counts
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 2: Compute cross-SIMD offset.
+    // Sum digit counts from all SIMD groups before this one.
+    uint cross_offset = 0;
+    if (valid) {
+        for (uint s = 0; s < simd_group_id; s++) {
+            cross_offset += simd_digit_counts[s][my_digit];
+        }
+    }
+
+    // Phase 3: Global scatter.
+    // local_pos = cross_offset + intra-SIMD rank
+    // global_pos = scanned_hist[digit * num_tg + tg_idx] + local_pos
+    if (valid) {
+        uint local_pos = cross_offset + my_rank_in_simd;
+        uint global_base = scanned_hist[my_digit * num_tgs + tg_idx];
         uint global_pos = global_base + local_pos;
         keys_out[global_pos] = key;
     }

@@ -141,7 +141,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-2, FR-14, AC-10.4, AC-10.5_
   - _Design: Kernel 2 dispatch adjustment_
 
-- [ ] 1.11 [VERIFY] POC checkpoint: 3 kernels pass validate() at 10M
+- [x] 1.11 [VERIFY] POC checkpoint: 3 kernels pass validate() at 10M
   - **Do**: Run reduce, scan, histogram at 10M to verify correctness and measure initial speedups
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo run --release -p forge-bench -- reduce --sizes 10M --runs 3 --warmup 1 2>&1 | grep -E "speedup|PASS|FAIL" && cargo run --release -p forge-bench -- scan --sizes 10M --runs 3 --warmup 1 2>&1 | grep -E "speedup|PASS|FAIL" && cargo run --release -p forge-bench -- histogram --sizes 10M --runs 3 --warmup 1 2>&1 | grep -E "speedup|PASS|FAIL"`
   - **Done when**: All 3 kernels pass validation at 10M; GPU timing operational
@@ -151,7 +151,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Sort Rewrite (depends on scan)
 
-- [ ] 2.1 Rewrite radix_scatter in radix_sort.metal with SIMD prefix rank
+- [x] 2.1 Rewrite radix_scatter in radix_sort.metal with SIMD prefix rank
   - **Do**:
     1. Replace quadratic loop (lines 134-138) in `radix_scatter` kernel with SIMD prefix approach: for each of 16 digit values, compute `simd_prefix_exclusive_sum(digit == d ? 1u : 0u)` for intra-SIMD rank and `simd_sum()` for count. Record rank for matching digit. Store per-SIMD-group digit counts to `threadgroup uint simd_digit_counts[8][RADIX_BINS]`. Cross-SIMD offset by summing counts from earlier SIMD groups. Global scatter: `keys_out[global_base + local_pos] = key`.
     2. Add SIMD attributes to kernel params: `simd_lane [[thread_index_in_simdgroup]]`, `simd_group_id [[simdgroup_index_in_threadgroup]]`
