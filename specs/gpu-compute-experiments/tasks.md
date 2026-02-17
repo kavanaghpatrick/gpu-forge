@@ -98,7 +98,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
   - **Done when**: Workspace builds with no errors
   - **Commit**: `chore(forge): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.6 Harness measurement loop + table output
+- [x] 1.6 Harness measurement loop + table output
   - **Do**:
     1. Create `forge-bench/src/harness.rs` -- `run_experiment(exp, config, ctx) -> Vec<DataPoint>`:
        - For each size: setup -> validate() -> warmup loop (discard) -> measured loop (GPU + CPU) -> compute_stats -> DataPoint
