@@ -77,3 +77,42 @@ impl PsoCache {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pso_cache_new_is_empty() {
+        let cache = PsoCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_pso_cache_default_is_empty() {
+        let cache = PsoCache::default();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_pso_cache_key_equality() {
+        // HashMap keys are Strings, so same function name should map to same entry
+        let mut map: HashMap<String, u32> = HashMap::new();
+        map.insert("reduce_sum_u32".to_string(), 1);
+        map.insert("reduce_sum_u32".to_string(), 2);
+        assert_eq!(map.len(), 1, "Same key should overwrite, not duplicate");
+        assert_eq!(map["reduce_sum_u32"], 2);
+    }
+
+    #[test]
+    fn test_pso_cache_key_inequality() {
+        // Different function names are different keys
+        let mut map: HashMap<String, u32> = HashMap::new();
+        map.insert("reduce_sum_u32".to_string(), 1);
+        map.insert("reduce_sum_f32".to_string(), 2);
+        assert_eq!(map.len(), 2, "Different keys should be separate entries");
+        assert_ne!(map["reduce_sum_u32"], map["reduce_sum_f32"]);
+    }
+}

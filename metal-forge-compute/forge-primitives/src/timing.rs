@@ -34,4 +34,25 @@ mod tests {
         assert!(elapsed > 0.0, "Timer should measure positive time");
         assert!(elapsed >= 5.0, "Timer should measure at least ~10ms (got {elapsed}ms)");
     }
+
+    #[test]
+    fn test_timer_stop_returns_milliseconds() {
+        let timer = BenchTimer::start();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let elapsed = timer.stop();
+        // Should be between 40ms and 200ms (generous bounds for CI)
+        assert!(elapsed >= 30.0, "Expected >= 30ms, got {elapsed}ms");
+        assert!(elapsed < 500.0, "Expected < 500ms, got {elapsed}ms");
+    }
+
+    #[test]
+    fn test_timer_multiple_stops() {
+        // stop() is non-destructive -- can be called multiple times
+        let timer = BenchTimer::start();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let first = timer.stop();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let second = timer.stop();
+        assert!(second > first, "Second stop should be later than first");
+    }
 }

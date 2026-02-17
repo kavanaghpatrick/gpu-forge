@@ -100,4 +100,38 @@ mod tests {
         let util = info.bandwidth_utilization(136.5);
         assert!((util - 50.0).abs() < 0.01);
     }
+
+    #[test]
+    fn test_bandwidth_utilization_zero_bandwidth() {
+        let info = HardwareInfo {
+            chip_name: "Unknown".to_string(),
+            bandwidth_gbs: 0.0,
+            gpu_cores: None,
+        };
+        assert_eq!(info.bandwidth_utilization(100.0), 0.0);
+    }
+
+    #[test]
+    fn test_detect_chip_returns_non_empty() {
+        // Create a real Metal device and verify chip detection returns a non-empty string
+        let device = objc2_metal::MTLCreateSystemDefaultDevice()
+            .expect("No Metal device available");
+        let info = HardwareInfo::detect(&device);
+        assert!(
+            !info.chip_name.is_empty(),
+            "detect_chip should return a non-empty chip name"
+        );
+        // On any Apple Silicon, bandwidth should be known (> 0)
+        assert!(
+            info.bandwidth_gbs > 0.0,
+            "bandwidth should be > 0 for known Apple Silicon chips"
+        );
+    }
+
+    #[test]
+    fn test_bandwidth_lookup_case_insensitive_via_lowercase() {
+        // lookup_bandwidth lowercases the chip name, so mixed case should work
+        assert_eq!(lookup_bandwidth("APPLE M4 PRO"), 273.0);
+        assert_eq!(lookup_bandwidth("apple m4 pro"), 273.0);
+    }
 }

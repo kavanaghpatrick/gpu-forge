@@ -550,7 +550,7 @@ Focus: Execute full benchmark suite, collect machine-readable results.
 
 ## Phase 6: Testing
 
-- [ ] 6.1 Unit tests for forge-primitives
+- [x] 6.1 Unit tests for forge-primitives
   - **Do**:
     1. Add tests to `forge-primitives/src/types.rs`: layout tests for all param structs (size_of, offset_of)
     2. Add tests to `forge-primitives/src/buffer_pool.rs`: page_align correctness, alloc/recycle

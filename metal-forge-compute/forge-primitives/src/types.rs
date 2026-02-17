@@ -414,4 +414,43 @@ mod tests {
         assert_eq!(probe_offset, 4, "probe_count at offset 4");
         assert_eq!(table_offset, 8, "table_size at offset 8");
     }
+
+    #[test]
+    fn test_csv_bench_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<CsvBenchParams>(),
+            16,
+            "CsvBenchParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<CsvBenchParams>(),
+            4,
+            "CsvBenchParams must be 4-byte aligned"
+        );
+
+        let p = CsvBenchParams {
+            byte_count: 0,
+            _pad: [0; 3],
+        };
+        let base = &p as *const _ as usize;
+        let byte_count_offset = &p.byte_count as *const _ as usize - base;
+        assert_eq!(byte_count_offset, 0, "byte_count at offset 0");
+    }
+
+    #[test]
+    fn test_all_params_are_16_bytes() {
+        // Verify all param structs are exactly 16 bytes for Metal alignment
+        assert_eq!(std::mem::size_of::<ReduceParams>(), 16);
+        assert_eq!(std::mem::size_of::<ScanParams>(), 16);
+        assert_eq!(std::mem::size_of::<HistogramParams>(), 16);
+        assert_eq!(std::mem::size_of::<CompactParams>(), 16);
+        assert_eq!(std::mem::size_of::<SortParams>(), 16);
+        assert_eq!(std::mem::size_of::<FilterBenchParams>(), 16);
+        assert_eq!(std::mem::size_of::<GroupByParams>(), 16);
+        assert_eq!(std::mem::size_of::<GemmParams>(), 16);
+        assert_eq!(std::mem::size_of::<SpreadsheetParams>(), 16);
+        assert_eq!(std::mem::size_of::<TimeSeriesParams>(), 16);
+        assert_eq!(std::mem::size_of::<HashJoinParams>(), 16);
+        assert_eq!(std::mem::size_of::<CsvBenchParams>(), 16);
+    }
 }

@@ -103,4 +103,71 @@ mod tests {
         assert_eq!(page_align(PAGE_SIZE + 1), PAGE_SIZE * 2);
         assert_eq!(page_align(100_000), 114688); // ceil(100000/16384)*16384
     }
+
+    #[test]
+    fn test_page_align_specific_values() {
+        // From task spec: page_align(1) == 16384, page_align(16384) == 16384, page_align(16385) == 32768
+        assert_eq!(page_align(1), 16384);
+        assert_eq!(page_align(16384), 16384);
+        assert_eq!(page_align(16385), 32768);
+    }
+
+    #[test]
+    fn test_page_align_large_values() {
+        // Test with typical buffer sizes
+        assert_eq!(page_align(1_000_000), 1_000_000_usize.next_multiple_of(PAGE_SIZE));
+        assert_eq!(page_align(4 * 1024 * 1024), 4 * 1024 * 1024); // 4MB already aligned
+    }
+
+    #[test]
+    fn test_buffer_pool_new() {
+        let pool = BufferPool::new();
+        assert_eq!(pool.allocated_bytes(), 0);
+        assert_eq!(pool.peak_bytes(), 0);
+        assert_eq!(pool.available_count(), 0);
+    }
+
+    #[test]
+    fn test_buffer_pool_default() {
+        let pool = BufferPool::default();
+        assert_eq!(pool.allocated_bytes(), 0);
+        assert_eq!(pool.peak_bytes(), 0);
+        assert_eq!(pool.available_count(), 0);
+    }
+
+    #[test]
+    fn test_buffer_pool_alloc_recycle() {
+        // This test requires a Metal device, so we use MTLCreateSystemDefaultDevice
+        let device = objc2_metal::MTLCreateSystemDefaultDevice()
+            .expect("No Metal device available");
+
+        let mut pool = BufferPool::new();
+        assert_eq!(pool.allocated_bytes(), 0);
+        assert_eq!(pool.available_count(), 0);
+
+        // Allocate a small buffer (should round up to PAGE_SIZE)
+        let buf = pool.alloc(&device, 100);
+        assert_eq!(buf.length(), PAGE_SIZE);
+        assert_eq!(pool.allocated_bytes(), PAGE_SIZE);
+        assert_eq!(pool.peak_bytes(), PAGE_SIZE);
+        assert_eq!(pool.available_count(), 0);
+
+        // Recycle it
+        pool.recycle(buf);
+        assert_eq!(pool.available_count(), 1);
+        assert_eq!(pool.allocated_bytes(), PAGE_SIZE);
+
+        // Re-alloc same size should recycle
+        let buf2 = pool.alloc(&device, 100);
+        assert_eq!(buf2.length(), PAGE_SIZE);
+        assert_eq!(pool.available_count(), 0);
+        // allocated_bytes should NOT increase (recycled)
+        assert_eq!(pool.allocated_bytes(), PAGE_SIZE);
+
+        // Allocate a larger buffer (2 pages)
+        let buf3 = pool.alloc(&device, PAGE_SIZE + 1);
+        assert_eq!(buf3.length(), PAGE_SIZE * 2);
+        assert_eq!(pool.allocated_bytes(), PAGE_SIZE + PAGE_SIZE * 2);
+        assert_eq!(pool.peak_bytes(), PAGE_SIZE + PAGE_SIZE * 2);
+    }
 }
