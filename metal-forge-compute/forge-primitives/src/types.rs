@@ -57,6 +57,15 @@ pub struct FilterBenchParams {
     pub _pad: [u32; 2],
 }
 
+/// Parameters for group-by aggregate kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GroupByParams {
+    pub element_count: u32,
+    pub num_groups: u32,
+    pub _pad: [u32; 2],
+}
+
 /// Parameters for GEMM (General Matrix Multiply) kernels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +74,46 @@ pub struct GemmParams {
     pub n: u32,
     pub k: u32,
     pub _pad: u32,
+}
+
+/// Parameters for spreadsheet formula kernels.
+/// formula_type: 0 = SUM, 1 = AVERAGE, 2 = VLOOKUP
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SpreadsheetParams {
+    pub rows: u32,
+    pub cols: u32,
+    pub formula_type: u32,
+    pub _pad: u32,
+}
+
+/// Parameters for time series analytics kernels.
+/// op_type: 0 = moving average, 1 = VWAP, 2 = bollinger (moving avg for POC)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TimeSeriesParams {
+    pub tick_count: u32,
+    pub window_size: u32,
+    pub op_type: u32,
+    pub _pad: u32,
+}
+
+/// Parameters for hash join kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct HashJoinParams {
+    pub build_count: u32,
+    pub probe_count: u32,
+    pub table_size: u32,
+    pub _pad: u32,
+}
+
+/// Parameters for CSV bench kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CsvBenchParams {
+    pub byte_count: u32,
+    pub _pad: [u32; 3],
 }
 
 #[cfg(test)]
@@ -200,6 +249,32 @@ mod tests {
     }
 
     #[test]
+    fn test_groupby_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<GroupByParams>(),
+            16,
+            "GroupByParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<GroupByParams>(),
+            4,
+            "GroupByParams must be 4-byte aligned"
+        );
+
+        let p = GroupByParams {
+            element_count: 0,
+            num_groups: 0,
+            _pad: [0; 2],
+        };
+        let base = &p as *const _ as usize;
+        let element_count_offset =
+            &p.element_count as *const _ as usize - base;
+        let num_groups_offset = &p.num_groups as *const _ as usize - base;
+        assert_eq!(element_count_offset, 0, "element_count at offset 0");
+        assert_eq!(num_groups_offset, 4, "num_groups at offset 4");
+    }
+
+    #[test]
     fn test_gemm_params_layout() {
         assert_eq!(
             std::mem::size_of::<GemmParams>(),
@@ -254,5 +329,89 @@ mod tests {
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(bit_offset_offset, 4, "bit_offset at offset 4");
         assert_eq!(num_tg_offset, 8, "num_threadgroups at offset 8");
+    }
+
+    #[test]
+    fn test_spreadsheet_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<SpreadsheetParams>(),
+            16,
+            "SpreadsheetParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<SpreadsheetParams>(),
+            4,
+            "SpreadsheetParams must be 4-byte aligned"
+        );
+
+        let p = SpreadsheetParams {
+            rows: 0,
+            cols: 0,
+            formula_type: 0,
+            _pad: 0,
+        };
+        let base = &p as *const _ as usize;
+        let rows_offset = &p.rows as *const _ as usize - base;
+        let cols_offset = &p.cols as *const _ as usize - base;
+        let formula_offset = &p.formula_type as *const _ as usize - base;
+        assert_eq!(rows_offset, 0, "rows at offset 0");
+        assert_eq!(cols_offset, 4, "cols at offset 4");
+        assert_eq!(formula_offset, 8, "formula_type at offset 8");
+    }
+
+    #[test]
+    fn test_timeseries_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<TimeSeriesParams>(),
+            16,
+            "TimeSeriesParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<TimeSeriesParams>(),
+            4,
+            "TimeSeriesParams must be 4-byte aligned"
+        );
+
+        let p = TimeSeriesParams {
+            tick_count: 0,
+            window_size: 0,
+            op_type: 0,
+            _pad: 0,
+        };
+        let base = &p as *const _ as usize;
+        let tick_offset = &p.tick_count as *const _ as usize - base;
+        let window_offset = &p.window_size as *const _ as usize - base;
+        let op_offset = &p.op_type as *const _ as usize - base;
+        assert_eq!(tick_offset, 0, "tick_count at offset 0");
+        assert_eq!(window_offset, 4, "window_size at offset 4");
+        assert_eq!(op_offset, 8, "op_type at offset 8");
+    }
+
+    #[test]
+    fn test_hash_join_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<HashJoinParams>(),
+            16,
+            "HashJoinParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<HashJoinParams>(),
+            4,
+            "HashJoinParams must be 4-byte aligned"
+        );
+
+        let p = HashJoinParams {
+            build_count: 0,
+            probe_count: 0,
+            table_size: 0,
+            _pad: 0,
+        };
+        let base = &p as *const _ as usize;
+        let build_offset = &p.build_count as *const _ as usize - base;
+        let probe_offset = &p.probe_count as *const _ as usize - base;
+        let table_offset = &p.table_size as *const _ as usize - base;
+        assert_eq!(build_offset, 0, "build_count at offset 0");
+        assert_eq!(probe_offset, 4, "probe_count at offset 4");
+        assert_eq!(table_offset, 8, "table_size at offset 8");
     }
 }

@@ -14,7 +14,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer, read_buffer_slice, BenchTimer,
+    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer, BenchTimer,
     HashJoinParams, MetalContext, PsoCache,
 };
 
@@ -39,10 +39,8 @@ pub struct HashJoinExperiment {
     buf_probe_keys: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for hash table (table_size * 2 u32s: [key, value] pairs).
     buf_hash_table: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    /// Metal buffer for HashJoinParams (build phase).
-    buf_build_params: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    /// Metal buffer for HashJoinParams (probe phase, same struct different counts).
-    buf_probe_params: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Metal buffer for HashJoinParams.
+    buf_params: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for output match pairs (uint2: build_idx, probe_idx).
     buf_output_pairs: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for atomic match count (single u32).
@@ -53,10 +51,6 @@ pub struct HashJoinExperiment {
     gpu_match_count: u32,
     /// CPU match count from last run.
     cpu_match_count: u32,
-    /// GPU build time in ms.
-    gpu_build_ms: f64,
-    /// GPU probe time in ms.
-    gpu_probe_ms: f64,
     /// Current element count (build side).
     size: usize,
 }
@@ -70,15 +64,12 @@ impl HashJoinExperiment {
             buf_build_keys: None,
             buf_probe_keys: None,
             buf_hash_table: None,
-            buf_build_params: None,
-            buf_probe_params: None,
+            buf_params: None,
             buf_output_pairs: None,
             buf_match_count: None,
             pso_cache: PsoCache::new(),
             gpu_match_count: 0,
             cpu_match_count: 0,
-            gpu_build_ms: 0.0,
-            gpu_probe_ms: 0.0,
             size: 0,
         }
     }
@@ -104,19 +95,6 @@ impl HashJoinExperiment {
             }
         }
     }
-
-    /// Next power of 2 >= n.
-    fn next_power_of_two(n: usize) -> usize {
-        let mut v = n;
-        v -= 1;
-        v |= v >> 1;
-        v |= v >> 2;
-        v |= v >> 4;
-        v |= v >> 8;
-        v |= v >> 16;
-        v |= v >> 32;
-        v + 1
-    }
 }
 
 impl Experiment for HashJoinExperiment {
@@ -141,7 +119,7 @@ impl Experiment for HashJoinExperiment {
         let build_count = size;
         let probe_count = size;
 
-        // Generate build keys: unique values in range [0, build_count * 4)
+        // Generate build keys: values in range [0, build_count * 4)
         // to get ~25% join selectivity with probe keys in same range
         let key_range = (build_count * 4) as u32;
         self.build_keys = gen
@@ -156,7 +134,7 @@ impl Experiment for HashJoinExperiment {
             .collect();
 
         // Hash table: next power of 2 >= 2 * build_count (load factor < 0.5)
-        self.table_size = Self::next_power_of_two(build_count * 2);
+        self.table_size = (build_count * 2).next_power_of_two();
 
         // Allocate Metal buffers
         self.buf_build_keys = Some(alloc_buffer_with_data(&ctx.device, &self.build_keys));
@@ -169,17 +147,14 @@ impl Experiment for HashJoinExperiment {
         ));
         self.clear_hash_table();
 
-        // Params for build phase
-        let build_params = HashJoinParams {
+        // Params (shared for build and probe)
+        let params = HashJoinParams {
             build_count: build_count as u32,
             probe_count: probe_count as u32,
             table_size: self.table_size as u32,
             _pad: 0,
         };
-        self.buf_build_params = Some(alloc_buffer_with_data(&ctx.device, &[build_params]));
-
-        // Same params work for probe phase (probe_count and table_size are the same)
-        self.buf_probe_params = Some(alloc_buffer_with_data(&ctx.device, &[build_params]));
+        self.buf_params = Some(alloc_buffer_with_data(&ctx.device, &[params]));
 
         // Output pairs: worst case = probe_count matches (each probe finds a match)
         // Use uint2 = 8 bytes per pair
@@ -204,24 +179,8 @@ impl Experiment for HashJoinExperiment {
         self.clear_hash_table();
         self.zero_match_count();
 
-        let build_keys = self.buf_build_keys.as_ref().expect("setup not called");
-        let probe_keys = self.buf_probe_keys.as_ref().expect("setup not called");
-        let hash_table = self.buf_hash_table.as_ref().expect("setup not called");
-        let build_params = self.buf_build_params.as_ref().expect("setup not called");
-        let probe_params = self.buf_probe_params.as_ref().expect("setup not called");
-        let output_pairs = self.buf_output_pairs.as_ref().expect("setup not called");
-        let match_count = self.buf_match_count.as_ref().expect("setup not called");
-
         let build_count = self.build_keys.len();
         let probe_count = self.probe_keys.len();
-
-        // Pre-fetch PSOs to avoid double mutable borrow of pso_cache
-        let pso_build = self
-            .pso_cache
-            .get_or_create(ctx.library(), "hash_join_build") as *const _;
-        let pso_probe = self
-            .pso_cache
-            .get_or_create(ctx.library(), "hash_join_probe") as *const _;
 
         let timer = BenchTimer::start();
 
@@ -232,9 +191,15 @@ impl Experiment for HashJoinExperiment {
             .expect("Failed to create command buffer");
 
         // --- Build phase ---
-        let build_timer = BenchTimer::start();
         {
-            let pso_build = unsafe { &*pso_build };
+            let pso_build = self
+                .pso_cache
+                .get_or_create(ctx.library(), "hash_join_build");
+
+            let build_keys = self.buf_build_keys.as_ref().expect("setup not called");
+            let hash_table = self.buf_hash_table.as_ref().expect("setup not called");
+            let params = self.buf_params.as_ref().expect("setup not called");
+
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -245,7 +210,7 @@ impl Experiment for HashJoinExperiment {
                 &[
                     (build_keys.as_ref(), 0),
                     (hash_table.as_ref(), 1),
-                    (build_params.as_ref(), 2),
+                    (params.as_ref(), 2),
                 ],
                 build_count,
             );
@@ -255,7 +220,16 @@ impl Experiment for HashJoinExperiment {
 
         // --- Probe phase ---
         {
-            let pso_probe = unsafe { &*pso_probe };
+            let pso_probe = self
+                .pso_cache
+                .get_or_create(ctx.library(), "hash_join_probe");
+
+            let probe_keys = self.buf_probe_keys.as_ref().expect("setup not called");
+            let hash_table = self.buf_hash_table.as_ref().expect("setup not called");
+            let params = self.buf_params.as_ref().expect("setup not called");
+            let output_pairs = self.buf_output_pairs.as_ref().expect("setup not called");
+            let match_count = self.buf_match_count.as_ref().expect("setup not called");
+
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -266,7 +240,7 @@ impl Experiment for HashJoinExperiment {
                 &[
                     (probe_keys.as_ref(), 0),
                     (hash_table.as_ref(), 1),
-                    (probe_params.as_ref(), 2),
+                    (params.as_ref(), 2),
                     (output_pairs.as_ref(), 3),
                     (match_count.as_ref(), 4),
                 ],
@@ -280,14 +254,9 @@ impl Experiment for HashJoinExperiment {
         cmd_buf.waitUntilCompleted();
 
         let elapsed = timer.stop();
-        self.gpu_build_ms = build_timer.stop();
-        // probe_ms is approximate (total - build overhead)
-        self.gpu_probe_ms = elapsed - self.gpu_build_ms;
-        if self.gpu_probe_ms < 0.0 {
-            self.gpu_probe_ms = 0.0;
-        }
 
         // Read back match count
+        let match_count = self.buf_match_count.as_ref().expect("setup not called");
         self.gpu_match_count = unsafe { read_buffer::<u32>(match_count.as_ref()) };
 
         elapsed
@@ -341,7 +310,7 @@ impl Experiment for HashJoinExperiment {
         }
     }
 
-    fn metrics(&self, elapsed_ms: f64, size: usize) -> HashMap<String, f64> {
+    fn metrics(&self, elapsed_ms: f64, _size: usize) -> HashMap<String, f64> {
         let mut m = HashMap::new();
         let seconds = elapsed_ms / 1000.0;
 
@@ -354,13 +323,9 @@ impl Experiment for HashJoinExperiment {
         };
         m.insert("joins_per_sec".to_string(), joins_per_sec);
 
-        // Build and probe timing
-        m.insert("build_ms".to_string(), self.gpu_build_ms);
-        m.insert("probe_ms".to_string(), self.gpu_probe_ms);
-
         // Match count and selectivity
         m.insert("match_count".to_string(), self.gpu_match_count as f64);
-        let selectivity = if self.probe_keys.len() > 0 {
+        let selectivity = if !self.probe_keys.is_empty() {
             self.gpu_match_count as f64 / self.probe_keys.len() as f64 * 100.0
         } else {
             0.0

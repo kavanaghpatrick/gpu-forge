@@ -23,6 +23,52 @@ impl DataGenerator {
     pub fn uniform_f32(&mut self, count: usize) -> Vec<f32> {
         (0..count).map(|_| self.rng.gen::<f32>()).collect()
     }
+
+    /// Generate random CSV data as a byte buffer of approximately `target_bytes` size.
+    ///
+    /// Produces rows with 10 comma-separated random integer fields (~50 bytes/row).
+    /// Returns the raw byte buffer. The data always ends with a trailing newline.
+    pub fn csv_records(&mut self, target_bytes: usize) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(target_bytes + 128);
+        let fields_per_row = 10;
+
+        while buf.len() < target_bytes {
+            for f in 0..fields_per_row {
+                let val: u32 = self.rng.gen_range(0..100_000);
+                // Write the integer as ASCII digits
+                let s = val.to_string();
+                buf.extend_from_slice(s.as_bytes());
+                if f < fields_per_row - 1 {
+                    buf.push(b',');
+                }
+            }
+            buf.push(b'\n');
+        }
+
+        // Truncate to exactly target_bytes (ensure last byte is still valid)
+        buf.truncate(target_bytes);
+        // Ensure trailing newline for clean row boundary
+        if buf.last() != Some(&b'\n') {
+            if let Some(last) = buf.last_mut() {
+                *last = b'\n';
+            }
+        }
+
+        buf
+    }
+
+    /// Generate time series data: prices in [50.0, 200.0] and volumes in [1000.0, 100000.0].
+    ///
+    /// Returns (prices, volumes) each of length `count`.
+    pub fn time_series(&mut self, count: usize) -> (Vec<f32>, Vec<f32>) {
+        let prices: Vec<f32> = (0..count)
+            .map(|_| self.rng.gen_range(50.0f32..200.0f32))
+            .collect();
+        let volumes: Vec<f32> = (0..count)
+            .map(|_| self.rng.gen_range(1000.0f32..100000.0f32))
+            .collect();
+        (prices, volumes)
+    }
 }
 
 #[cfg(test)]

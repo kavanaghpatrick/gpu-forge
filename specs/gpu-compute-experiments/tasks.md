@@ -385,7 +385,7 @@ Focus: Relational operations and competitive benchmarks. Validate product direct
 
 Focus: Product exploration experiments + remaining kernels.
 
-- [ ] 4.1 Spreadsheet formulas kernel + experiment
+- [x] 4.1 Spreadsheet formulas kernel + experiment
   - **Do**:
     1. Add `SpreadsheetParams` to types: `{ rows: u32, cols: u32, formula_type: u32, _pad: u32 }`
     2. Create `forge-primitives/shaders/spreadsheet.metal`:
@@ -406,7 +406,7 @@ Focus: Product exploration experiments + remaining kernels.
   - _Requirements: FR-11, AC-4.1, AC-4.4_
   - _Design: Spreadsheet Formulas, Implementation Step 18_
 
-- [ ] 4.2 Time series analytics kernel + experiment
+- [x] 4.2 Time series analytics kernel + experiment
   - **Do**:
     1. Add `TimeSeriesParams` to types: `{ tick_count: u32, window_size: u32, op_type: u32, _pad: u32 }`
     2. Create `forge-primitives/shaders/timeseries.metal`:

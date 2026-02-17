@@ -56,6 +56,14 @@ struct FilterBenchParams {
     uint _pad[2];
 };
 
+/// Parameters for group-by aggregate kernels.
+/// Matches Rust GroupByParams in types.rs.
+struct GroupByParams {
+    uint element_count;
+    uint num_groups;
+    uint _pad[2];
+};
+
 /// Parameters for GEMM (General Matrix Multiply) kernels.
 /// Matches Rust GemmParams in types.rs.
 struct GemmParams {
@@ -63,6 +71,42 @@ struct GemmParams {
     uint N;
     uint K;
     uint _pad;
+};
+
+/// Parameters for spreadsheet formula kernels.
+/// Matches Rust SpreadsheetParams in types.rs.
+/// formula_type: 0 = SUM, 1 = AVERAGE, 2 = VLOOKUP
+struct SpreadsheetParams {
+    uint rows;
+    uint cols;
+    uint formula_type;
+    uint _pad;
+};
+
+/// Parameters for time series analytics kernels.
+/// Matches Rust TimeSeriesParams in types.rs.
+/// op_type: 0 = moving average, 1 = VWAP, 2 = bollinger (moving avg for POC)
+struct TimeSeriesParams {
+    uint tick_count;
+    uint window_size;
+    uint op_type;
+    uint _pad;
+};
+
+/// Parameters for hash join kernels.
+/// Matches Rust HashJoinParams in types.rs.
+struct HashJoinParams {
+    uint build_count;
+    uint probe_count;
+    uint table_size;
+    uint _pad;
+};
+
+/// Parameters for CSV bench kernels.
+/// Matches Rust CsvBenchParams in types.rs.
+struct CsvBenchParams {
+    uint byte_count;
+    uint _pad[3];
 };
 
 #endif // FORGE_TYPES_H
