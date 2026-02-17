@@ -50,7 +50,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-8, FR-19, AC-4.1 through AC-4.6_
   - _Design: Component 4 - Vectorized Load Macros_
 
-- [ ] 1.4 [VERIFY] Quality checkpoint: cargo build + cargo test
+- [x] 1.4 [VERIFY] Quality checkpoint: cargo build + cargo test
   - **Do**: Run build and all tests to verify infrastructure changes don't break anything
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build --release 2>&1 | tail -3 && cargo test --release 2>&1 | grep "test result"`
   - **Done when**: Zero build warnings, all 96 tests pass
@@ -58,7 +58,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Reduce Kernel Rewrite (simplest, validates approach)
 
-- [ ] 1.5 Rewrite reduce.metal with two-pass atomic-free kernel
+- [x] 1.5 Rewrite reduce.metal with two-pass atomic-free kernel
   - **Do**:
     1. Add `reduce_sum_u32_v2` kernel to `reduce.metal`: each thread processes 4 elements via `load_uint4_safe`, SIMD reduction via `simd_sum`, threadgroup reduction via shared memory, writes per-TG partial to `partials[tg_idx]` (NO atomics)
     2. Add `reduce_sum_partials` kernel: single-TG reduction of partials array into final result, same SIMD+TG pattern
