@@ -118,7 +118,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Histogram Kernel Rewrite (quick win, validates bitmask)
 
-- [ ] 1.9 Rewrite histogram.metal with uint4 loads + bitmask binning
+- [x] 1.9 Rewrite histogram.metal with uint4 loads + bitmask binning
   - **Do**:
     1. Replace `histogram_256` kernel: each thread loads 4 elements via `load_uint4_safe(input, tid * 4, params.element_count)`. Use bitmask binning: `uint mask = params.num_bins - 1; uint bin = vals.x & mask;`. Accumulate each of 4 elements individually to `local_hist[bin]` via threadgroup atomic (TG atomics are cheap in shared memory). Keep TG-to-global merge unchanged.
     2. Add guard for non-power-of-2 bins: `uint mask = (num_bins & (num_bins - 1)) == 0 ? (num_bins - 1) : num_bins;` and use modulo as fallback
