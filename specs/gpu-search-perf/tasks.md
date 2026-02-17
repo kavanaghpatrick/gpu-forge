@@ -132,7 +132,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
   - _Requirements: FR-1, FR-2, FR-3, FR-4, FR-5_
   - _Design: Component 1 (New MSL Kernel), Component 4 (Shader Source Management)_
 
-- [ ] 1.2 Add `GpuPathMatchResult` struct and pipeline fields to `GpuContentSearch`
+- [x] 1.2 Add `GpuPathMatchResult` struct and pipeline fields to `GpuContentSearch`
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
     2. After `GpuMatchResult` struct (line 71), add `GpuPathMatchResult` (8 bytes, repr(C))
