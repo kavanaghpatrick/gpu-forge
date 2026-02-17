@@ -30,7 +30,7 @@ Focus: Fix GPU kernel context extraction, verify path prefix, add cache persiste
   - _Requirements: FR-2_
   - _Design: Component B_
 
-- [ ] 1.3 Verify absolute path preservation with diagnostic test
+- [x] 1.3 Verify absolute path preservation with diagnostic test
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/tests/test_path_search.rs`, add a test `test_absolute_path_prefix` that loads paths like `/usr/share/vim/vim91/plugin/matchit.vim` and `/Users/patrickkavanagh/Documents/test.txt`, searches for `vim91`, and asserts that the matched `file_path` starts with `/usr/share/`. Also verify no result starts without `/`. If test fails, debug and fix `load_paths()` or the extraction logic.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/tests/test_path_search.rs`
   - **Done when**: Test passes confirming absolute paths are preserved
