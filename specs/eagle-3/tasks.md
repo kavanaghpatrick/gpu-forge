@@ -146,7 +146,7 @@ Focus: Validate end-to-end EAGLE-3 infrastructure with random weights. Prove hid
 
 Focus: Load real EAGLE-3 draft head weights from SafeTensors format. Handle tensor name mapping and dimension validation. Enable Q4_0 quantized weights for the FC and decoder layers.
 
-- [ ] 2.1 Create eagle_weights.rs with SafeTensors parser
+- [x] 2.1 Create eagle_weights.rs with SafeTensors parser
   - **Do**:
     1. Create `eagle_weights.rs` in `crates/metal-attention/src/`
     2. Implement minimal SafeTensors parser:
@@ -166,7 +166,7 @@ Focus: Load real EAGLE-3 draft head weights from SafeTensors format. Handle tens
   - _Requirements: FR-6, AC-4.1_
   - _Design: Component 7 - Weight Loading_
 
-- [ ] 2.2 Add EagleWeightStore with tensor name mapping
+- [x] 2.2 Add EagleWeightStore with tensor name mapping
   - **Do**:
     1. In `eagle_weights.rs`, define `EagleWeightStore` struct mirroring EagleHead fields: `fc_fuse_weight: WeightBuffer`, `fc_concat_weight: WeightBuffer`, `decoder_attn_norm`, `decoder_attn: AttnProjBuffers`, `decoder_ffn_norm`, `decoder_ffn: FfnBuffers`
     2. Implement tensor name mapping table (from design):
@@ -190,7 +190,7 @@ Focus: Load real EAGLE-3 draft head weights from SafeTensors format. Handle tens
   - _Requirements: FR-6, AC-4.2, AC-4.3, AC-4.4_
   - _Design: Component 7 - Weight Loading, Tensor name mapping table_
 
-- [ ] 2.3 Add EagleHead::from_weights() constructor loading real weights
+- [x] 2.3 Add EagleHead::from_weights() constructor loading real weights
   - **Do**:
     1. In `eagle_head.rs`, add `pub fn from_weights(weight_store: EagleWeightStore, device, target: &GpuForwardPass) -> Result<Self, String>`
     2. Move weight buffers from EagleWeightStore into EagleHead fields
@@ -205,7 +205,7 @@ Focus: Load real EAGLE-3 draft head weights from SafeTensors format. Handle tens
   - _Requirements: FR-6, AC-2.1, AC-2.4, AC-2.5_
   - _Design: Component 2 weight loading path_
 
-- [ ] 2.4 Register eagle_weights module in lib.rs
+- [x] 2.4 Register eagle_weights module in lib.rs
   - **Do**:
     1. Add `pub mod eagle_weights;` to `crates/metal-attention/src/lib.rs`
   - **Files**: `crates/metal-attention/src/lib.rs`
