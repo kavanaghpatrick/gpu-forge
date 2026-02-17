@@ -4,6 +4,7 @@
 //! matching the GPU kernels.
 
 pub mod accelerate;
+pub mod hashmap_ops;
 pub mod rayon_filter;
 pub mod rayon_reduce;
 pub mod rayon_sort;
