@@ -123,7 +123,7 @@ After POC validated, clean up code.
   - **Verify**: `cd /Users/patrickkavanagh/gpu-search-ui && cargo bench --bench gpu_search_bench -- --sample-size 50 2>&1 | tail -30`
   - **Done when**: Benchmarks show measurable improvement in search latency
 
-- [ ] 4.3 VF — Verify all 3 bugs fixed
+- [x] 4.3 VF — Verify all 3 bugs fixed
   - **Do**: Run diagnostic tests that specifically verify: (1) No 64-byte truncation in context extraction — search for a string in a path > 100 bytes, verify full path returned. (2) Absolute paths preserved — verify results start with `/`. (3) Cache persistence — run app twice, verify second launch uses cache. Compare against BEFORE state captured in .progress.md.
   - **Verify**: `cd /Users/patrickkavanagh/gpu-search-ui && cargo test --test test_gpu_correctness -- --nocapture 2>&1 | tail -30`
   - **Done when**: All 3 bugs verified fixed
