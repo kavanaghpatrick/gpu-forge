@@ -30,7 +30,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
   - _Requirements: FR-16, NFR-2, NFR-4, NFR-6_
   - _Design: forge-primitives module structure, Buffer Allocation, Timing Infrastructure_
 
-- [ ] 1.2 Metal build.rs + reduce shader + types.h
+- [x] 1.2 Metal build.rs + reduce shader + types.h
   - **Do**:
     1. Create `forge-primitives/build.rs` -- xcrun metal -> .air, xcrun metallib -> .metallib (copy from `gpu-query/build.rs`, handle stub case for empty shaders dir)
     2. Create `forge-primitives/shaders/types.h` with `ReduceParams` struct matching Rust types.rs
