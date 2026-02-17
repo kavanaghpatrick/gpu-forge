@@ -257,7 +257,7 @@ Focus: Get `path_search_kernel` compiling, dispatching, and returning matches. P
 
 Focus: Add `-Os` shader compilation for the path kernel (the one optimization not yet applied).
 
-- [ ] 2.1 Add `compile_shader_os()` function to mod.rs
+- [x] 2.1 Add `compile_shader_os()` function to mod.rs
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/mod.rs`
     2. After the existing `compile_shader()` function (line 17), add `compile_shader_os()` that uses raw `msg_send!` to set optimization level to 1 (size/-Os)
