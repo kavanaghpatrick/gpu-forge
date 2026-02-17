@@ -47,7 +47,7 @@ Focus: Workspace compiles, one experiment (reduce) runs end-to-end producing cor
   - _Requirements: FR-3_
   - _Design: Reduce kernel architecture, build.rs metal compilation_
 
-- [ ] 1.3 Create forge-bench crate with CLI, config, stats, data_gen
+- [x] 1.3 Create forge-bench crate with CLI, config, stats, data_gen
   - **Do**:
     1. Create `forge-bench/Cargo.toml` with deps: forge-primitives (path), clap 4 (derive), serde 1 (derive), serde_json 1, toml 0.8, comfy-table 7, colored 2, indicatif 0.17, rayon 1, rand 0.8, chrono 0.4
     2. Create `forge-bench/src/cli.rs` -- clap derive: `ForgeArgs` with subcommands `Run { experiments, sizes, runs, warmup, profile, json_file, csv_file }` and `List`
