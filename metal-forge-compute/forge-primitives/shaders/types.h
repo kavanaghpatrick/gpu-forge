@@ -31,4 +31,20 @@ struct HistogramParams {
     uint _pad[2];
 };
 
+/// Parameters for stream compaction kernels.
+/// Matches Rust CompactParams in types.rs.
+struct CompactParams {
+    uint element_count;
+    uint threshold;
+    uint _pad[2];
+};
+
+/// Parameters for radix sort kernels.
+/// Matches Rust SortParams in types.rs.
+struct SortParams {
+    uint element_count;
+    uint bit_offset;
+    uint _pad[2];
+};
+
 #endif // FORGE_TYPES_H

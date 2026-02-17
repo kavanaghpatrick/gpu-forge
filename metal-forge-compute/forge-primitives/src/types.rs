@@ -29,6 +29,24 @@ pub struct HistogramParams {
     pub _pad: [u32; 2],
 }
 
+/// Parameters for stream compaction kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompactParams {
+    pub element_count: u32,
+    pub threshold: u32,
+    pub _pad: [u32; 2],
+}
+
+/// Parameters for radix sort kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SortParams {
+    pub element_count: u32,
+    pub bit_offset: u32,
+    pub _pad: [u32; 2],
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +125,57 @@ mod tests {
         let num_bins_offset = &p.num_bins as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(num_bins_offset, 4, "num_bins at offset 4");
+    }
+
+    #[test]
+    fn test_compact_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<CompactParams>(),
+            16,
+            "CompactParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<CompactParams>(),
+            4,
+            "CompactParams must be 4-byte aligned"
+        );
+
+        let p = CompactParams {
+            element_count: 0,
+            threshold: 0,
+            _pad: [0; 2],
+        };
+        let base = &p as *const _ as usize;
+        let element_count_offset =
+            &p.element_count as *const _ as usize - base;
+        let threshold_offset = &p.threshold as *const _ as usize - base;
+        assert_eq!(element_count_offset, 0, "element_count at offset 0");
+        assert_eq!(threshold_offset, 4, "threshold at offset 4");
+    }
+
+    #[test]
+    fn test_sort_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<SortParams>(),
+            16,
+            "SortParams must be 16 bytes"
+        );
+        assert_eq!(
+            std::mem::align_of::<SortParams>(),
+            4,
+            "SortParams must be 4-byte aligned"
+        );
+
+        let p = SortParams {
+            element_count: 0,
+            bit_offset: 0,
+            _pad: [0; 2],
+        };
+        let base = &p as *const _ as usize;
+        let element_count_offset =
+            &p.element_count as *const _ as usize - base;
+        let bit_offset_offset = &p.bit_offset as *const _ as usize - base;
+        assert_eq!(element_count_offset, 0, "element_count at offset 0");
+        assert_eq!(bit_offset_offset, 4, "bit_offset at offset 4");
     }
 }

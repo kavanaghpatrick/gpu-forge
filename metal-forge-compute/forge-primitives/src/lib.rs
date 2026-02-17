@@ -15,3 +15,5 @@ pub use timing::BenchTimer;
 pub use types::ReduceParams;
 pub use types::ScanParams;
 pub use types::HistogramParams;
+pub use types::CompactParams;
+pub use types::SortParams;

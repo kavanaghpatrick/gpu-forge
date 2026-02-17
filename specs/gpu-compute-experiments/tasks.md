@@ -153,7 +153,7 @@ Focus: Complete all P0 primitive kernels. Each follows the pattern: write shader
   - _Requirements: FR-2, AC-1.2_
   - _Design: Prefix Scan 3-pass, Implementation Step 11_
 
-- [ ] 2.2 Stream compaction kernel + experiment
+- [x] 2.2 Stream compaction kernel + experiment
   - **Do**:
     1. Add `CompactParams` to types: `{ element_count: u32, threshold: u32, _pad: [u32; 2] }`
     2. Create `forge-primitives/shaders/compact_scan.metal` with 2 kernels:

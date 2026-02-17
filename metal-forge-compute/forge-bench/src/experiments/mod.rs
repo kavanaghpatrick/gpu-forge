@@ -3,6 +3,7 @@
 //! Each experiment implements the `Experiment` trait, providing GPU and CPU
 //! implementations of the same computation for comparison.
 
+pub mod compact;
 pub mod histogram;
 pub mod reduce;
 pub mod scan;
@@ -46,5 +47,6 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         Box::new(reduce::ReduceExperiment::new()),
         Box::new(histogram::HistogramExperiment::new()),
         Box::new(scan::ScanExperiment::new()),
+        Box::new(compact::CompactExperiment::new()),
     ]
 }
