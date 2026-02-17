@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
-use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLLibrary};
+use objc2_metal::{
+    MTLComputePipelineDescriptor, MTLComputePipelineState, MTLDevice, MTLLibrary,
+    MTLPipelineOption,
+};
 
 /// Cache of compiled Metal compute pipeline states, keyed by function name.
 pub struct PsoCache {
@@ -55,7 +58,9 @@ impl PsoCache {
         self.cache.is_empty()
     }
 
-    /// Compile a PSO for the given function name (no function constants).
+    /// Compile a PSO for the given function name using descriptor-based creation
+    /// with occupancy hints (maxTotalThreadsPerThreadgroup=256,
+    /// threadGroupSizeIsMultipleOfThreadExecutionWidth=true).
     fn compile_pso(
         library: &ProtocolObject<dyn MTLLibrary>,
         function_name: &str,
@@ -66,9 +71,22 @@ impl PsoCache {
             .newFunctionWithName(&fn_name)
             .unwrap_or_else(|| panic!("Kernel function '{}' not found in metallib", function_name));
 
+        let descriptor = MTLComputePipelineDescriptor::new();
+        descriptor.setComputeFunction(Some(&function));
+        descriptor.setMaxTotalThreadsPerThreadgroup(256);
+        // SAFETY: We always dispatch with threadgroup sizes that are multiples of
+        // the thread execution width (32 on Apple Silicon).
+        unsafe {
+            descriptor.setThreadGroupSizeIsMultipleOfThreadExecutionWidth(true);
+        }
+
         let device = library.device();
         device
-            .newComputePipelineStateWithFunction_error(&function)
+            .newComputePipelineStateWithDescriptor_options_reflection_error(
+                &descriptor,
+                MTLPipelineOption::None,
+                None,
+            )
             .unwrap_or_else(|e| {
                 panic!(
                     "Failed to create PSO for '{}': {:?}",

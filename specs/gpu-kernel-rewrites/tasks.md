@@ -26,7 +26,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-1, AC-1.1_
   - _Design: Component 1 - GPU Timer Infrastructure_
 
-- [ ] 1.2 Upgrade PsoCache to descriptor-based PSO with occupancy hints
+- [x] 1.2 Upgrade PsoCache to descriptor-based PSO with occupancy hints
   - **Do**:
     1. In `forge-primitives/src/pso_cache.rs`, add imports: `use objc2_metal::{MTLComputePipelineDescriptor, MTLPipelineOption};`
     2. Replace `compile_pso` body (lines 63-78): create `MTLComputePipelineDescriptor::new()`, call `descriptor.setComputeFunction(Some(&function))`, `descriptor.setMaxTotalThreadsPerThreadgroup(256)`, `unsafe { descriptor.setThreadGroupSizeIsMultipleOfThreadExecutionWidth(true) }`
