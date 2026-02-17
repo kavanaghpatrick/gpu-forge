@@ -67,7 +67,7 @@ Focus: Fix GPU kernel context extraction, verify path prefix, add cache persiste
 
 After POC validated, clean up code.
 
-- [ ] 2.1 Clean up turbo_search_kernel newline scan
+- [x] 2.1 Clean up turbo_search_kernel newline scan
   - **Do**: Extract the newline scanning into an inline MSL function `find_line_bounds()` that takes `device const uchar* data, uint match_pos, uint chunk_start, uint chunk_end` and returns `(uint line_start, uint line_end)`. Use this in turbo_search_kernel. Consider also updating content_search_kernel to use the same function for consistency.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/shader.rs`
   - **Done when**: Newline scanning is a reusable inline function; tests still pass
