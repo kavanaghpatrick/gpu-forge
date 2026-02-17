@@ -214,7 +214,7 @@ Focus: Load real EAGLE-3 draft head weights from SafeTensors format. Handle tens
   - **Commit**: `feat(eagle): register eagle_weights module`
   - _Design: File Structure_
 
-- [ ] 2.5 [VERIFY] Quality checkpoint: build + clippy + existing tests
+- [x] 2.5 [VERIFY] Quality checkpoint: build + clippy + existing tests
   - **Do**: Full workspace build, clippy, and run existing unit tests to check for regressions
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-attention && cargo build --workspace 2>&1 | tail -5 && cargo clippy --workspace -- -D warnings 2>&1 | tail -5 && cargo test --workspace --lib 2>&1 | tail -10`
   - **Done when**: Zero compile errors, zero clippy warnings, all existing unit tests pass
@@ -224,7 +224,7 @@ Focus: Load real EAGLE-3 draft head weights from SafeTensors format. Handle tens
 
 Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and end-to-end chain verification. Benchmark EAGLE vs baseline decode.
 
-- [ ] 3.1 Unit test: hidden state capture produces valid GPU buffers
+- [x] 3.1 Unit test: hidden state capture produces valid GPU buffers
   - **Do**:
     1. In `eagle_test.rs`, add `test_hidden_state_capture`:
        a. Load Mistral-7B, enable_eagle_capture(0, 16, 31)
@@ -245,7 +245,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - _Requirements: AC-1.2, AC-1.3, AC-1.4_
   - _Design: Test Strategy - Unit Tests_
 
-- [ ] 3.2 Unit test: EagleHead forward_draft_token produces valid token IDs
+- [x] 3.2 Unit test: EagleHead forward_draft_token produces valid token IDs
   - **Do**:
     1. In `eagle_test.rs`, add `test_eagle_head_produces_valid_tokens`:
        a. Create `EagleHead::new_random()` with Mistral-7B dimensions
@@ -271,7 +271,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - **Done when**: All tests pass
   - **Commit**: `chore(eagle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 3.4 Integration test: EagleDecoder greedy output correctness
+- [x] 3.4 Integration test: EagleDecoder greedy output correctness
   - **Do**:
     1. In `eagle_test.rs`, add `test_eagle_greedy_matches_target_only`:
        a. Generate 50 tokens with target-only greedy decode (standard GpuForwardPass)
