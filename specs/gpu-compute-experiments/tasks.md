@@ -329,7 +329,7 @@ Focus: Relational operations and competitive benchmarks. Validate product direct
   - _Requirements: FR-6, AC-2.1, AC-2.3, AC-2.4_
   - _Design: GEMM kernel, Implementation Step 16_
 
-- [ ] 3.5 End-to-end pipeline experiment
+- [x] 3.5 End-to-end pipeline experiment
   - **Do**:
     1. Create `forge-bench/src/experiments/pipeline.rs` -- PipelineExperiment:
        - `setup`: generate columnar data (key col u32 + value col f32) at 10M/100M rows

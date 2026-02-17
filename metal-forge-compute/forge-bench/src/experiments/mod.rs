@@ -11,6 +11,7 @@ pub mod groupby;
 pub mod hash_join;
 pub mod histogram;
 pub mod json_parse;
+pub mod pipeline;
 pub mod reduce;
 pub mod scan;
 pub mod sort;
@@ -66,5 +67,6 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         Box::new(timeseries::TimeSeriesExperiment::new()),
         Box::new(hash_join::HashJoinExperiment::new()),
         Box::new(json_parse::JsonParseExperiment::new()),
+        Box::new(pipeline::PipelineExperiment::new()),
     ]
 }
