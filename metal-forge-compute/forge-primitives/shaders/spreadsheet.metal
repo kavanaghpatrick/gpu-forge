@@ -42,6 +42,127 @@ kernel void spreadsheet_sum(
 
 
 // ============================================================================
+// spreadsheet_sum_v2 -- 2D row-chunked Column SUM (high parallelism)
+// ============================================================================
+//
+// Each thread sums SS_ROWS_PER_CHUNK rows for one column, writing a partial
+// sum to partials[row_chunk * cols + col]. This creates many more threadgroups
+// than the 1D version (e.g. 3162/64 * ceil(3162/256) ≈ 600+ TGs vs 13).
+//
+// Buffer layout:
+//   buffer(0): input grid (float array, rows * cols, row-major)
+//   buffer(1): partials  (float array, num_row_chunks * cols)
+//   buffer(2): SpreadsheetParams
+//
+// Dispatch 2D: (ceil(cols/TG_X), ceil(rows/SS_ROWS_PER_CHUNK)) threadgroups.
+
+#define SS_ROWS_PER_CHUNK 64
+
+kernel void spreadsheet_sum_v2(
+    device const float*          grid     [[buffer(0)]],
+    device float*                partials [[buffer(1)]],
+    constant SpreadsheetParams&  params   [[buffer(2)]],
+    uint2 tid                            [[thread_position_in_grid]]
+) {
+    uint col = tid.x;
+    uint row_chunk = tid.y;
+    if (col >= params.cols) return;
+
+    uint row_start = row_chunk * SS_ROWS_PER_CHUNK;
+    uint row_end = min(row_start + SS_ROWS_PER_CHUNK, params.rows);
+    if (row_start >= params.rows) return;
+
+    float sum = 0.0f;
+    for (uint row = row_start; row < row_end; row++) {
+        sum += grid[row * params.cols + col];
+    }
+
+    uint num_row_chunks = (params.rows + SS_ROWS_PER_CHUNK - 1) / SS_ROWS_PER_CHUNK;
+    partials[row_chunk * params.cols + col] = sum;
+}
+
+
+// ============================================================================
+// spreadsheet_sum_reduce -- Reduce row-chunk partials into final column sums
+// ============================================================================
+//
+// Each thread reduces all row-chunk partials for one column.
+//
+// Buffer layout:
+//   buffer(0): partials (float array, num_row_chunks * cols)
+//   buffer(1): output   (float array, cols)
+//   buffer(2): SpreadsheetParams (rows used to compute num_row_chunks)
+
+kernel void spreadsheet_sum_reduce(
+    device const float*          partials [[buffer(0)]],
+    device float*                output   [[buffer(1)]],
+    constant SpreadsheetParams&  params   [[buffer(2)]],
+    uint tid                             [[thread_position_in_grid]]
+) {
+    uint col = tid;
+    if (col >= params.cols) return;
+
+    uint num_row_chunks = (params.rows + SS_ROWS_PER_CHUNK - 1) / SS_ROWS_PER_CHUNK;
+    float sum = 0.0f;
+    for (uint chunk = 0; chunk < num_row_chunks; chunk++) {
+        sum += partials[chunk * params.cols + col];
+    }
+    output[col] = sum;
+}
+
+
+// ============================================================================
+// spreadsheet_avg_v2 -- 2D row-chunked Column partial sums (for AVERAGE)
+// ============================================================================
+// Same as spreadsheet_sum_v2 -- computes partial sums per row chunk.
+// The division by rows happens in the reduce step.
+
+kernel void spreadsheet_avg_v2(
+    device const float*          grid     [[buffer(0)]],
+    device float*                partials [[buffer(1)]],
+    constant SpreadsheetParams&  params   [[buffer(2)]],
+    uint2 tid                            [[thread_position_in_grid]]
+) {
+    uint col = tid.x;
+    uint row_chunk = tid.y;
+    if (col >= params.cols) return;
+
+    uint row_start = row_chunk * SS_ROWS_PER_CHUNK;
+    uint row_end = min(row_start + SS_ROWS_PER_CHUNK, params.rows);
+    if (row_start >= params.rows) return;
+
+    float sum = 0.0f;
+    for (uint row = row_start; row < row_end; row++) {
+        sum += grid[row * params.cols + col];
+    }
+
+    partials[row_chunk * params.cols + col] = sum;
+}
+
+
+// ============================================================================
+// spreadsheet_avg_reduce -- Reduce partials and divide by row count
+// ============================================================================
+
+kernel void spreadsheet_avg_reduce(
+    device const float*          partials [[buffer(0)]],
+    device float*                output   [[buffer(1)]],
+    constant SpreadsheetParams&  params   [[buffer(2)]],
+    uint tid                             [[thread_position_in_grid]]
+) {
+    uint col = tid;
+    if (col >= params.cols) return;
+
+    uint num_row_chunks = (params.rows + SS_ROWS_PER_CHUNK - 1) / SS_ROWS_PER_CHUNK;
+    float sum = 0.0f;
+    for (uint chunk = 0; chunk < num_row_chunks; chunk++) {
+        sum += partials[chunk * params.cols + col];
+    }
+    output[col] = sum / float(params.rows);
+}
+
+
+// ============================================================================
 // spreadsheet_average -- Column AVERAGE (SUM / COUNT)
 // ============================================================================
 //
