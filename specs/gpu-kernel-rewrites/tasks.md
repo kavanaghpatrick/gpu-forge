@@ -129,7 +129,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-14, FR-8, AC-10.1, AC-10.2_
   - _Design: Kernel 2 - Histogram SIMD Pre-Aggregation + Bitmask_
 
-- [ ] 1.10 Update histogram.rs dispatch for 4x elements/thread + GpuTimer
+- [x] 1.10 Update histogram.rs dispatch for 4x elements/thread + GpuTimer
   - **Do**:
     1. In `run_gpu()`: replace BenchTimer with GpuTimer
     2. Change dispatch size: `dispatch_1d` with `self.size / 4` (or `self.size.div_ceil(4)`) total threads since each thread handles 4 elements

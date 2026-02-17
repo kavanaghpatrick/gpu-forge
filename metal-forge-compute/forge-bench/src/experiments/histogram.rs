@@ -11,7 +11,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer_slice, BenchTimer,
+    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer_slice, BenchTimer, GpuTimer,
     HistogramParams, MetalContext, PsoCache,
 };
 
@@ -123,8 +123,6 @@ impl Experiment for HistogramExperiment {
 
         let pso = self.pso_cache.get_or_create(ctx.library(), "histogram_256");
 
-        let timer = BenchTimer::start();
-
         // Create command buffer and encoder
         let cmd_buf = ctx
             .queue
@@ -134,7 +132,7 @@ impl Experiment for HistogramExperiment {
             .computeCommandEncoder()
             .expect("Failed to create compute encoder");
 
-        // Dispatch histogram kernel
+        // Dispatch histogram kernel: each thread handles 4 elements via uint4 loads
         dispatch_1d(
             &encoder,
             pso,
@@ -143,14 +141,14 @@ impl Experiment for HistogramExperiment {
                 (output.as_ref(), 1),
                 (params.as_ref(), 2),
             ],
-            self.size,
+            self.size.div_ceil(4),
         );
 
         encoder.endEncoding();
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
+        let elapsed = GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0);
 
         // Read back histogram
         self.gpu_result = unsafe { read_buffer_slice::<u32>(output.as_ref(), NUM_BINS as usize) };
