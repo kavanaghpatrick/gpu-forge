@@ -188,4 +188,85 @@ mod tests {
         let s = compute_stats(&[1.0, 2.0, 3.0]);
         assert!((s.median - 2.0).abs() < 1e-10);
     }
+
+    #[test]
+    fn test_cv_zero_for_constant_values() {
+        let samples = vec![5.0, 5.0, 5.0, 5.0, 5.0];
+        let s = compute_stats(&samples);
+        assert!((s.cv_percent - 0.0).abs() < 1e-10);
+        assert!((s.stddev - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cv_known_values() {
+        // Values: [3, 4, 4, 5, 5, 5, 6, 6, 7, 7] -- no outliers
+        // No outlier removal expected (tight distribution)
+        let samples = vec![3.0, 4.0, 4.0, 5.0, 5.0, 5.0, 6.0, 6.0, 7.0, 7.0];
+        let s = compute_stats(&samples);
+        assert_eq!(s.outliers_removed, 0);
+        // Mean = 5.2, values are clustered -> CV should be moderate (< 30%)
+        assert!(s.cv_percent > 0.0 && s.cv_percent < 30.0,
+            "CV={} should be between 0 and 30 for this distribution", s.cv_percent);
+        // Verify CV = stddev / mean * 100
+        let expected_cv = (s.stddev / s.mean) * 100.0;
+        assert!((s.cv_percent - expected_cv).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_stddev_known_values() {
+        // [1, 2, 3, 4, 5] -> mean = 3, variance = 10/4 = 2.5, stddev = 1.5811
+        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let s = compute_stats(&samples);
+        let expected_stddev = (2.5_f64).sqrt();
+        assert!((s.stddev - expected_stddev).abs() < 1e-6, "stddev {} vs expected {}", s.stddev, expected_stddev);
+    }
+
+    #[test]
+    fn test_multiple_outliers_removed() {
+        // Tight cluster around 100, with two extreme outliers
+        let mut samples = vec![100.0, 100.1, 99.9, 100.2, 99.8, 100.0, 100.1, 99.9, 100.0, 100.0];
+        samples.push(500.0); // outlier high
+        samples.push(1.0);   // outlier low
+        let s = compute_stats(&samples);
+        assert!(s.outliers_removed >= 2, "Expected at least 2 outliers removed, got {}", s.outliers_removed);
+        assert!(s.mean > 99.0 && s.mean < 101.0, "Mean {} should be near 100 after outlier removal", s.mean);
+    }
+
+    #[test]
+    fn test_no_outliers_in_uniform_data() {
+        // Evenly spaced data should have few or no outliers
+        let samples: Vec<f64> = (1..=10).map(|x| x as f64).collect();
+        let s = compute_stats(&samples);
+        assert_eq!(s.outliers_removed, 0);
+        assert_eq!(s.sample_count, 10);
+    }
+
+    #[test]
+    fn test_percentile_function() {
+        let sorted = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!((percentile(&sorted, 0.0) - 1.0).abs() < 1e-10);
+        assert!((percentile(&sorted, 50.0) - 3.0).abs() < 1e-10);
+        assert!((percentile(&sorted, 100.0) - 5.0).abs() < 1e-10);
+        assert!((percentile(&sorted, 25.0) - 2.0).abs() < 1e-10);
+        assert!((percentile(&sorted, 75.0) - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_min_max_correct() {
+        let samples = vec![5.0, 3.0, 8.0, 1.0, 7.0];
+        let s = compute_stats(&samples);
+        assert!((s.min - 1.0).abs() < 1e-10);
+        assert!((s.max - 8.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_two_samples() {
+        let samples = vec![3.0, 7.0];
+        let s = compute_stats(&samples);
+        assert!((s.mean - 5.0).abs() < 1e-10);
+        assert!((s.median - 5.0).abs() < 1e-10);
+        // sample stddev = sqrt((4+4)/1) = sqrt(8) = 2.828
+        let expected_stddev = (8.0_f64).sqrt();
+        assert!((s.stddev - expected_stddev).abs() < 1e-6);
+    }
 }

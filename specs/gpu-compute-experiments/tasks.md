@@ -563,7 +563,7 @@ Focus: Execute full benchmark suite, collect machine-readable results.
   - **Commit**: `test(forge-primitives): add unit tests for types, buffer pool, hardware, timing`
   - _Design: Test Strategy unit tests_
 
-- [ ] 6.2 Unit tests for forge-bench (stats, config, data_gen)
+- [x] 6.2 Unit tests for forge-bench (stats, config, data_gen)
   - **Do**:
     1. Add tests to `forge-bench/src/stats.rs`: CV calculation, median, outlier detection
     2. Add tests to `forge-bench/src/config.rs`: size parser (1M, 100K, 1_000_000), profile loading

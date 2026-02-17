@@ -145,4 +145,66 @@ mod tests {
         assert!(get_profile("thorough").is_some());
         assert!(get_profile("unknown").is_none());
     }
+
+    #[test]
+    fn test_parse_size_fractional_millions() {
+        assert_eq!(parse_size("0.5M").unwrap(), 500_000);
+        assert_eq!(parse_size("2.5M").unwrap(), 2_500_000);
+    }
+
+    #[test]
+    fn test_parse_size_fractional_thousands() {
+        assert_eq!(parse_size("1.5K").unwrap(), 1_500);
+        assert_eq!(parse_size("0.5k").unwrap(), 500);
+    }
+
+    #[test]
+    fn test_parse_size_whitespace_trimmed() {
+        assert_eq!(parse_size("  1M  ").unwrap(), 1_000_000);
+        assert_eq!(parse_size(" 100K ").unwrap(), 100_000);
+    }
+
+    #[test]
+    fn test_parse_sizes_multiple() {
+        let input = vec!["1M".to_string(), "10M".to_string(), "100K".to_string()];
+        let result = parse_sizes(&input).unwrap();
+        assert_eq!(result, vec![1_000_000, 10_000_000, 100_000]);
+    }
+
+    #[test]
+    fn test_parse_sizes_empty() {
+        let input: Vec<String> = vec![];
+        let result = parse_sizes(&input).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_sizes_with_invalid() {
+        let input = vec!["1M".to_string(), "bad".to_string()];
+        assert!(parse_sizes(&input).is_err());
+    }
+
+    #[test]
+    fn test_profile_sizes_are_ascending() {
+        let s = standard_profile();
+        for w in s.sizes.windows(2) {
+            assert!(w[0] < w[1], "Profile sizes should be ascending");
+        }
+        let t = thorough_profile();
+        for w in t.sizes.windows(2) {
+            assert!(w[0] < w[1], "Profile sizes should be ascending");
+        }
+    }
+
+    #[test]
+    fn test_profile_names_match() {
+        assert_eq!(quick_profile().name, "quick");
+        assert_eq!(standard_profile().name, "standard");
+        assert_eq!(thorough_profile().name, "thorough");
+    }
+
+    #[test]
+    fn test_parse_size_underscored_with_suffix() {
+        assert_eq!(parse_size("1_000K").unwrap(), 1_000_000);
+    }
 }
