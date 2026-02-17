@@ -87,7 +87,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Scan Kernel Rewrite (feeds sort, compact, groupby)
 
-- [ ] 1.7 Rewrite scan.metal with SIMD prefix scan
+- [x] 1.7 Rewrite scan.metal with SIMD prefix scan
   - **Do**:
     1. Replace `scan_local` kernel body: each thread loads 4 elements via `load_uint4_safe`, computes local sum. Use `simd_prefix_exclusive_sum(thread_sum)` for intra-SIMD prefix. Cross-SIMD aggregation via `threadgroup uint simd_totals[8]` and second `simd_prefix_exclusive_sum`. Write 4 output elements with per-element prefix. Write TG total to partials.
     2. Update `SCAN_ELEMENTS_PER_TG` from 512 to 1024 (256 threads * 4 elements)

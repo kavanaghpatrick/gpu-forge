@@ -4,27 +4,27 @@
 // on Apple Silicon).
 //
 // 3-pass algorithm:
-//   Pass 1 (scan_local): Each threadgroup of 256 threads processes 512 elements
-//     using Blelloch work-efficient scan in shared memory. Writes threadgroup
-//     partial sum to partials[threadgroup_id].
+//   Pass 1 (scan_local): Each threadgroup of 256 threads processes 1024 elements
+//     (4 per thread) using SIMD prefix sum. Writes threadgroup total to
+//     partials[threadgroup_id].
 //
 //   Pass 2 (scan_partials): Single threadgroup scans the partials array.
-//     For large arrays (> 512 partials), host does sequential scan.
+//     Handles up to 1024 partials (256 threads * 4 elements/thread).
 //
 //   Pass 3 (scan_add_offsets): Each threadgroup adds partials[threadgroup_id]
 //     to every element in its chunk.
 //
 // All kernels use 256 threads per threadgroup.
-// Each thread handles 2 elements = 512 elements per threadgroup.
+// Each thread handles 4 elements = 1024 elements per threadgroup.
 
 #include "types.h"
 
 #define SCAN_THREADS_PER_TG 256
-#define SCAN_ELEMENTS_PER_TG 512  // 2 elements per thread
+#define SCAN_ELEMENTS_PER_TG 1024  // 4 elements per thread
 
 
 // ============================================================================
-// scan_local -- Per-threadgroup Blelloch exclusive scan
+// scan_local -- Per-threadgroup SIMD-based exclusive scan
 // ============================================================================
 //
 // Buffer layout:
@@ -33,7 +33,7 @@
 //   buffer(2): partials (uint array, one per threadgroup) -- threadgroup total sums
 //   buffer(3): ScanParams
 //
-// Dispatch: ceil(N / 512) threadgroups of 256 threads.
+// Dispatch: ceil(N / 1024) threadgroups of 256 threads.
 
 kernel void scan_local(
     device const uint*       input           [[buffer(0)]],
@@ -41,54 +41,55 @@ kernel void scan_local(
     device uint*             partials        [[buffer(2)]],
     constant ScanParams&     params          [[buffer(3)]],
     uint tid_in_tg                           [[thread_position_in_threadgroup]],
-    uint tg_idx                              [[threadgroup_position_in_grid]]
+    uint tg_idx                              [[threadgroup_position_in_grid]],
+    uint simd_lane                           [[thread_index_in_simdgroup]],
+    uint simd_idx                            [[simdgroup_index_in_threadgroup]]
 ) {
-    threadgroup uint shared[SCAN_ELEMENTS_PER_TG];
+    // Shared memory for cross-SIMD aggregation (256 threads / 32 = 8 SIMD groups)
+    threadgroup uint simd_totals[8];
 
-    uint base = tg_idx * SCAN_ELEMENTS_PER_TG;
-    uint idx0 = base + tid_in_tg * 2;
-    uint idx1 = idx0 + 1;
+    // --- Step 1: Load 4 elements per thread ---
+    uint base = tg_idx * SCAN_ELEMENTS_PER_TG + tid_in_tg * 4;
+    uint4 vals = load_uint4_safe(input, base, params.element_count);
 
-    // Load 2 elements per thread into shared memory
-    shared[tid_in_tg * 2]     = (idx0 < params.element_count) ? input[idx0] : 0;
-    shared[tid_in_tg * 2 + 1] = (idx1 < params.element_count) ? input[idx1] : 0;
+    // --- Step 2: Compute per-thread total ---
+    uint thread_total = vals.x + vals.y + vals.z + vals.w;
 
+    // --- Step 3: SIMD prefix sum for inter-thread offsets within SIMD group ---
+    uint simd_prefix = simd_prefix_exclusive_sum(thread_total);
+
+    // --- Step 4: Store SIMD group totals for cross-SIMD aggregation ---
+    if (simd_lane == 31) {
+        simd_totals[simd_idx] = simd_prefix + thread_total;
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // --- Up-sweep (reduce) phase ---
-    for (uint stride = 1; stride < SCAN_ELEMENTS_PER_TG; stride <<= 1) {
-        uint index = (tid_in_tg + 1) * (stride << 1) - 1;
-        if (index < SCAN_ELEMENTS_PER_TG) {
-            shared[index] += shared[index - stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    // --- Step 5: Cross-SIMD prefix scan (only first SIMD group participates) ---
+    if (tid_in_tg < 8) {
+        simd_totals[tid_in_tg] = simd_prefix_exclusive_sum(simd_totals[tid_in_tg]);
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Save total sum and clear last element for exclusive scan
+    // --- Step 6: Compute base offset for this thread ---
+    uint base_offset = simd_prefix + simd_totals[simd_idx];
+
+    // --- Step 7: Write 4 exclusive prefix outputs ---
+    if (base     < params.element_count) output[base]     = base_offset;
+    if (base + 1 < params.element_count) output[base + 1] = base_offset + vals.x;
+    if (base + 2 < params.element_count) output[base + 2] = base_offset + vals.x + vals.y;
+    if (base + 3 < params.element_count) output[base + 3] = base_offset + vals.x + vals.y + vals.z;
+
+    // --- Step 8: Write threadgroup total to partials ---
+    // Last thread (255) has the highest base_offset; its base_offset + thread_total
+    // equals the total sum of all elements in this threadgroup.
+    threadgroup uint tg_total_shared;
+    if (tid_in_tg == SCAN_THREADS_PER_TG - 1) {
+        tg_total_shared = base_offset + thread_total;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
     if (tid_in_tg == 0) {
-        uint total = shared[SCAN_ELEMENTS_PER_TG - 1];
-        partials[tg_idx] = total;
-        shared[SCAN_ELEMENTS_PER_TG - 1] = 0;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // --- Down-sweep (distribute) phase ---
-    for (uint stride = SCAN_ELEMENTS_PER_TG >> 1; stride >= 1; stride >>= 1) {
-        uint index = (tid_in_tg + 1) * (stride << 1) - 1;
-        if (index < SCAN_ELEMENTS_PER_TG) {
-            uint temp = shared[index - stride];
-            shared[index - stride] = shared[index];
-            shared[index] += temp;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    // Write scanned results back to global memory
-    if (idx0 < params.element_count) {
-        output[idx0] = shared[tid_in_tg * 2];
-    }
-    if (idx1 < params.element_count) {
-        output[idx1] = shared[tid_in_tg * 2 + 1];
+        partials[tg_idx] = tg_total_shared;
     }
 }
 
@@ -102,63 +103,53 @@ kernel void scan_local(
 //   buffer(1): ScanParams (element_count = number of partials)
 //
 // Dispatch: 1 threadgroup of 256 threads.
-// Handles up to 512 partials (256 threads * 2 elements each).
+// Handles up to 1024 partials (256 threads * 4 elements each).
 
 kernel void scan_partials(
     device uint*             partials        [[buffer(0)]],
     constant ScanParams&     params          [[buffer(1)]],
-    uint tid_in_tg                           [[thread_position_in_threadgroup]]
+    uint tid_in_tg                           [[thread_position_in_threadgroup]],
+    uint simd_lane                           [[thread_index_in_simdgroup]],
+    uint simd_idx                            [[simdgroup_index_in_threadgroup]]
 ) {
-    threadgroup uint shared[SCAN_ELEMENTS_PER_TG];
+    threadgroup uint simd_totals[8];
 
     uint n = params.element_count;  // number of partials
 
-    // Load partials into shared memory
-    uint idx0 = tid_in_tg * 2;
-    uint idx1 = idx0 + 1;
-    shared[idx0] = (idx0 < n) ? partials[idx0] : 0;
-    shared[idx1] = (idx1 < n) ? partials[idx1] : 0;
+    // --- Step 1: Load 4 elements per thread ---
+    uint base = tid_in_tg * 4;
+    uint4 vals;
+    vals.x = (base     < n) ? partials[base]     : 0;
+    vals.y = (base + 1 < n) ? partials[base + 1] : 0;
+    vals.z = (base + 2 < n) ? partials[base + 2] : 0;
+    vals.w = (base + 3 < n) ? partials[base + 3] : 0;
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // --- Step 2: Compute per-thread total ---
+    uint thread_total = vals.x + vals.y + vals.z + vals.w;
 
-    // Round up n to next power of 2 for Blelloch
-    uint padded_n = 1;
-    while (padded_n < n) padded_n <<= 1;
-    if (padded_n > SCAN_ELEMENTS_PER_TG) padded_n = SCAN_ELEMENTS_PER_TG;
+    // --- Step 3: SIMD prefix sum ---
+    uint simd_prefix = simd_prefix_exclusive_sum(thread_total);
 
-    // --- Up-sweep ---
-    for (uint stride = 1; stride < padded_n; stride <<= 1) {
-        uint index = (tid_in_tg + 1) * (stride << 1) - 1;
-        if (index < padded_n) {
-            shared[index] += shared[index - stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    // Clear last for exclusive scan
-    if (tid_in_tg == 0) {
-        shared[padded_n - 1] = 0;
+    // --- Step 4: Store SIMD group totals ---
+    if (simd_lane == 31) {
+        simd_totals[simd_idx] = simd_prefix + thread_total;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // --- Down-sweep ---
-    for (uint stride = padded_n >> 1; stride >= 1; stride >>= 1) {
-        uint index = (tid_in_tg + 1) * (stride << 1) - 1;
-        if (index < padded_n) {
-            uint temp = shared[index - stride];
-            shared[index - stride] = shared[index];
-            shared[index] += temp;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    // --- Step 5: Cross-SIMD prefix scan ---
+    if (tid_in_tg < 8) {
+        simd_totals[tid_in_tg] = simd_prefix_exclusive_sum(simd_totals[tid_in_tg]);
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write back scanned partials
-    if (idx0 < n) {
-        partials[idx0] = shared[idx0];
-    }
-    if (idx1 < n) {
-        partials[idx1] = shared[idx1];
-    }
+    // --- Step 6: Compute base offset ---
+    uint base_offset = simd_prefix + simd_totals[simd_idx];
+
+    // --- Step 7: Write 4 exclusive prefix outputs back to partials ---
+    if (base     < n) partials[base]     = base_offset;
+    if (base + 1 < n) partials[base + 1] = base_offset + vals.x;
+    if (base + 2 < n) partials[base + 2] = base_offset + vals.x + vals.y;
+    if (base + 3 < n) partials[base + 3] = base_offset + vals.x + vals.y + vals.z;
 }
 
 
@@ -171,8 +162,8 @@ kernel void scan_partials(
 //   buffer(1): partials (uint array, scanned) -- prefix to add
 //   buffer(2): ScanParams (element_count = total elements)
 //
-// Dispatch: ceil(N / 512) threadgroups of 256 threads.
-// Each threadgroup adds partials[tg_idx] to its 512 elements.
+// Dispatch: ceil(N / 1024) threadgroups of 256 threads.
+// Each threadgroup adds partials[tg_idx] to its 1024 elements (4 per thread).
 
 kernel void scan_add_offsets(
     device uint*             output          [[buffer(0)]],
@@ -183,14 +174,10 @@ kernel void scan_add_offsets(
 ) {
     uint offset = partials[tg_idx];
 
-    uint base = tg_idx * SCAN_ELEMENTS_PER_TG;
-    uint idx0 = base + tid_in_tg * 2;
-    uint idx1 = idx0 + 1;
+    uint base = tg_idx * SCAN_ELEMENTS_PER_TG + tid_in_tg * 4;
 
-    if (idx0 < params.element_count) {
-        output[idx0] += offset;
-    }
-    if (idx1 < params.element_count) {
-        output[idx1] += offset;
-    }
+    if (base     < params.element_count) output[base]     += offset;
+    if (base + 1 < params.element_count) output[base + 1] += offset;
+    if (base + 2 < params.element_count) output[base + 2] += offset;
+    if (base + 3 < params.element_count) output[base + 3] += offset;
 }
