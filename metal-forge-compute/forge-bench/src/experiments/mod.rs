@@ -6,10 +6,16 @@
 pub mod compact;
 pub mod filter;
 pub mod gemm;
+pub mod gemv;
+pub mod groupby;
+pub mod hash_join;
 pub mod histogram;
+pub mod json_parse;
 pub mod reduce;
 pub mod scan;
 pub mod sort;
+pub mod spreadsheet;
+pub mod timeseries;
 
 use std::collections::HashMap;
 
@@ -53,6 +59,12 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         Box::new(compact::CompactExperiment::new()),
         Box::new(sort::SortExperiment::new()),
         Box::new(filter::FilterExperiment::new()),
+        Box::new(groupby::GroupByExperiment::new()),
         Box::new(gemm::GemmExperiment::new()),
+        Box::new(gemv::GemvExperiment::new()),
+        Box::new(spreadsheet::SpreadsheetExperiment::new()),
+        Box::new(timeseries::TimeSeriesExperiment::new()),
+        Box::new(hash_join::HashJoinExperiment::new()),
+        Box::new(json_parse::JsonParseExperiment::new()),
     ]
 }

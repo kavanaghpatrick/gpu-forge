@@ -280,7 +280,7 @@ Focus: Relational operations and competitive benchmarks. Validate product direct
   - _Requirements: FR-8, AC-3.1_
   - _Design: Filter kernel, Implementation Step 16_
 
-- [ ] 3.2 Group-by aggregate kernel + experiment
+- [x] 3.2 Group-by aggregate kernel + experiment
   - **Do**:
     1. Add `GroupByParams` to types: `{ element_count: u32, num_groups: u32, _pad: [u32; 2] }`
     2. Create `forge-primitives/shaders/groupby.metal`:
@@ -475,7 +475,7 @@ Focus: Product exploration experiments + remaining kernels.
   - _Requirements: FR-10, AC-3.3_
   - _Design: Hash Join, Implementation Step 18_
 
-- [ ] 4.6 GEMV kernel + experiment
+- [x] 4.6 GEMV kernel + experiment
   - **Do**:
     1. Create `forge-primitives/shaders/gemv.metal`:
        - `gemv_f32`: each thread computes one output element via dot product of matrix row with input vector
