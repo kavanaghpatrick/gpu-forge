@@ -81,13 +81,13 @@ Focus: Validate end-to-end EAGLE-3 infrastructure with random weights. Prove hid
   - _Requirements: FR-2, FR-3, FR-4, AC-2.2, AC-2.3_
   - _Design: Component 3 - EAGLE Draft Forward Pass_
 
-- [ ] 1.5 [VERIFY] Quality checkpoint: cargo build + cargo clippy
+- [x] 1.5 [VERIFY] Quality checkpoint: cargo build + cargo clippy
   - **Do**: Run build and clippy to catch compile errors and warnings from tasks 1.1-1.4
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-attention && cargo build --workspace 2>&1 | tail -10 && cargo clippy --workspace -- -D warnings 2>&1 | tail -10`
   - **Done when**: Zero compile errors, zero clippy warnings
   - **Commit**: `chore(eagle): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.6 Create eagle.rs with EagleDecoder and chain speculation loop
+- [x] 1.6 Create eagle.rs with EagleDecoder and chain speculation loop
   - **Do**:
     1. Create `eagle.rs` in `crates/metal-attention/src/`
     2. Define `EagleDecoder` struct: `target: GpuForwardPass` (with eagle_capture enabled), `eagle_head: EagleHead`, `n_draft: usize` (default 6)
