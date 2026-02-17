@@ -284,7 +284,7 @@ Focus: Add `-Os` shader compilation for the path kernel (the one optimization no
   - _Requirements: FR-9_
   - _Design: Component 5_
 
-- [ ] 2.2 Use `-Os` compilation for path kernel with fallback
+- [x] 2.2 Use `-Os` compilation for path kernel with fallback
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
     2. Add `use super::compile_shader_os;` import
