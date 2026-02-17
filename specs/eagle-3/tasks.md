@@ -305,7 +305,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
 
 ## Phase 4: Quality Gates
 
-- [ ] 4.1 [VERIFY] Full local CI: build + clippy + fmt + tests
+- [x] 4.1 [VERIFY] Full local CI: build + clippy + fmt + tests
   - **Do**: Run complete local quality suite
   - **Verify**: All commands must pass:
     ```
@@ -319,7 +319,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - **Done when**: All commands pass with zero errors
   - **Commit**: `fix(eagle): address lint/type/format issues` (if fixes needed)
 
-- [ ] 4.2 Create PR and verify CI
+- [x] 4.2 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current`
     2. If on default branch, STOP and alert user
@@ -332,7 +332,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
 
 ## Phase 5: PR Lifecycle
 
-- [ ] 5.1 Monitor CI and fix failures
+- [x] 5.1 Monitor CI and fix failures (no CI configured, local CI passed in 4.1)
   - **Do**:
     1. Check PR CI status: `gh pr checks`
     2. If any check fails, read logs: `gh pr checks 2>&1`
@@ -342,7 +342,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - **Verify**: `gh pr checks` shows all green
   - **Done when**: All CI checks passing
 
-- [ ] 5.2 Address review comments
+- [x] 5.2 Address review comments (no reviewers, personal repo)
   - **Do**:
     1. Check for review comments: `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments`
     2. Address each comment with code changes
@@ -351,7 +351,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - **Verify**: No unresolved review comments, CI still green
   - **Done when**: All review comments addressed
 
-- [ ] 5.3 [VERIFY] Full local CI (post-review fixes)
+- [x] 5.3 [VERIFY] Full local CI (post-review fixes, no changes needed)
   - **Do**: Re-run full quality suite after any review-driven changes
   - **Verify**:
     ```
@@ -364,7 +364,7 @@ Focus: Correctness tests for EAGLE head forward pass, hidden state capture, and 
   - **Done when**: All commands pass
   - **Commit**: None (should already be clean)
 
-- [ ] 5.4 [VERIFY] AC checklist
+- [x] 5.4 [VERIFY] AC checklist
   - **Do**: Read requirements.md, verify each acceptance criterion is satisfied:
     - AC-1.1: `enable_eagle_capture()` exists -> grep for fn signature
     - AC-1.2: captured hidden states available as GPU buffers -> grep for `eagle_capture_low`
