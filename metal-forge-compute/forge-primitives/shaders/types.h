@@ -48,4 +48,21 @@ struct SortParams {
     uint _pad;
 };
 
+/// Parameters for filter benchmark kernels.
+/// Matches Rust FilterBenchParams in types.rs.
+struct FilterBenchParams {
+    uint element_count;
+    uint threshold;
+    uint _pad[2];
+};
+
+/// Parameters for GEMM (General Matrix Multiply) kernels.
+/// Matches Rust GemmParams in types.rs.
+struct GemmParams {
+    uint M;
+    uint N;
+    uint K;
+    uint _pad;
+};
+
 #endif // FORGE_TYPES_H

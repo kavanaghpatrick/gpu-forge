@@ -4,6 +4,7 @@
 //! implementations of the same computation for comparison.
 
 pub mod compact;
+pub mod filter;
 pub mod histogram;
 pub mod reduce;
 pub mod scan;
@@ -50,5 +51,6 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         Box::new(scan::ScanExperiment::new()),
         Box::new(compact::CompactExperiment::new()),
         Box::new(sort::SortExperiment::new()),
+        Box::new(filter::FilterExperiment::new()),
     ]
 }

@@ -258,7 +258,7 @@ Focus: Complete all P0 primitive kernels. Each follows the pattern: write shader
 
 Focus: Relational operations and competitive benchmarks. Validate product direction.
 
-- [ ] 3.1 Filter kernel + experiment
+- [x] 3.1 Filter kernel + experiment
   - **Do**:
     1. Add `FilterBenchParams` to types: `{ element_count: u32, threshold: u32, selectivity_pct: u32, _pad: u32 }`
     2. Create `forge-primitives/shaders/filter_bench.metal` -- columnar filter kernel adapted from gpu-query/shaders/filter.metal:
