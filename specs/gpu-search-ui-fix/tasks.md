@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Fix GPU kernel context extraction, verify path prefix, add cache persistence. Skip tests initially.
 
-- [ ] 1.1 Add GPU-side newline scanning to turbo_search_kernel
+- [x] 1.1 Add GPU-side newline scanning to turbo_search_kernel
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/engine/shader.rs`, modify the turbo_search_kernel match-writing loop (lines 309-326). For each match, cast `data` to `device const uchar*`, scan backward from the match position to find `\n` or chunk start (`chunk_idx * CHUNK_SIZE`), scan forward from match end to find `\n` or chunk end (`chunk_idx * CHUNK_SIZE + chunk_len`). Write `context_start = line_start - chunk_idx * CHUNK_SIZE` (offset within chunk) and `context_len = min(line_end - line_start, MAX_CONTEXT)`. Keep existing `column` field as byte offset in chunk for backward compatibility.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/shader.rs`
   - **Done when**: turbo_search_kernel writes newline-bounded context_start and context_len per match
