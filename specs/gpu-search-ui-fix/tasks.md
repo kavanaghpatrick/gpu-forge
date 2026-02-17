@@ -57,7 +57,7 @@ Focus: Fix GPU kernel context extraction, verify path prefix, add cache persiste
   - _Requirements: FR-4, AC-3.1, AC-3.2_
   - _Design: Component C_
 
-- [ ] 1.6 POC Checkpoint
+- [x] 1.6 POC Checkpoint
   - **Do**: Run full test suite to verify all fixes work end-to-end. Run profiling test to confirm CPU extract time reduction.
   - **Done when**: All existing tests pass and search_paths CPU extract time reduced
   - **Verify**: `cd /Users/patrickkavanagh/gpu-search-ui && cargo test 2>&1 | tail -20 && cargo test --release test_profile_gpu_vs_cpu -- --nocapture --ignored 2>&1 | tail -15`
