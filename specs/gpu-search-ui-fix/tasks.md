@@ -39,7 +39,7 @@ Focus: Fix GPU kernel context extraction, verify path prefix, add cache persiste
   - _Requirements: FR-3, AC-2.1_
   - _Design: Component B_
 
-- [ ] 1.4 Add PathCache save/load to index.rs
+- [x] 1.4 Add PathCache save/load to index.rs
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/engine/index.rs`, add a `PathCache` struct with `save(root: &Path, paths: &[PathBuf])` and `load(root: &Path) -> Option<Vec<PathBuf>>` methods. Cache file at `~/.cache/gpu-search-ui/paths.bin`. Format: 8-byte magic `GPUSRCH\0`, 4-byte version, 8-byte unix timestamp, 4-byte root_path_len + root_path bytes, 4-byte file_count, then per file: 4-byte path_len + path bytes. `load()` returns None if file missing, corrupt, wrong root, or age > 3600s.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/index.rs`
   - **Done when**: `PathCache::save()` and `PathCache::load()` compile and unit tests pass
