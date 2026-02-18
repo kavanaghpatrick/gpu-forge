@@ -15,7 +15,7 @@ use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueu
 
 use forge_primitives::{
     alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer, BenchTimer,
-    HashJoinParams, MetalContext, PsoCache,
+    GpuTimer, HashJoinParams, MetalContext, PsoCache,
 };
 
 use crate::data_gen::DataGenerator;
@@ -182,8 +182,6 @@ impl Experiment for HashJoinExperiment {
         let build_count = self.build_keys.len();
         let probe_count = self.probe_keys.len();
 
-        let timer = BenchTimer::start();
-
         // Single command buffer with two dispatches: build then probe
         let cmd_buf = ctx
             .queue
@@ -253,13 +251,11 @@ impl Experiment for HashJoinExperiment {
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
-
         // Read back match count
         let match_count = self.buf_match_count.as_ref().expect("setup not called");
         self.gpu_match_count = unsafe { read_buffer::<u32>(match_count.as_ref()) };
 
-        elapsed
+        GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {

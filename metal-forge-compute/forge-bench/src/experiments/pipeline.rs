@@ -26,7 +26,7 @@ use objc2_metal::{
 
 use forge_primitives::{
     alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
-    CompactParams, GroupByParams, MetalContext, PsoCache, ScanParams, SortParams,
+    CompactParams, GroupByParams, GpuTimer, MetalContext, PsoCache, ScanParams, SortParams,
 };
 
 use crate::data_gen::DataGenerator;
@@ -40,8 +40,8 @@ const TG_SIZE: usize = 256;
 const RADIX_BITS: usize = 4;
 const RADIX_BINS: usize = 16;
 const NUM_PASSES: usize = 8;
-const SCAN_ELEMENTS_PER_TG: usize = 512;
-const MAX_GPU_PARTIALS: usize = 512;
+const SCAN_ELEMENTS_PER_TG: usize = 1024;
+const MAX_GPU_PARTIALS: usize = 1024;
 
 /// Number of groups for the pipeline.
 const NUM_GROUPS: u32 = 1000;

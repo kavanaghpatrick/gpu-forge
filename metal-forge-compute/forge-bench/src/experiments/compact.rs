@@ -22,7 +22,7 @@ use objc2_metal::{
 
 use forge_primitives::{
     alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
-    CompactParams, MetalContext, PsoCache, ScanParams,
+    CompactParams, GpuTimer, MetalContext, PsoCache, ScanParams,
 };
 
 use crate::cpu_baselines::rayon_filter;
@@ -30,11 +30,11 @@ use crate::data_gen::DataGenerator;
 
 use super::Experiment;
 
-/// Number of elements each scan threadgroup processes (256 threads * 2 elements).
-const SCAN_ELEMENTS_PER_TG: usize = 512;
+/// Number of elements each scan threadgroup processes (256 threads * 4 elements).
+const SCAN_ELEMENTS_PER_TG: usize = 1024;
 
 /// Maximum partials that can be scanned on GPU in a single threadgroup.
-const MAX_GPU_PARTIALS: usize = 512;
+const MAX_GPU_PARTIALS: usize = 1024;
 
 /// Stream compaction experiment comparing GPU scan-based compact vs rayon filter.
 pub struct CompactExperiment {
