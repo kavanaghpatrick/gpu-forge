@@ -144,10 +144,7 @@ impl Experiment for SortExperiment {
 
         // Allocate ping-pong key buffers
         self.keys_a = Some(alloc_buffer_with_data(&ctx.device, &self.data));
-        self.keys_b = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<u32>(),
-        ));
+        self.keys_b = Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<u32>()));
 
         // Histogram buffer: num_tg * 16 elements
         self.histogram_buffer = Some(alloc_buffer(
@@ -254,12 +251,9 @@ impl Experiment for SortExperiment {
         // Pre-warm PSO cache
         self.pso_cache
             .get_or_create(ctx.library(), "radix_histogram");
-        self.pso_cache
-            .get_or_create(ctx.library(), "radix_scatter");
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_local");
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_partials");
+        self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
+        self.pso_cache.get_or_create(ctx.library(), "scan_local");
+        self.pso_cache.get_or_create(ctx.library(), "scan_partials");
         self.pso_cache
             .get_or_create(ctx.library(), "scan_add_offsets");
     }
@@ -269,7 +263,10 @@ impl Experiment for SortExperiment {
         let keys_a = self.keys_a.clone().expect("setup not called");
         let keys_b = self.keys_b.clone().expect("setup not called");
         let histogram_buf = self.histogram_buffer.clone().expect("setup not called");
-        let scanned_buf = self.scanned_histogram_buffer.clone().expect("setup not called");
+        let scanned_buf = self
+            .scanned_histogram_buffer
+            .clone()
+            .expect("setup not called");
         let partials_buf = self.scan_partials_buffer.clone().expect("setup not called");
 
         let histogram_size = self.histogram_size;
@@ -377,9 +374,7 @@ impl Experiment for SortExperiment {
             if scan_tgs <= MAX_GPU_PARTIALS {
                 // Simple: scan_partials in single threadgroup
                 {
-                    let pso = self
-                        .pso_cache
-                        .get_or_create(ctx.library(), "scan_partials");
+                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -387,8 +382,7 @@ impl Experiment for SortExperiment {
                     encoder.setComputePipelineState(pso);
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 0);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(partials_params_buf.as_ref()), 0, 1);
+                        encoder.setBuffer_offset_atIndex(Some(partials_params_buf.as_ref()), 0, 1);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -418,8 +412,7 @@ impl Experiment for SortExperiment {
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 0);
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 1);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
+                        encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -461,14 +454,10 @@ impl Experiment for SortExperiment {
 
                     encoder.setComputePipelineState(pso);
                     unsafe {
-                        encoder
-                            .setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 0);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 2);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l1_scan_params.as_ref()), 0, 3);
+                        encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 0);
+                        encoder.setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
+                        encoder.setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 2);
+                        encoder.setBuffer_offset_atIndex(Some(l1_scan_params.as_ref()), 0, 3);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -487,17 +476,14 @@ impl Experiment for SortExperiment {
 
                 // Pass 2b: scan_partials on L2
                 {
-                    let pso = self
-                        .pso_cache
-                        .get_or_create(ctx.library(), "scan_partials");
+                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
 
                     encoder.setComputePipelineState(pso);
                     unsafe {
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 0);
+                        encoder.setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 0);
                         encoder.setBuffer_offset_atIndex(Some(l2_params.as_ref()), 0, 1);
                     }
 
@@ -526,15 +512,9 @@ impl Experiment for SortExperiment {
 
                     encoder.setComputePipelineState(pso);
                     unsafe {
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 0);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(
-                            Some(l1_addoffsets_params.as_ref()),
-                            0,
-                            2,
-                        );
+                        encoder.setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 0);
+                        encoder.setBuffer_offset_atIndex(Some(l2_partials.as_ref()), 0, 1);
+                        encoder.setBuffer_offset_atIndex(Some(l1_addoffsets_params.as_ref()), 0, 2);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -562,12 +542,9 @@ impl Experiment for SortExperiment {
 
                     encoder.setComputePipelineState(pso);
                     unsafe {
-                        encoder
-                            .setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 0);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
-                        encoder
-                            .setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
+                        encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 0);
+                        encoder.setBuffer_offset_atIndex(Some(l1_scanned.as_ref()), 0, 1);
+                        encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
                     }
 
                     let grid = objc2_metal::MTLSize {
@@ -587,9 +564,7 @@ impl Experiment for SortExperiment {
 
             // --- Step 3: radix_scatter ---
             {
-                let pso = self
-                    .pso_cache
-                    .get_or_create(ctx.library(), "radix_scatter");
+                let pso = self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
                 let encoder = cmd_buf
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");

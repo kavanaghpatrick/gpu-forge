@@ -35,8 +35,8 @@ pub fn run_duckdb_query(sql: &str) -> Option<DuckDbResult> {
     let start = Instant::now();
 
     let mut child = Command::new("duckdb")
-        .arg("-csv")        // CSV output mode
-        .arg("-noheader")   // Skip column headers
+        .arg("-csv") // CSV output mode
+        .arg("-noheader") // Skip column headers
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

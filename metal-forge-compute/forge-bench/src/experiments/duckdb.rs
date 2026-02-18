@@ -18,13 +18,12 @@ use std::path::PathBuf;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
-    CompactParams, GroupByParams, GpuTimer, MetalContext, PsoCache, ScanParams, SortParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, CompactParams, GpuTimer,
+    GroupByParams, MetalContext, PsoCache, ScanParams, SortParams,
 };
 
 use crate::cpu_baselines::duckdb_runner;
@@ -152,9 +151,9 @@ impl Experiment for DuckDbExperiment {
 
     fn supported_sizes(&self) -> Vec<usize> {
         vec![
-            100_000,     // 100K
-            1_000_000,   // 1M
-            10_000_000,  // 10M
+            100_000,    // 100K
+            1_000_000,  // 1M
+            10_000_000, // 10M
         ]
     }
 
@@ -185,14 +184,10 @@ impl Experiment for DuckDbExperiment {
         self.values_buffer = Some(alloc_buffer_with_data(&ctx.device, &values_as_u32));
 
         // Compact stage buffers
-        self.compact_flags_buffer = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<u32>(),
-        ));
-        self.compact_scan_buffer = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<u32>(),
-        ));
+        self.compact_flags_buffer =
+            Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<u32>()));
+        self.compact_scan_buffer =
+            Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<u32>()));
         let num_scan_tgs = size.div_ceil(SCAN_ELEMENTS_PER_TG);
         self.compact_partials_buffer = Some(alloc_buffer(
             &ctx.device,
@@ -261,14 +256,12 @@ impl Experiment for DuckDbExperiment {
         self.pso_cache
             .get_or_create(ctx.library(), "compact_scatter");
         self.pso_cache.get_or_create(ctx.library(), "scan_local");
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_partials");
+        self.pso_cache.get_or_create(ctx.library(), "scan_partials");
         self.pso_cache
             .get_or_create(ctx.library(), "scan_add_offsets");
         self.pso_cache
             .get_or_create(ctx.library(), "radix_histogram");
-        self.pso_cache
-            .get_or_create(ctx.library(), "radix_scatter");
+        self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
         self.pso_cache
             .get_or_create(ctx.library(), "groupby_boundary_detect");
         self.pso_cache
@@ -302,14 +295,8 @@ impl Experiment for DuckDbExperiment {
             .expect("setup not called");
         let sort_scanned = self.sort_scanned_buffer.clone().expect("setup not called");
         let sort_partials = self.sort_partials_buffer.clone().expect("setup not called");
-        let groupby_flags = self
-            .groupby_flags_buffer
-            .clone()
-            .expect("setup not called");
-        let group_offsets_buf = self
-            .group_offsets_buffer
-            .clone()
-            .expect("setup not called");
+        let groupby_flags = self.groupby_flags_buffer.clone().expect("setup not called");
+        let group_offsets_buf = self.group_offsets_buffer.clone().expect("setup not called");
         let agg_sum_buf = self.agg_sum_buffer.clone().expect("setup not called");
         let agg_count_buf = self.agg_count_buffer.clone().expect("setup not called");
         let agg_min_buf = self.agg_min_buffer.clone().expect("setup not called");
@@ -350,8 +337,7 @@ impl Experiment for DuckDbExperiment {
             pass: 1,
             _pad: [0; 2],
         };
-        let partials_scan_params_buf =
-            alloc_buffer_with_data(&ctx.device, &[partials_scan_params]);
+        let partials_scan_params_buf = alloc_buffer_with_data(&ctx.device, &[partials_scan_params]);
 
         let cmd_buf = ctx
             .queue
@@ -417,20 +403,14 @@ impl Experiment for DuckDbExperiment {
         if num_scan_tgs <= MAX_GPU_PARTIALS {
             // GPU partials scan
             {
-                let pso = self
-                    .pso_cache
-                    .get_or_create(ctx.library(), "scan_partials");
+                let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
                 let encoder = cmd_buf
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");
                 encoder.setComputePipelineState(pso);
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(compact_partials.as_ref()), 0, 0);
-                    encoder.setBuffer_offset_atIndex(
-                        Some(partials_scan_params_buf.as_ref()),
-                        0,
-                        1,
-                    );
+                    encoder.setBuffer_offset_atIndex(Some(partials_scan_params_buf.as_ref()), 0, 1);
                 }
                 let grid = objc2_metal::MTLSize {
                     width: 1,
@@ -753,11 +733,7 @@ impl Experiment for DuckDbExperiment {
                     encoder.setBuffer_offset_atIndex(Some(sort_histogram.as_ref()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(sort_scanned.as_ref()), 0, 1);
                     encoder.setBuffer_offset_atIndex(Some(sort_partials.as_ref()), 0, 2);
-                    encoder.setBuffer_offset_atIndex(
-                        Some(hist_scan_params_buf.as_ref()),
-                        0,
-                        3,
-                    );
+                    encoder.setBuffer_offset_atIndex(Some(hist_scan_params_buf.as_ref()), 0, 3);
                 }
                 let grid = objc2_metal::MTLSize {
                     width: sort_scan_tgs,
@@ -782,9 +758,7 @@ impl Experiment for DuckDbExperiment {
                 let part_params_buf = alloc_buffer_with_data(&ctx.device, &[part_params]);
 
                 {
-                    let pso = self
-                        .pso_cache
-                        .get_or_create(ctx.library(), "scan_partials");
+                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_partials");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -819,11 +793,7 @@ impl Experiment for DuckDbExperiment {
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(sort_scanned.as_ref()), 0, 0);
                         encoder.setBuffer_offset_atIndex(Some(sort_partials.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(
-                            Some(hist_scan_params_buf.as_ref()),
-                            0,
-                            2,
-                        );
+                        encoder.setBuffer_offset_atIndex(Some(hist_scan_params_buf.as_ref()), 0, 2);
                     }
                     let grid = objc2_metal::MTLSize {
                         width: sort_scan_tgs,
@@ -841,9 +811,7 @@ impl Experiment for DuckDbExperiment {
 
                 // radix_scatter
                 {
-                    let pso = self
-                        .pso_cache
-                        .get_or_create(ctx.library(), "radix_scatter");
+                    let pso = self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -881,11 +849,7 @@ impl Experiment for DuckDbExperiment {
                     crate::cpu_baselines::sequential::sequential_exclusive_scan(&partials_data);
                 unsafe {
                     let ptr = sort_partials.contents().as_ptr() as *mut u32;
-                    std::ptr::copy_nonoverlapping(
-                        scanned_partials.as_ptr(),
-                        ptr,
-                        sort_scan_tgs,
-                    );
+                    std::ptr::copy_nonoverlapping(scanned_partials.as_ptr(), ptr, sort_scan_tgs);
                 }
 
                 let cmd_buf2 = ctx
@@ -905,11 +869,7 @@ impl Experiment for DuckDbExperiment {
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(sort_scanned.as_ref()), 0, 0);
                         encoder.setBuffer_offset_atIndex(Some(sort_partials.as_ref()), 0, 1);
-                        encoder.setBuffer_offset_atIndex(
-                            Some(hist_scan_params_buf.as_ref()),
-                            0,
-                            2,
-                        );
+                        encoder.setBuffer_offset_atIndex(Some(hist_scan_params_buf.as_ref()), 0, 2);
                     }
                     let grid = objc2_metal::MTLSize {
                         width: sort_scan_tgs,
@@ -927,9 +887,7 @@ impl Experiment for DuckDbExperiment {
 
                 // radix_scatter
                 {
-                    let pso = self
-                        .pso_cache
-                        .get_or_create(ctx.library(), "radix_scatter");
+                    let pso = self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
                     let encoder = cmd_buf2
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -1025,8 +983,7 @@ impl Experiment for DuckDbExperiment {
         }
 
         // Compute group offsets on CPU from boundary flags
-        let flags: Vec<u32> =
-            unsafe { read_buffer_slice(groupby_flags.as_ref(), sort_n) };
+        let flags: Vec<u32> = unsafe { read_buffer_slice(groupby_flags.as_ref(), sort_n) };
         let mut group_offsets: Vec<u32> = Vec::new();
         for (i, &f) in flags.iter().enumerate() {
             if f == 1 {
@@ -1094,8 +1051,7 @@ impl Experiment for DuckDbExperiment {
         // ====================================================================
         // STAGE 6: Top-K extraction (on CPU)
         // ====================================================================
-        let sums: Vec<f32> =
-            unsafe { read_buffer_slice(agg_sum_buf.as_ref(), num_groups) };
+        let sums: Vec<f32> = unsafe { read_buffer_slice(agg_sum_buf.as_ref(), num_groups) };
 
         let mut group_results: Vec<(u32, f64)> = Vec::with_capacity(num_groups);
         for (g, &sum_val) in sums.iter().enumerate() {
@@ -1103,8 +1059,7 @@ impl Experiment for DuckDbExperiment {
             let group_key = sorted_kv[key_offset].0;
             group_results.push((group_key, sum_val as f64));
         }
-        group_results
-            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        group_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         group_results.truncate(TOP_K);
 
         self.gpu_topk = group_results;
@@ -1133,11 +1088,7 @@ impl Experiment for DuckDbExperiment {
         }
 
         // DuckDB CLI path: run SQL query against CSV file
-        match duckdb_runner::run_pipeline_query(
-            &self.csv_path,
-            self.key_threshold,
-            TOP_K,
-        ) {
+        match duckdb_runner::run_pipeline_query(&self.csv_path, self.key_threshold, TOP_K) {
             Some((elapsed_ms, results)) => {
                 self.duckdb_topk = results;
                 self.last_duckdb_ms = elapsed_ms;
@@ -1156,9 +1107,7 @@ impl Experiment for DuckDbExperiment {
                 }
 
                 let mut sorted: Vec<(u32, f64)> = groups.into_iter().collect();
-                sorted.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 sorted.truncate(TOP_K);
 
                 self.duckdb_topk = sorted;

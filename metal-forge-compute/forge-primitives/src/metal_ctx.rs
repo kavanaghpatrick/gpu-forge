@@ -55,7 +55,10 @@ impl MetalContext {
 
         let search_dirs = [
             target_dir.to_path_buf(),
-            target_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+            target_dir
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
         ];
 
         for dir in &search_dirs {

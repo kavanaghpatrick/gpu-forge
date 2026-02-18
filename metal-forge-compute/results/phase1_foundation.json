@@ -1,0 +1,339 @@
+{
+  "hardware": {
+    "chip": "Apple M4 Pro",
+    "bandwidth_gbs": 273.0
+  },
+  "timestamp": "2026-02-17T20:38:30.000524+00:00",
+  "results": [
+    {
+      "experiment": "reduce",
+      "size": 1000000,
+      "gpu_stats": {
+        "mean": 0.45581477777777774,
+        "median": 0.454125,
+        "min": 0.435709,
+        "max": 0.484,
+        "stddev": 0.013659149038078624,
+        "cv_percent": 2.9966446249660286,
+        "sample_count": 9,
+        "outliers_removed": 1
+      },
+      "cpu_stats": {
+        "mean": 0.16697109999999998,
+        "median": 0.137063,
+        "min": 0.0955,
+        "max": 0.311292,
+        "stddev": 0.06888242433540084,
+        "cv_percent": 41.254099862431794,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "speedup": 0.36631348552153126,
+      "metrics": {
+        "bytes_processed": 4000000.0,
+        "gb_per_sec": 8.775494334565234,
+        "elements": 1000000.0,
+        "bw_utilization_pct": 3.2144667892180347
+      }
+    },
+    {
+      "experiment": "reduce",
+      "size": 10000000,
+      "gpu_stats": {
+        "mean": 1.2417418000000002,
+        "median": 1.2617085000000001,
+        "min": 1.081459,
+        "max": 1.428,
+        "stddev": 0.13111530579252242,
+        "cv_percent": 10.558983018250848,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "cpu_stats": {
+        "mean": 0.3388595,
+        "median": 0.345271,
+        "min": 0.237334,
+        "max": 0.436083,
+        "stddev": 0.05718418641547678,
+        "cv_percent": 16.87548568521077,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "speedup": 0.27289046724528393,
+      "metrics": {
+        "gb_per_sec": 32.212815901019034,
+        "bw_utilization_pct": 11.799566264109536,
+        "elements": 10000000.0,
+        "bytes_processed": 40000000.0
+      }
+    },
+    {
+      "experiment": "scan",
+      "size": 1000000,
+      "gpu_stats": {
+        "mean": 0.385911375,
+        "median": 0.38697950000000003,
+        "min": 0.37866700000000003,
+        "max": 0.392458,
+        "stddev": 0.004510399568536804,
+        "cv_percent": 1.1687656443235972,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "cpu_stats": {
+        "mean": 0.4702175555555556,
+        "median": 0.46675,
+        "min": 0.45679200000000003,
+        "max": 0.495083,
+        "stddev": 0.01408907531663373,
+        "cv_percent": 2.996288664719819,
+        "sample_count": 9,
+        "outliers_removed": 1
+      },
+      "speedup": 1.218459952250839,
+      "metrics": {
+        "bytes_processed": 8000000.0,
+        "threadgroups": 1954.0,
+        "gb_per_sec": 20.730148210842454,
+        "elements": 1000000.0,
+        "bw_utilization_pct": 7.593460883092475
+      }
+    },
+    {
+      "experiment": "scan",
+      "size": 10000000,
+      "gpu_stats": {
+        "mean": 1.1984477500000001,
+        "median": 1.2151455,
+        "min": 1.123041,
+        "max": 1.2492919999999998,
+        "stddev": 0.049865091361592784,
+        "cv_percent": 4.160806456651345,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "cpu_stats": {
+        "mean": 3.4438378888888885,
+        "median": 3.436083,
+        "min": 3.354792,
+        "max": 3.505375,
+        "stddev": 0.04519833890322861,
+        "cv_percent": 1.3124409557446182,
+        "sample_count": 9,
+        "outliers_removed": 1
+      },
+      "speedup": 2.873582005464058,
+      "metrics": {
+        "elements": 10000000.0,
+        "bw_utilization_pct": 24.451653652843277,
+        "gb_per_sec": 66.75301447226214,
+        "bytes_processed": 80000000.0,
+        "threadgroups": 19532.0
+      }
+    },
+    {
+      "experiment": "compact",
+      "size": 1000000,
+      "gpu_stats": {
+        "mean": 0.4742223333333333,
+        "median": 0.490625,
+        "min": 0.4425,
+        "max": 0.506625,
+        "stddev": 0.02569931635763877,
+        "cv_percent": 5.419254756940051,
+        "sample_count": 9,
+        "outliers_removed": 1
+      },
+      "cpu_stats": {
+        "mean": 0.8197406666666667,
+        "median": 0.788416,
+        "min": 0.657042,
+        "max": 1.10275,
+        "stddev": 0.13745439866097406,
+        "cv_percent": 16.76803460537203,
+        "sample_count": 9,
+        "outliers_removed": 1
+      },
+      "speedup": 1.7285998761481078,
+      "metrics": {
+        "gb_per_sec": 42.174310643319906,
+        "elements": 1000000.0,
+        "threshold": 2147483647.0,
+        "elements_per_sec": 2108715532.1659954,
+        "bw_utilization_pct": 15.448465437113517,
+        "selectivity_pct": 50.00320000000001,
+        "output_count": 500032.0
+      }
+    },
+    {
+      "experiment": "compact",
+      "size": 10000000,
+      "gpu_stats": {
+        "mean": 2.750125,
+        "median": 2.793792,
+        "min": 2.224083,
+        "max": 3.056708,
+        "stddev": 0.24419711896471397,
+        "cv_percent": 8.87949162182497,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "cpu_stats": {
+        "mean": 4.5019333999999995,
+        "median": 4.467459,
+        "min": 3.971416,
+        "max": 4.967875,
+        "stddev": 0.3539233977343436,
+        "cv_percent": 7.861586707043326,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "speedup": 1.636992282168992,
+      "metrics": {
+        "bw_utilization_pct": 26.638815784763697,
+        "gb_per_sec": 72.72396709240489,
+        "selectivity_pct": 50.01136,
+        "elements": 10000000.0,
+        "elements_per_sec": 3636198354.6202445,
+        "threshold": 2147483647.0,
+        "output_count": 5001136.0
+      }
+    },
+    {
+      "experiment": "sort",
+      "size": 1000000,
+      "gpu_stats": {
+        "mean": 5.4424667,
+        "median": 5.474479,
+        "min": 5.175042,
+        "max": 5.658042,
+        "stddev": 0.1705583411628799,
+        "cv_percent": 3.1338426225534817,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "cpu_stats": {
+        "mean": 8.968145999999999,
+        "median": 8.973146,
+        "min": 8.887167,
+        "max": 9.047125,
+        "stddev": 0.0546752061074199,
+        "cv_percent": 0.6096600803267466,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "speedup": 1.647809071574108,
+      "metrics": {
+        "elements_per_sec": 183740214.708158,
+        "elements": 1000000.0,
+        "num_passes": 8.0,
+        "threadgroups": 3907.0,
+        "bw_utilization_pct": 4.307462908909198,
+        "bytes_processed": 64000000.0,
+        "gb_per_sec": 11.759373741322111
+      }
+    },
+    {
+      "experiment": "sort",
+      "size": 10000000,
+      "gpu_stats": {
+        "mean": 39.319109250000004,
+        "median": 39.378437500000004,
+        "min": 38.795958,
+        "max": 39.740875,
+        "stddev": 0.2916087632936353,
+        "cv_percent": 0.7416464127900743,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "cpu_stats": {
+        "mean": 103.40631488888889,
+        "median": 103.57412500000001,
+        "min": 102.548875,
+        "max": 104.766917,
+        "stddev": 0.7255541337004892,
+        "cv_percent": 0.7016536025677971,
+        "sample_count": 9,
+        "outliers_removed": 1
+      },
+      "speedup": 2.62992516517624,
+      "metrics": {
+        "elements_per_sec": 254329261.03228036,
+        "bw_utilization_pct": 5.962297694529649,
+        "gb_per_sec": 16.277072706065944,
+        "elements": 10000000.0,
+        "num_passes": 8.0,
+        "threadgroups": 39063.0,
+        "bytes_processed": 640000000.0
+      }
+    },
+    {
+      "experiment": "histogram",
+      "size": 1000000,
+      "gpu_stats": {
+        "mean": 0.43067712500000005,
+        "median": 0.4308125,
+        "min": 0.419167,
+        "max": 0.44225,
+        "stddev": 0.009180829645633489,
+        "cv_percent": 2.1317198227404086,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "cpu_stats": {
+        "mean": 0.23217175,
+        "median": 0.231083,
+        "min": 0.230958,
+        "max": 0.238708,
+        "stddev": 0.0026849167983916578,
+        "cv_percent": 1.1564356121671382,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "speedup": 0.5390853995321901,
+      "metrics": {
+        "gb_per_sec": 9.287700153566316,
+        "bytes_processed": 4000000.0,
+        "bins_per_sec": 2321925038.391579,
+        "elements": 1000000.0,
+        "elements_per_sec": 2321925038.391579,
+        "num_bins": 256.0,
+        "bw_utilization_pct": 3.4020879683393104
+      }
+    },
+    {
+      "experiment": "histogram",
+      "size": 10000000,
+      "gpu_stats": {
+        "mean": 1.0896165000000002,
+        "median": 1.075479,
+        "min": 1.030041,
+        "max": 1.175959,
+        "stddev": 0.05082056360754854,
+        "cv_percent": 4.664078013461482,
+        "sample_count": 10,
+        "outliers_removed": 0
+      },
+      "cpu_stats": {
+        "mean": 2.5115,
+        "median": 2.5081670000000003,
+        "min": 2.482667,
+        "max": 2.534125,
+        "stddev": 0.01831244676637803,
+        "cv_percent": 0.7291438091331089,
+        "sample_count": 8,
+        "outliers_removed": 2
+      },
+      "speedup": 2.3049393984030155,
+      "metrics": {
+        "elements_per_sec": 9177540905.447006,
+        "bins_per_sec": 9177540905.447006,
+        "gb_per_sec": 36.71016362178803,
+        "bytes_processed": 40000000.0,
+        "elements": 10000000.0,
+        "num_bins": 256.0,
+        "bw_utilization_pct": 13.446946381607336
+      }
+    }
+  ]
+}

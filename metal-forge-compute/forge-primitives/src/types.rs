@@ -139,8 +139,7 @@ mod tests {
             _pad: [0; 3],
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
     }
 
@@ -163,8 +162,7 @@ mod tests {
             _pad: [0; 2],
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         let pass_offset = &p.pass as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(pass_offset, 4, "pass at offset 4");
@@ -189,8 +187,7 @@ mod tests {
             _pad: [0; 2],
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         let num_bins_offset = &p.num_bins as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(num_bins_offset, 4, "num_bins at offset 4");
@@ -215,8 +212,7 @@ mod tests {
             _pad: [0; 2],
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         let threshold_offset = &p.threshold as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(threshold_offset, 4, "threshold at offset 4");
@@ -241,8 +237,7 @@ mod tests {
             _pad: [0; 2],
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         let threshold_offset = &p.threshold as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(threshold_offset, 4, "threshold at offset 4");
@@ -267,8 +262,7 @@ mod tests {
             _pad: [0; 2],
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         let num_groups_offset = &p.num_groups as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");
         assert_eq!(num_groups_offset, 4, "num_groups at offset 4");
@@ -322,8 +316,7 @@ mod tests {
             _pad: 0,
         };
         let base = &p as *const _ as usize;
-        let element_count_offset =
-            &p.element_count as *const _ as usize - base;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
         let bit_offset_offset = &p.bit_offset as *const _ as usize - base;
         let num_tg_offset = &p.num_threadgroups as *const _ as usize - base;
         assert_eq!(element_count_offset, 0, "element_count at offset 0");

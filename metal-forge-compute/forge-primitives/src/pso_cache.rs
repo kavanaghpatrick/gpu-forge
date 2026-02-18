@@ -9,8 +9,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLComputePipelineDescriptor, MTLComputePipelineState, MTLDevice, MTLLibrary,
-    MTLPipelineOption,
+    MTLComputePipelineDescriptor, MTLComputePipelineState, MTLDevice, MTLLibrary, MTLPipelineOption,
 };
 
 /// Cache of compiled Metal compute pipeline states, keyed by function name.
@@ -87,12 +86,7 @@ impl PsoCache {
                 MTLPipelineOption::None,
                 None,
             )
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to create PSO for '{}': {:?}",
-                    function_name, e
-                )
-            })
+            .unwrap_or_else(|e| panic!("Failed to create PSO for '{}': {:?}", function_name, e))
     }
 }
 

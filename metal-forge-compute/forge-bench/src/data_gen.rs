@@ -130,7 +130,11 @@ mod tests {
     fn test_time_series_price_range() {
         let (prices, _) = DataGenerator::new(99).time_series(10_000);
         for p in &prices {
-            assert!(*p >= 50.0 && *p < 200.0, "Price {} out of [50, 200) range", p);
+            assert!(
+                *p >= 50.0 && *p < 200.0,
+                "Price {} out of [50, 200) range",
+                p
+            );
         }
     }
 
@@ -138,7 +142,11 @@ mod tests {
     fn test_time_series_volume_range() {
         let (_, volumes) = DataGenerator::new(99).time_series(10_000);
         for v in &volumes {
-            assert!(*v >= 1000.0 && *v < 100000.0, "Volume {} out of [1000, 100000) range", v);
+            assert!(
+                *v >= 1000.0 && *v < 100000.0,
+                "Volume {} out of [1000, 100000) range",
+                v
+            );
         }
     }
 

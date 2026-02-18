@@ -6,8 +6,8 @@
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
-    MTLBuffer, MTLComputeCommandEncoder, MTLComputePipelineState, MTLDevice,
-    MTLResourceOptions, MTLSize,
+    MTLBuffer, MTLComputeCommandEncoder, MTLComputePipelineState, MTLDevice, MTLResourceOptions,
+    MTLSize,
 };
 
 /// Encode a compute pass: set pipeline, set buffers, dispatch 1D threadgroups.

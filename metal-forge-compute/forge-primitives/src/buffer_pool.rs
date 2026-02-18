@@ -115,7 +115,10 @@ mod tests {
     #[test]
     fn test_page_align_large_values() {
         // Test with typical buffer sizes
-        assert_eq!(page_align(1_000_000), 1_000_000_usize.next_multiple_of(PAGE_SIZE));
+        assert_eq!(
+            page_align(1_000_000),
+            1_000_000_usize.next_multiple_of(PAGE_SIZE)
+        );
         assert_eq!(page_align(4 * 1024 * 1024), 4 * 1024 * 1024); // 4MB already aligned
     }
 
@@ -138,8 +141,8 @@ mod tests {
     #[test]
     fn test_buffer_pool_alloc_recycle() {
         // This test requires a Metal device, so we use MTLCreateSystemDefaultDevice
-        let device = objc2_metal::MTLCreateSystemDefaultDevice()
-            .expect("No Metal device available");
+        let device =
+            objc2_metal::MTLCreateSystemDefaultDevice().expect("No Metal device available");
 
         let mut pool = BufferPool::new();
         assert_eq!(pool.allocated_bytes(), 0);

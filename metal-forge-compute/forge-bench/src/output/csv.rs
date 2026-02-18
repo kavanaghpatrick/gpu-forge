@@ -32,11 +32,7 @@ pub fn write_csv(path: &str, data: &[DataPoint]) -> Result<(), String> {
     // Data rows
     for dp in data {
         let gb_per_sec = dp.metrics.get("gb_per_sec").copied().unwrap_or(0.0);
-        let bw_pct = dp
-            .metrics
-            .get("bw_utilization_pct")
-            .copied()
-            .unwrap_or(0.0);
+        let bw_pct = dp.metrics.get("bw_utilization_pct").copied().unwrap_or(0.0);
 
         writeln!(
             file,

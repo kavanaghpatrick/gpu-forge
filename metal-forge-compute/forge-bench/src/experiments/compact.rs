@@ -16,13 +16,12 @@ use std::collections::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
-    CompactParams, GpuTimer, MetalContext, PsoCache, ScanParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, CompactParams, GpuTimer,
+    MetalContext, PsoCache, ScanParams,
 };
 
 use crate::cpu_baselines::rayon_filter;
@@ -167,14 +166,11 @@ impl Experiment for CompactExperiment {
         self.partials_params_buffer = Some(alloc_buffer_with_data(&ctx.device, &[partials_params]));
 
         // Pre-warm PSO cache
-        self.pso_cache
-            .get_or_create(ctx.library(), "compact_flags");
+        self.pso_cache.get_or_create(ctx.library(), "compact_flags");
         self.pso_cache
             .get_or_create(ctx.library(), "compact_scatter");
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_local");
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_partials");
+        self.pso_cache.get_or_create(ctx.library(), "scan_local");
+        self.pso_cache.get_or_create(ctx.library(), "scan_partials");
         self.pso_cache
             .get_or_create(ctx.library(), "scan_add_offsets");
     }
@@ -185,9 +181,15 @@ impl Experiment for CompactExperiment {
         let scan_out = self.scan_buffer.as_ref().expect("setup not called");
         let partials = self.partials_buffer.as_ref().expect("setup not called");
         let output = self.output_buffer.as_ref().expect("setup not called");
-        let compact_params = self.compact_params_buffer.as_ref().expect("setup not called");
+        let compact_params = self
+            .compact_params_buffer
+            .as_ref()
+            .expect("setup not called");
         let scan_params = self.scan_params_buffer.as_ref().expect("setup not called");
-        let partials_params = self.partials_params_buffer.as_ref().expect("setup not called");
+        let partials_params = self
+            .partials_params_buffer
+            .as_ref()
+            .expect("setup not called");
 
         let timer = BenchTimer::start();
 
@@ -285,10 +287,10 @@ impl Experiment for CompactExperiment {
             cmd_buf.waitUntilCompleted();
 
             // CPU scan of partials
-            let partials_data: Vec<u32> = unsafe {
-                read_buffer_slice(partials.as_ref(), self.num_scan_tgs)
-            };
-            let scanned = crate::cpu_baselines::sequential::sequential_exclusive_scan(&partials_data);
+            let partials_data: Vec<u32> =
+                unsafe { read_buffer_slice(partials.as_ref(), self.num_scan_tgs) };
+            let scanned =
+                crate::cpu_baselines::sequential::sequential_exclusive_scan(&partials_data);
             unsafe {
                 let ptr = partials.contents().as_ptr() as *mut u32;
                 std::ptr::copy_nonoverlapping(scanned.as_ptr(), ptr, self.num_scan_tgs);
@@ -302,7 +304,9 @@ impl Experiment for CompactExperiment {
 
             // --- Dispatch 4: scan_add_offsets ---
             {
-                let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
+                let pso = self
+                    .pso_cache
+                    .get_or_create(ctx.library(), "scan_add_offsets");
                 let encoder = cmd_buf2
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");
@@ -330,7 +334,9 @@ impl Experiment for CompactExperiment {
 
             // --- Dispatch 5: compact_scatter ---
             {
-                let pso = self.pso_cache.get_or_create(ctx.library(), "compact_scatter");
+                let pso = self
+                    .pso_cache
+                    .get_or_create(ctx.library(), "compact_scatter");
                 let encoder = cmd_buf2
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");
@@ -364,8 +370,10 @@ impl Experiment for CompactExperiment {
             let elapsed = timer.stop();
 
             // Determine output count: scan[N-1] + flags[N-1]
-            let last_scan: u32 = unsafe { read_buffer_slice(scan_out.as_ref(), self.size) }[self.size - 1];
-            let last_flag: u32 = unsafe { read_buffer_slice(flags.as_ref(), self.size) }[self.size - 1];
+            let last_scan: u32 =
+                unsafe { read_buffer_slice(scan_out.as_ref(), self.size) }[self.size - 1];
+            let last_flag: u32 =
+                unsafe { read_buffer_slice(flags.as_ref(), self.size) }[self.size - 1];
             let output_count = (last_scan + last_flag) as usize;
 
             self.gpu_result = unsafe { read_buffer_slice(output.as_ref(), output_count) };
@@ -374,7 +382,9 @@ impl Experiment for CompactExperiment {
 
         // --- Dispatch 4: scan_add_offsets (GPU partials path) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "scan_add_offsets");
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -402,7 +412,9 @@ impl Experiment for CompactExperiment {
 
         // --- Dispatch 5: compact_scatter ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "compact_scatter");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "compact_scatter");
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -436,7 +448,8 @@ impl Experiment for CompactExperiment {
         let elapsed = timer.stop();
 
         // Determine output count: scan[N-1] + flags[N-1]
-        let last_scan: u32 = unsafe { read_buffer_slice(scan_out.as_ref(), self.size) }[self.size - 1];
+        let last_scan: u32 =
+            unsafe { read_buffer_slice(scan_out.as_ref(), self.size) }[self.size - 1];
         let last_flag: u32 = unsafe { read_buffer_slice(flags.as_ref(), self.size) }[self.size - 1];
         let output_count = (last_scan + last_flag) as usize;
 

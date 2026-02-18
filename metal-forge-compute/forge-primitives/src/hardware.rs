@@ -114,8 +114,8 @@ mod tests {
     #[test]
     fn test_detect_chip_returns_non_empty() {
         // Create a real Metal device and verify chip detection returns a non-empty string
-        let device = objc2_metal::MTLCreateSystemDefaultDevice()
-            .expect("No Metal device available");
+        let device =
+            objc2_metal::MTLCreateSystemDefaultDevice().expect("No Metal device available");
         let info = HardwareInfo::detect(&device);
         assert!(
             !info.chip_name.is_empty(),

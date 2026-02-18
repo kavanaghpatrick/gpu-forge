@@ -17,13 +17,12 @@ use std::collections::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer,
-    MetalContext, PsoCache, ScanParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer, MetalContext,
+    PsoCache, ScanParams,
 };
 
 use crate::cpu_baselines::sequential;
@@ -201,10 +200,8 @@ impl Experiment for ScanExperiment {
         }
 
         // Pre-warm PSO cache
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_local");
-        self.pso_cache
-            .get_or_create(ctx.library(), "scan_partials");
+        self.pso_cache.get_or_create(ctx.library(), "scan_local");
+        self.pso_cache.get_or_create(ctx.library(), "scan_partials");
         self.pso_cache
             .get_or_create(ctx.library(), "scan_add_offsets");
     }
@@ -445,7 +442,12 @@ impl Experiment for ScanExperiment {
             ));
         }
 
-        for (i, (&gpu, &cpu)) in self.gpu_result.iter().zip(self.cpu_result.iter()).enumerate() {
+        for (i, (&gpu, &cpu)) in self
+            .gpu_result
+            .iter()
+            .zip(self.cpu_result.iter())
+            .enumerate()
+        {
             if gpu != cpu {
                 // Show surrounding context for debugging
                 let start = i.saturating_sub(3);

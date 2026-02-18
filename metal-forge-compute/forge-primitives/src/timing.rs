@@ -57,7 +57,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         let elapsed = timer.stop();
         assert!(elapsed > 0.0, "Timer should measure positive time");
-        assert!(elapsed >= 5.0, "Timer should measure at least ~10ms (got {elapsed}ms)");
+        assert!(
+            elapsed >= 5.0,
+            "Timer should measure at least ~10ms (got {elapsed}ms)"
+        );
     }
 
     #[test]

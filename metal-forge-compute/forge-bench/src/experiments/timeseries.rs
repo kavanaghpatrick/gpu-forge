@@ -98,10 +98,7 @@ impl Experiment for TimeSeriesExperiment {
         self.buf_volumes = Some(alloc_buffer_with_data(&ctx.device, &self.volumes));
 
         // Output buffer: N x f32
-        self.buf_output = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<f32>(),
-        ));
+        self.buf_output = Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<f32>()));
 
         // Params buffer
         let params = TimeSeriesParams {
@@ -208,7 +205,10 @@ impl Experiment for TimeSeriesExperiment {
         if max_rel_err > 1e-3 {
             return Err(format!(
                 "Max relative error {:.6e} at index {}: GPU={:.6} CPU={:.6} (threshold 1e-3)",
-                max_rel_err, max_err_idx, self.gpu_result[max_err_idx], self.cpu_result[max_err_idx]
+                max_rel_err,
+                max_err_idx,
+                self.gpu_result[max_err_idx],
+                self.cpu_result[max_err_idx]
             ));
         }
 

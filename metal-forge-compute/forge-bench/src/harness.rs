@@ -71,7 +71,12 @@ pub fn run_experiment(
 
         // Warmup loop (discard timings)
         if let Some(cb) = progress_cb {
-            cb(&format!("{} @ {}: warmup ({} runs)", exp.name(), size_label, config.warmup));
+            cb(&format!(
+                "{} @ {}: warmup ({} runs)",
+                exp.name(),
+                size_label,
+                config.warmup
+            ));
         }
         for _ in 0..config.warmup {
             let _ = exp.run_gpu(ctx);
@@ -79,13 +84,23 @@ pub fn run_experiment(
 
         // Measured GPU loop
         if let Some(cb) = progress_cb {
-            cb(&format!("{} @ {}: measuring GPU ({} runs)", exp.name(), size_label, config.runs));
+            cb(&format!(
+                "{} @ {}: measuring GPU ({} runs)",
+                exp.name(),
+                size_label,
+                config.runs
+            ));
         }
         let gpu_times: Vec<f64> = (0..config.runs).map(|_| exp.run_gpu(ctx)).collect();
 
         // Measured CPU loop
         if let Some(cb) = progress_cb {
-            cb(&format!("{} @ {}: measuring CPU ({} runs)", exp.name(), size_label, config.runs));
+            cb(&format!(
+                "{} @ {}: measuring CPU ({} runs)",
+                exp.name(),
+                size_label,
+                config.runs
+            ));
         }
         let cpu_times: Vec<f64> = (0..config.runs).map(|_| exp.run_cpu()).collect();
 

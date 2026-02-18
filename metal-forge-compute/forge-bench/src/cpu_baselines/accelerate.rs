@@ -46,13 +46,7 @@ const CBLAS_NO_TRANS: i32 = 111;
 /// Perform y = alpha * A * x + beta * y using Accelerate cblas_sgemv.
 ///
 /// A is MxN (row-major), x is N-element vector, y is M-element vector.
-pub fn sgemv(
-    m: usize,
-    n: usize,
-    a: &[f32],
-    x: &[f32],
-    y: &mut [f32],
-) {
+pub fn sgemv(m: usize, n: usize, a: &[f32], x: &[f32], y: &mut [f32]) {
     assert_eq!(a.len(), m * n, "A must be M*N elements");
     assert_eq!(x.len(), n, "x must be N elements");
     assert_eq!(y.len(), m, "y must be M elements");
@@ -70,7 +64,7 @@ pub fn sgemv(
             1,   // incX
             0.0, // beta
             y.as_mut_ptr(),
-            1,   // incY
+            1, // incY
         );
     }
 }
@@ -78,14 +72,7 @@ pub fn sgemv(
 /// Perform C = alpha * A * B + beta * C using Accelerate cblas_sgemm.
 ///
 /// A is MxK, B is KxN, C is MxN. All row-major.
-pub fn sgemm(
-    m: usize,
-    n: usize,
-    k: usize,
-    a: &[f32],
-    b: &[f32],
-    c: &mut [f32],
-) {
+pub fn sgemm(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
     assert_eq!(a.len(), m * k, "A must be M*K elements");
     assert_eq!(b.len(), k * n, "B must be K*N elements");
     assert_eq!(c.len(), m * n, "C must be M*N elements");
@@ -103,7 +90,7 @@ pub fn sgemm(
             k as i32, // lda = K for row-major
             b.as_ptr(),
             n as i32, // ldb = N for row-major
-            0.0, // beta
+            0.0,      // beta
             c.as_mut_ptr(),
             n as i32, // ldc = N for row-major
         );

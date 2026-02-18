@@ -14,8 +14,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer, BenchTimer,
-    GpuTimer, HashJoinParams, MetalContext, PsoCache,
+    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer, BenchTimer, GpuTimer,
+    HashJoinParams, MetalContext, PsoCache,
 };
 
 use crate::data_gen::DataGenerator;
@@ -262,8 +262,7 @@ impl Experiment for HashJoinExperiment {
         let timer = BenchTimer::start();
 
         // Build phase: HashMap<key, Vec<index>>
-        let mut table: HashMap<u32, Vec<usize>> =
-            HashMap::with_capacity(self.build_keys.len());
+        let mut table: HashMap<u32, Vec<usize>> = HashMap::with_capacity(self.build_keys.len());
         for (idx, &key) in self.build_keys.iter().enumerate() {
             table.entry(key).or_default().push(idx);
         }
@@ -334,8 +333,7 @@ impl Experiment for HashJoinExperiment {
 
         // Memory traffic: build reads keys + writes hash table; probe reads keys + reads table + writes pairs
         let build_bytes = self.build_keys.len() as f64 * 4.0 + self.table_size as f64 * 8.0;
-        let probe_bytes = self.probe_keys.len() as f64 * 4.0
-            + self.gpu_match_count as f64 * 8.0; // output pairs
+        let probe_bytes = self.probe_keys.len() as f64 * 4.0 + self.gpu_match_count as f64 * 8.0; // output pairs
         let total_bytes = build_bytes + probe_bytes;
         let gbs = if seconds > 0.0 {
             total_bytes / seconds / 1e9

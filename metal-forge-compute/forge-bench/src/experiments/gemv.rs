@@ -104,8 +104,7 @@ impl Experiment for GemvExperiment {
         self.buf_params = Some(alloc_buffer_with_data(&ctx.device, &[params]));
 
         // Pre-warm PSO cache
-        self.pso_cache
-            .get_or_create(ctx.library(), "gemv_f32");
+        self.pso_cache.get_or_create(ctx.library(), "gemv_f32");
     }
 
     fn run_gpu(&mut self, ctx: &MetalContext) -> f64 {
@@ -114,9 +113,7 @@ impl Experiment for GemvExperiment {
         let buf_y = self.buf_y.as_ref().expect("setup not called");
         let buf_params = self.buf_params.as_ref().expect("setup not called");
 
-        let pso = self
-            .pso_cache
-            .get_or_create(ctx.library(), "gemv_f32");
+        let pso = self.pso_cache.get_or_create(ctx.library(), "gemv_f32");
 
         let cmd_buf = ctx
             .queue
@@ -144,8 +141,7 @@ impl Experiment for GemvExperiment {
         cmd_buf.waitUntilCompleted();
 
         // Read back result vector
-        self.gpu_result =
-            unsafe { read_buffer_slice::<f32>(buf_y.as_ref(), self.dim_m) };
+        self.gpu_result = unsafe { read_buffer_slice::<f32>(buf_y.as_ref(), self.dim_m) };
 
         GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
@@ -196,7 +192,9 @@ impl Experiment for GemvExperiment {
         if max_rel_err > 1e-4 {
             return Err(format!(
                 "Max relative error {:.6e} at y[{}]: GPU={:.6} CPU={:.6} (threshold 1e-4)",
-                max_rel_err, max_err_idx, self.gpu_result[max_err_idx],
+                max_rel_err,
+                max_err_idx,
+                self.gpu_result[max_err_idx],
                 self.cpu_result[max_err_idx]
             ));
         }

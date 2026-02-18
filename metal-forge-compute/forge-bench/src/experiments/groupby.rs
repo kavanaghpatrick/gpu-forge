@@ -10,13 +10,12 @@ use std::collections::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer,
-    GroupByParams, GpuTimer, MetalContext, PsoCache, ScanParams, SortParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer, GroupByParams,
+    MetalContext, PsoCache, ScanParams, SortParams,
 };
 
 use crate::cpu_baselines::hashmap_ops;
@@ -153,32 +152,19 @@ impl Experiment for GroupByExperiment {
         // Generate key column with target cardinality
         // Keys are random u32 values modulo num_groups
         let raw_keys = gen.uniform_u32(size);
-        self.keys = raw_keys
-            .iter()
-            .map(|&k| k % self.num_groups)
-            .collect();
+        self.keys = raw_keys.iter().map(|&k| k % self.num_groups).collect();
 
         // Generate value column (f32 in [0, 1000))
-        self.values = gen
-            .uniform_f32(size)
-            .iter()
-            .map(|&v| v * 1000.0)
-            .collect();
+        self.values = gen.uniform_f32(size).iter().map(|&v| v * 1000.0).collect();
 
         self.num_sort_tgs = size.div_ceil(TG_SIZE);
         self.histogram_size = self.num_sort_tgs * RADIX_BINS;
 
         // === Allocate sort buffers ===
         self.keys_a = Some(alloc_buffer_with_data(&ctx.device, &self.keys));
-        self.keys_b = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<u32>(),
-        ));
+        self.keys_b = Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<u32>()));
         self.values_a = Some(alloc_buffer_with_data(&ctx.device, &self.values));
-        self.values_b = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<f32>(),
-        ));
+        self.values_b = Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<f32>()));
         self.histogram_buffer = Some(alloc_buffer(
             &ctx.device,
             self.histogram_size * std::mem::size_of::<u32>(),
@@ -194,10 +180,7 @@ impl Experiment for GroupByExperiment {
         ));
 
         // === Allocate group-by buffers ===
-        self.flags_buffer = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<u32>(),
-        ));
+        self.flags_buffer = Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<u32>()));
         // Over-allocate group offsets to handle max possible groups
         let max_groups = size.min(self.num_groups as usize + 1);
         self.group_offsets_buffer = Some(alloc_buffer(
@@ -222,13 +205,17 @@ impl Experiment for GroupByExperiment {
         ));
 
         // Pre-warm PSO cache
-        self.pso_cache.get_or_create(ctx.library(), "radix_histogram");
+        self.pso_cache
+            .get_or_create(ctx.library(), "radix_histogram");
         self.pso_cache.get_or_create(ctx.library(), "radix_scatter");
         self.pso_cache.get_or_create(ctx.library(), "scan_local");
         self.pso_cache.get_or_create(ctx.library(), "scan_partials");
-        self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
-        self.pso_cache.get_or_create(ctx.library(), "groupby_boundary_detect");
-        self.pso_cache.get_or_create(ctx.library(), "groupby_segmented_reduce");
+        self.pso_cache
+            .get_or_create(ctx.library(), "scan_add_offsets");
+        self.pso_cache
+            .get_or_create(ctx.library(), "groupby_boundary_detect");
+        self.pso_cache
+            .get_or_create(ctx.library(), "groupby_segmented_reduce");
     }
 
     fn run_gpu(&mut self, ctx: &MetalContext) -> f64 {
@@ -243,7 +230,10 @@ impl Experiment for GroupByExperiment {
         let values_a = self.values_a.clone().expect("setup not called");
         let values_b = self.values_b.clone().expect("setup not called");
         let histogram_buf = self.histogram_buffer.clone().expect("setup not called");
-        let scanned_buf = self.scanned_histogram_buffer.clone().expect("setup not called");
+        let scanned_buf = self
+            .scanned_histogram_buffer
+            .clone()
+            .expect("setup not called");
         let partials_buf = self.scan_partials_buffer.clone().expect("setup not called");
         let flags_buf = self.flags_buffer.clone().expect("setup not called");
         let group_offsets_buf = self.group_offsets_buffer.clone().expect("setup not called");
@@ -310,7 +300,9 @@ impl Experiment for GroupByExperiment {
 
             // Step 1: radix_histogram
             {
-                let pso = self.pso_cache.get_or_create(ctx.library(), "radix_histogram");
+                let pso = self
+                    .pso_cache
+                    .get_or_create(ctx.library(), "radix_histogram");
                 let encoder = cmd_buf
                     .computeCommandEncoder()
                     .expect("Failed to create compute encoder");
@@ -320,8 +312,16 @@ impl Experiment for GroupByExperiment {
                     encoder.setBuffer_offset_atIndex(Some(histogram_buf.as_ref()), 0, 1);
                     encoder.setBuffer_offset_atIndex(Some(sort_params_buf.as_ref()), 0, 2);
                 }
-                let grid = objc2_metal::MTLSize { width: num_sort_tgs, height: 1, depth: 1 };
-                let tg = objc2_metal::MTLSize { width: TG_SIZE, height: 1, depth: 1 };
+                let grid = objc2_metal::MTLSize {
+                    width: num_sort_tgs,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = objc2_metal::MTLSize {
+                    width: TG_SIZE,
+                    height: 1,
+                    depth: 1,
+                };
                 encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                 encoder.endEncoding();
             }
@@ -339,8 +339,16 @@ impl Experiment for GroupByExperiment {
                     encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 2);
                     encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 3);
                 }
-                let grid = objc2_metal::MTLSize { width: scan_tgs, height: 1, depth: 1 };
-                let tg = objc2_metal::MTLSize { width: 256, height: 1, depth: 1 };
+                let grid = objc2_metal::MTLSize {
+                    width: scan_tgs,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = objc2_metal::MTLSize {
+                    width: 256,
+                    height: 1,
+                    depth: 1,
+                };
                 encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                 encoder.endEncoding();
             }
@@ -364,15 +372,25 @@ impl Experiment for GroupByExperiment {
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 0);
                         encoder.setBuffer_offset_atIndex(Some(partials_params_buf.as_ref()), 0, 1);
                     }
-                    let grid = objc2_metal::MTLSize { width: 1, height: 1, depth: 1 };
-                    let tg = objc2_metal::MTLSize { width: 256, height: 1, depth: 1 };
+                    let grid = objc2_metal::MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: 256,
+                        height: 1,
+                        depth: 1,
+                    };
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
 
                 // scan_add_offsets
                 {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_add_offsets");
                     let encoder = cmd_buf
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -382,8 +400,16 @@ impl Experiment for GroupByExperiment {
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 1);
                         encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
                     }
-                    let grid = objc2_metal::MTLSize { width: scan_tgs, height: 1, depth: 1 };
-                    let tg = objc2_metal::MTLSize { width: 256, height: 1, depth: 1 };
+                    let grid = objc2_metal::MTLSize {
+                        width: scan_tgs,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: 256,
+                        height: 1,
+                        depth: 1,
+                    };
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
@@ -401,8 +427,16 @@ impl Experiment for GroupByExperiment {
                         encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 2);
                         encoder.setBuffer_offset_atIndex(Some(sort_params_buf.as_ref()), 0, 3);
                     }
-                    let grid = objc2_metal::MTLSize { width: num_sort_tgs, height: 1, depth: 1 };
-                    let tg = objc2_metal::MTLSize { width: TG_SIZE, height: 1, depth: 1 };
+                    let grid = objc2_metal::MTLSize {
+                        width: num_sort_tgs,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: TG_SIZE,
+                        height: 1,
+                        depth: 1,
+                    };
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
@@ -430,7 +464,9 @@ impl Experiment for GroupByExperiment {
 
                 // scan_add_offsets
                 {
-                    let pso = self.pso_cache.get_or_create(ctx.library(), "scan_add_offsets");
+                    let pso = self
+                        .pso_cache
+                        .get_or_create(ctx.library(), "scan_add_offsets");
                     let encoder = cmd_buf2
                         .computeCommandEncoder()
                         .expect("Failed to create compute encoder");
@@ -440,8 +476,16 @@ impl Experiment for GroupByExperiment {
                         encoder.setBuffer_offset_atIndex(Some(partials_buf.as_ref()), 0, 1);
                         encoder.setBuffer_offset_atIndex(Some(scan_params_buf.as_ref()), 0, 2);
                     }
-                    let grid = objc2_metal::MTLSize { width: scan_tgs, height: 1, depth: 1 };
-                    let tg = objc2_metal::MTLSize { width: 256, height: 1, depth: 1 };
+                    let grid = objc2_metal::MTLSize {
+                        width: scan_tgs,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: 256,
+                        height: 1,
+                        depth: 1,
+                    };
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
@@ -459,8 +503,16 @@ impl Experiment for GroupByExperiment {
                         encoder.setBuffer_offset_atIndex(Some(scanned_buf.as_ref()), 0, 2);
                         encoder.setBuffer_offset_atIndex(Some(sort_params_buf.as_ref()), 0, 3);
                     }
-                    let grid = objc2_metal::MTLSize { width: num_sort_tgs, height: 1, depth: 1 };
-                    let tg = objc2_metal::MTLSize { width: TG_SIZE, height: 1, depth: 1 };
+                    let grid = objc2_metal::MTLSize {
+                        width: num_sort_tgs,
+                        height: 1,
+                        depth: 1,
+                    };
+                    let tg = objc2_metal::MTLSize {
+                        width: TG_SIZE,
+                        height: 1,
+                        depth: 1,
+                    };
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
                     encoder.endEncoding();
                 }
@@ -492,11 +544,20 @@ impl Experiment for GroupByExperiment {
         let sorted_keys: Vec<u32> = unsafe { read_buffer_slice(keys_a.as_ref(), size) };
 
         // Build sort permutation: sort original (key, index) pairs by key to match GPU order
-        let mut indexed: Vec<(u32, usize)> = self.keys.iter().copied().enumerate().map(|(i, k)| (k, i)).collect();
+        let mut indexed: Vec<(u32, usize)> = self
+            .keys
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, k)| (k, i))
+            .collect();
         indexed.sort_by_key(|&(k, _)| k);
 
         // Apply permutation to values and upload to values_a
-        let sorted_values: Vec<f32> = indexed.iter().map(|&(_, orig_idx)| self.values[orig_idx]).collect();
+        let sorted_values: Vec<f32> = indexed
+            .iter()
+            .map(|&(_, orig_idx)| self.values[orig_idx])
+            .collect();
         unsafe {
             let vptr = values_a.contents().as_ptr() as *mut f32;
             std::ptr::copy_nonoverlapping(sorted_values.as_ptr(), vptr, size);
@@ -516,7 +577,9 @@ impl Experiment for GroupByExperiment {
                 .commandBuffer()
                 .expect("Failed to create command buffer");
 
-            let pso = self.pso_cache.get_or_create(ctx.library(), "groupby_boundary_detect");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "groupby_boundary_detect");
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -527,8 +590,16 @@ impl Experiment for GroupByExperiment {
                 encoder.setBuffer_offset_atIndex(Some(groupby_params_buf.as_ref()), 0, 2);
             }
             let tg_count = size.div_ceil(TG_SIZE);
-            let grid = objc2_metal::MTLSize { width: tg_count, height: 1, depth: 1 };
-            let tg = objc2_metal::MTLSize { width: TG_SIZE, height: 1, depth: 1 };
+            let grid = objc2_metal::MTLSize {
+                width: tg_count,
+                height: 1,
+                depth: 1,
+            };
+            let tg = objc2_metal::MTLSize {
+                width: TG_SIZE,
+                height: 1,
+                depth: 1,
+            };
             encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
             encoder.endEncoding();
             cmd_buf.commit();
@@ -566,7 +637,9 @@ impl Experiment for GroupByExperiment {
                 .commandBuffer()
                 .expect("Failed to create command buffer");
 
-            let pso = self.pso_cache.get_or_create(ctx.library(), "groupby_segmented_reduce");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "groupby_segmented_reduce");
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .expect("Failed to create compute encoder");
@@ -581,8 +654,16 @@ impl Experiment for GroupByExperiment {
                 encoder.setBuffer_offset_atIndex(Some(reduce_params_buf.as_ref()), 0, 6);
             }
             let tg_count = num_groups.div_ceil(TG_SIZE);
-            let grid = objc2_metal::MTLSize { width: tg_count.max(1), height: 1, depth: 1 };
-            let tg = objc2_metal::MTLSize { width: TG_SIZE, height: 1, depth: 1 };
+            let grid = objc2_metal::MTLSize {
+                width: tg_count.max(1),
+                height: 1,
+                depth: 1,
+            };
+            let tg = objc2_metal::MTLSize {
+                width: TG_SIZE,
+                height: 1,
+                depth: 1,
+            };
             encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
             encoder.endEncoding();
             cmd_buf.commit();
@@ -641,9 +722,10 @@ impl Experiment for GroupByExperiment {
             let key_offset = flags[group_idx] as usize;
             let group_key = self.sorted_keys_gpu[key_offset];
 
-            let cpu_group = self.cpu_agg.get(&group_key).ok_or_else(|| {
-                format!("GPU group key {} not found in CPU results", group_key)
-            })?;
+            let cpu_group = self
+                .cpu_agg
+                .get(&group_key)
+                .ok_or_else(|| format!("GPU group key {} not found in CPU results", group_key))?;
 
             // Compare count (exact)
             if gpu_count != cpu_group.count {

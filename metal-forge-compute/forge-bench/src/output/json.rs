@@ -26,11 +26,7 @@ struct HardwareHeader {
 }
 
 /// Write benchmark results to a JSON file.
-pub fn write_json(
-    path: &str,
-    data: &[DataPoint],
-    hardware: &HardwareInfo,
-) -> Result<(), String> {
+pub fn write_json(path: &str, data: &[DataPoint], hardware: &HardwareInfo) -> Result<(), String> {
     let report = JsonReport {
         hardware: HardwareHeader {
             chip: hardware.chip_name.clone(),

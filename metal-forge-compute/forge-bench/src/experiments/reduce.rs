@@ -127,8 +127,7 @@ impl Experiment for ReduceExperiment {
             element_count: self.num_partials as u32,
             _pad: [0; 3],
         };
-        self.partials_params_buffer =
-            Some(alloc_buffer_with_data(&ctx.device, &[partials_params]));
+        self.partials_params_buffer = Some(alloc_buffer_with_data(&ctx.device, &[partials_params]));
 
         // If num_partials > MAX_SINGLE_TG_PARTIALS, we need a 3rd level
         if self.num_partials > MAX_SINGLE_TG_PARTIALS {

@@ -133,11 +133,7 @@ impl SpreadsheetExperiment {
     }
 
     /// CPU: VLOOKUP via binary search in sorted lookup_keys.
-    fn cpu_vlookup(
-        lookup_keys: &[f32],
-        lookup_vals: &[f32],
-        search_keys: &[f32],
-    ) -> Vec<f32> {
+    fn cpu_vlookup(lookup_keys: &[f32], lookup_vals: &[f32], search_keys: &[f32]) -> Vec<f32> {
         search_keys
             .iter()
             .map(|key| {
@@ -194,21 +190,16 @@ impl Experiment for SpreadsheetExperiment {
         // Lookup values: random
         self.lookup_vals = gen.uniform_f32(rows);
         // Search keys: random indices as floats (within range of lookup keys)
-        self.search_keys = gen.uniform_f32(rows)
+        self.search_keys = gen
+            .uniform_f32(rows)
             .iter()
             .map(|v| v * (rows as f32 - 1.0))
             .collect();
 
         // Allocate Metal buffers for SUM/AVERAGE
         self.buf_grid = Some(alloc_buffer_with_data(&ctx.device, &self.grid_data));
-        self.buf_col_output = Some(alloc_buffer(
-            &ctx.device,
-            cols * std::mem::size_of::<f32>(),
-        ));
-        self.buf_avg_output = Some(alloc_buffer(
-            &ctx.device,
-            cols * std::mem::size_of::<f32>(),
-        ));
+        self.buf_col_output = Some(alloc_buffer(&ctx.device, cols * std::mem::size_of::<f32>()));
+        self.buf_avg_output = Some(alloc_buffer(&ctx.device, cols * std::mem::size_of::<f32>()));
 
         // Partials buffer for 2D row-chunked approach: num_row_chunks * cols
         let ss_rows_per_chunk = 64usize;
@@ -230,10 +221,8 @@ impl Experiment for SpreadsheetExperiment {
         self.buf_lookup_keys = Some(alloc_buffer_with_data(&ctx.device, &self.lookup_keys));
         self.buf_lookup_vals = Some(alloc_buffer_with_data(&ctx.device, &self.lookup_vals));
         self.buf_search_keys = Some(alloc_buffer_with_data(&ctx.device, &self.search_keys));
-        self.buf_vlookup_output = Some(alloc_buffer(
-            &ctx.device,
-            rows * std::mem::size_of::<f32>(),
-        ));
+        self.buf_vlookup_output =
+            Some(alloc_buffer(&ctx.device, rows * std::mem::size_of::<f32>()));
 
         let vlookup_params = SpreadsheetParams {
             rows: rows as u32,
@@ -269,29 +258,41 @@ impl Experiment for SpreadsheetExperiment {
 
         // --- Encoder 1: spreadsheet_sum_v2 (2D: columns x row_chunks → partials) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_sum_v2");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "spreadsheet_sum_v2");
             let enc = cmd.computeCommandEncoder().expect("encoder");
             let tg_x = 256usize;
             dispatch_2d(
                 &enc,
                 pso,
-                &[(grid.as_ref(), 0), (partials.as_ref(), 1), (prm.as_ref(), 2)],
-                self.cols.div_ceil(tg_x),   // threadgroup count X
-                num_row_chunks,              // threadgroup count Y
-                tg_x.min(self.cols),         // threads per TG X
-                1,                           // threads per TG Y
+                &[
+                    (grid.as_ref(), 0),
+                    (partials.as_ref(), 1),
+                    (prm.as_ref(), 2),
+                ],
+                self.cols.div_ceil(tg_x), // threadgroup count X
+                num_row_chunks,           // threadgroup count Y
+                tg_x.min(self.cols),      // threads per TG X
+                1,                        // threads per TG Y
             );
             enc.endEncoding();
         }
 
         // --- Encoder 2: spreadsheet_sum_reduce (1D: partials → sum output) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_sum_reduce");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "spreadsheet_sum_reduce");
             let enc = cmd.computeCommandEncoder().expect("encoder");
             dispatch_1d(
                 &enc,
                 pso,
-                &[(partials.as_ref(), 0), (sum_out.as_ref(), 1), (prm.as_ref(), 2)],
+                &[
+                    (partials.as_ref(), 0),
+                    (sum_out.as_ref(), 1),
+                    (prm.as_ref(), 2),
+                ],
                 self.cols,
             );
             enc.endEncoding();
@@ -299,12 +300,18 @@ impl Experiment for SpreadsheetExperiment {
 
         // --- Encoder 3: spreadsheet_avg_reduce (1D: same partials → avg output) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_avg_reduce");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "spreadsheet_avg_reduce");
             let enc = cmd.computeCommandEncoder().expect("encoder");
             dispatch_1d(
                 &enc,
                 pso,
-                &[(partials.as_ref(), 0), (avg_out.as_ref(), 1), (prm.as_ref(), 2)],
+                &[
+                    (partials.as_ref(), 0),
+                    (avg_out.as_ref(), 1),
+                    (prm.as_ref(), 2),
+                ],
                 self.cols,
             );
             enc.endEncoding();
@@ -312,7 +319,9 @@ impl Experiment for SpreadsheetExperiment {
 
         // --- Encoder 4: VLOOKUP (unchanged) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_vlookup");
+            let pso = self
+                .pso_cache
+                .get_or_create(ctx.library(), "spreadsheet_vlookup");
             let keys = self.buf_lookup_keys.as_ref().expect("setup not called");
             let vals = self.buf_lookup_vals.as_ref().expect("setup not called");
             let skeys = self.buf_search_keys.as_ref().expect("setup not called");
@@ -353,7 +362,8 @@ impl Experiment for SpreadsheetExperiment {
 
         self.cpu_col_sums = Self::cpu_column_sums(&self.grid_data, self.rows, self.cols);
         self.cpu_col_avgs = Self::cpu_column_averages(&self.grid_data, self.rows, self.cols);
-        self.cpu_vlookup = Self::cpu_vlookup(&self.lookup_keys, &self.lookup_vals, &self.search_keys);
+        self.cpu_vlookup =
+            Self::cpu_vlookup(&self.lookup_keys, &self.lookup_vals, &self.search_keys);
 
         timer.stop()
     }

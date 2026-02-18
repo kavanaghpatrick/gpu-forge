@@ -23,7 +23,10 @@ pub fn print_roofline(data: &[DataPoint], hardware: &HardwareInfo) {
         return;
     }
 
-    println!("\n  BANDWIDTH ROOFLINE ({} @ {} GB/s)", hardware.chip_name, hardware.bandwidth_gbs);
+    println!(
+        "\n  BANDWIDTH ROOFLINE ({} @ {} GB/s)",
+        hardware.chip_name, hardware.bandwidth_gbs
+    );
     println!("  {}", "-".repeat(60));
 
     // Find max label width for alignment
@@ -37,11 +40,7 @@ pub fn print_roofline(data: &[DataPoint], hardware: &HardwareInfo) {
         .unwrap_or(10);
 
     for dp in &with_bw {
-        let bw_pct = dp
-            .metrics
-            .get("bw_utilization_pct")
-            .copied()
-            .unwrap_or(0.0);
+        let bw_pct = dp.metrics.get("bw_utilization_pct").copied().unwrap_or(0.0);
         let gb_per_sec = dp.metrics.get("gb_per_sec").copied().unwrap_or(0.0);
 
         let label = format!("{}@{}", dp.experiment, format_size(dp.size));

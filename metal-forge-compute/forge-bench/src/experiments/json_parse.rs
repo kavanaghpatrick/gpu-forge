@@ -84,10 +84,10 @@ impl Experiment for JsonParseExperiment {
 
     fn supported_sizes(&self) -> Vec<usize> {
         vec![
-            100_000,      // 100K bytes
-            1_000_000,    // 1M bytes
-            10_000_000,   // 10M bytes
-            100_000_000,  // 100M bytes
+            100_000,     // 100K bytes
+            1_000_000,   // 1M bytes
+            10_000_000,  // 10M bytes
+            100_000_000, // 100M bytes
         ]
     }
 
@@ -99,16 +99,10 @@ impl Experiment for JsonParseExperiment {
         self.input_buffer = Some(alloc_buffer_with_data(&ctx.device, &self.data));
 
         // Flags buffer: u32 per byte for newline detection
-        self.flags_buffer = Some(alloc_buffer(
-            &ctx.device,
-            size * std::mem::size_of::<u32>(),
-        ));
+        self.flags_buffer = Some(alloc_buffer(&ctx.device, size * std::mem::size_of::<u32>()));
 
         // Counters buffer: 2 x u32 (comma_count, newline_count)
-        self.counters_buffer = Some(alloc_buffer(
-            &ctx.device,
-            2 * std::mem::size_of::<u32>(),
-        ));
+        self.counters_buffer = Some(alloc_buffer(&ctx.device, 2 * std::mem::size_of::<u32>()));
         self.zero_counters();
 
         // Params buffer
@@ -264,11 +258,7 @@ impl Experiment for JsonParseExperiment {
 
         // Rows per second (newline_count / seconds)
         let rows = self.gpu_result.1 as f64;
-        let rows_per_sec = if seconds > 0.0 {
-            rows / seconds
-        } else {
-            0.0
-        };
+        let rows_per_sec = if seconds > 0.0 { rows / seconds } else { 0.0 };
         m.insert("rows_per_sec".to_string(), rows_per_sec);
 
         m.insert("bytes_processed".to_string(), bytes);

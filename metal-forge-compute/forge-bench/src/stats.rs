@@ -205,8 +205,11 @@ mod tests {
         let s = compute_stats(&samples);
         assert_eq!(s.outliers_removed, 0);
         // Mean = 5.2, values are clustered -> CV should be moderate (< 30%)
-        assert!(s.cv_percent > 0.0 && s.cv_percent < 30.0,
-            "CV={} should be between 0 and 30 for this distribution", s.cv_percent);
+        assert!(
+            s.cv_percent > 0.0 && s.cv_percent < 30.0,
+            "CV={} should be between 0 and 30 for this distribution",
+            s.cv_percent
+        );
         // Verify CV = stddev / mean * 100
         let expected_cv = (s.stddev / s.mean) * 100.0;
         assert!((s.cv_percent - expected_cv).abs() < 1e-10);
@@ -218,18 +221,33 @@ mod tests {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let s = compute_stats(&samples);
         let expected_stddev = (2.5_f64).sqrt();
-        assert!((s.stddev - expected_stddev).abs() < 1e-6, "stddev {} vs expected {}", s.stddev, expected_stddev);
+        assert!(
+            (s.stddev - expected_stddev).abs() < 1e-6,
+            "stddev {} vs expected {}",
+            s.stddev,
+            expected_stddev
+        );
     }
 
     #[test]
     fn test_multiple_outliers_removed() {
         // Tight cluster around 100, with two extreme outliers
-        let mut samples = vec![100.0, 100.1, 99.9, 100.2, 99.8, 100.0, 100.1, 99.9, 100.0, 100.0];
+        let mut samples = vec![
+            100.0, 100.1, 99.9, 100.2, 99.8, 100.0, 100.1, 99.9, 100.0, 100.0,
+        ];
         samples.push(500.0); // outlier high
-        samples.push(1.0);   // outlier low
+        samples.push(1.0); // outlier low
         let s = compute_stats(&samples);
-        assert!(s.outliers_removed >= 2, "Expected at least 2 outliers removed, got {}", s.outliers_removed);
-        assert!(s.mean > 99.0 && s.mean < 101.0, "Mean {} should be near 100 after outlier removal", s.mean);
+        assert!(
+            s.outliers_removed >= 2,
+            "Expected at least 2 outliers removed, got {}",
+            s.outliers_removed
+        );
+        assert!(
+            s.mean > 99.0 && s.mean < 101.0,
+            "Mean {} should be near 100 after outlier removal",
+            s.mean
+        );
     }
 
     #[test]

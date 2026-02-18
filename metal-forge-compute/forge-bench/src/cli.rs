@@ -4,7 +4,8 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "forge-bench", version, about)]
 pub struct ForgeArgs {
-    /// Experiment names to run (e.g., reduce scan sort). Pass "all" for everything.
+    /// Experiment names to run (e.g., reduce scan sort).
+    /// Use "all" to run the full suite with crossover analysis.
     #[arg(value_name = "EXPERIMENTS")]
     pub experiments: Vec<String>,
 
@@ -20,7 +21,7 @@ pub struct ForgeArgs {
     #[arg(long, default_value_t = 3)]
     pub warmup: u32,
 
-    /// Benchmark profile: quick, standard, thorough
+    /// Benchmark profile: quick (1M/3/1), standard (1M+10M/10/3), thorough (1M+10M+100M/30/3)
     #[arg(long)]
     pub profile: Option<String>,
 
@@ -31,4 +32,12 @@ pub struct ForgeArgs {
     /// Write CSV results to file
     #[arg(long)]
     pub csv_file: Option<String>,
+}
+
+impl ForgeArgs {
+    /// Returns true if this is an "all" suite run.
+    pub fn is_all_suite(&self) -> bool {
+        self.experiments.len() == 1 && self.experiments[0].eq_ignore_ascii_case("all")
+            || self.experiments.is_empty()
+    }
 }

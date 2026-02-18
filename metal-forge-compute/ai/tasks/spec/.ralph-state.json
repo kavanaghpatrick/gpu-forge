@@ -1,0 +1,10 @@
+{
+  "phase": "design",
+  "spec": "metal-forge-compute-experiments",
+  "awaitingApproval": true,
+  "completedPhases": [
+    "requirements",
+    "design"
+  ],
+  "created": "2026-02-17"
+}
