@@ -75,7 +75,7 @@ After POC validated, clean up and add error handling.
   - **Commit**: `refactor(engine): add dedup error handling and validation`
   - _Design: Error Handling_
 
-- [ ] 2.2 Add hash table pre-clearing optimization
+- [x] 2.2 Add hash table pre-clearing optimization
   - **Do**: Move hash_table clear into dedup() dispatch (zero-copy via GPU kernel initial write). Use first threadgroup to atomic_store 0xFF across table in parallel (faster than CPU memset). Measure timing improvement.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
   - **Done when**: hash table clears in <100µs (GPU kernel) vs CPU memset
