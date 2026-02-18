@@ -48,7 +48,7 @@ Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardc
   - _Requirements: FR-1, FR-4, FR-7_
   - _Design: Data Flow_
 
-- [ ] 1.5 Add CPU filter in app.rs search_thread()
+- [x] 1.5 Add CPU filter in app.rs search_thread()
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/app.rs` search_thread(), replace lines 341-356 (HashSet::insert loop) with new filter that uses unique_flags from GPU. Read unique_flags_buffer from engine, zip with raw_matches, filter by flag==1.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/app.rs` (search_thread, lines 341-356)
   - **Done when**: filter removes all duplicates (can verify with test data)
