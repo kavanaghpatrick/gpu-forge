@@ -95,7 +95,7 @@ Focus: Wire chunk_cache into app.rs index_thread and search_thread. Add load_fro
   - _Requirements: FR-5, FR-9, FR-10, AC-3.1, AC-3.2_
   - _Design: Component 5_
 
-- [ ] 2.2 Add PathBatch enum to bridge.rs and update channel types
+- [x] 2.2 Add PathBatch enum to bridge.rs and update channel types
   - **Do**:
     1. In `/Users/patrickkavanagh/gpu-search-ui/src/bridge.rs`, add enum: `pub enum PathBatch { Paths(Vec<PathBuf>), CachedChunks(MmapChunkData) }` (import MmapChunkData from engine::chunk_cache)
     2. Change `batch_tx`/`batch_rx` type from `Sender<Vec<PathBuf>>` / `Receiver<Vec<PathBuf>>` to `Sender<PathBatch>` / `Receiver<PathBatch>`
