@@ -103,35 +103,35 @@ After POC validated, clean up and add error handling.
 
 Comprehensive testing with various match counts, edge cases.
 
-- [ ] 3.1 Integration test: dedup with 10K matches
+- [x] 3.1 Integration test: dedup with 10K matches
   - **Do**: Create test data with 10K unique paths + 5K duplicates (15K total). Load into GPU, verify 10K returned after dedup.
   - **Files**: `tests/test_dedup.rs` (new file)
   - **Done when**: Test passes: 10K unique paths correctly identified
   - **Verify**: `cargo test --test test_dedup` passes
   - **Commit**: `test: add integration test for dedup with 10K matches`
 
-- [ ] 3.2 Integration test: dedup with 50K matches (peak load)
+- [x] 3.2 Integration test: dedup with 50K matches (peak load)
   - **Do**: Create test with 50K unique + 25K duplicates (75K total, table may overflow). Verify graceful handling: unique entries inserted, overflow entries marked duplicate.
   - **Files**: `tests/test_dedup.rs`
   - **Done when**: Test passes at 50K scale with <1.5ms GPU time
   - **Verify**: `cargo test --test test_dedup -- --ignored` passes
   - **Commit**: `test: add peak load test for dedup at 50K matches`
 
-- [ ] 3.3 Benchmark: dedup latency vs match count
+- [x] 3.3 Benchmark: dedup latency vs match count
   - **Do**: Benchmark dedup GPU time at 1K, 5K, 10K, 25K, 50K matches. Verify linear scaling (should be O(n) for n matches, constant time per match ~20µs at 256 threads).
   - **Files**: `benches/dedup_bench.rs` (new file using Criterion)
   - **Done when**: Benchmark data shows <1ms for 50K matches, latency scales linearly
   - **Verify**: `cargo bench --bench dedup_bench` completes
   - **Commit**: `perf: add dedup latency benchmark`
 
-- [ ] 3.4 Edge case test: empty matches (0 results)
+- [x] 3.4 Edge case test: empty matches (0 results)
   - **Do**: Test dedup with 0 matches (match_count==0). Should return immediately, no GPU work.
   - **Files**: `tests/test_dedup.rs`
   - **Done when**: Test passes with 0 GPU time
   - **Verify**: `cargo test --test test_dedup` passes
   - **Commit**: `test: add edge case for zero matches`
 
-- [ ] 3.5 Edge case test: all duplicates
+- [x] 3.5 Edge case test: all duplicates
   - **Do**: Test dedup with 50K matches all pointing to same path. Verify first marked unique (1), rest marked duplicate (0).
   - **Files**: `tests/test_dedup.rs`
   - **Done when**: Test passes: exactly 1 unique, 49,999 duplicates
