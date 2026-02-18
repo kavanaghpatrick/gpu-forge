@@ -17,7 +17,7 @@ use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueu
 
 use forge_primitives::{
     alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer_slice, BenchTimer,
-    CsvBenchParams, MetalContext, PsoCache,
+    CsvBenchParams, GpuTimer, MetalContext, PsoCache,
 };
 
 use crate::data_gen::DataGenerator;
@@ -134,8 +134,6 @@ impl Experiment for JsonParseExperiment {
         let counters = self.counters_buffer.as_ref().expect("setup not called");
         let params = self.params_buffer.as_ref().expect("setup not called");
 
-        let timer = BenchTimer::start();
-
         // Single command buffer with two compute passes
         let cmd_buf = ctx
             .queue
@@ -191,13 +189,11 @@ impl Experiment for JsonParseExperiment {
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
-
         // Read back counters
         let result: Vec<u32> = unsafe { read_buffer_slice(counters.as_ref(), 2) };
         self.gpu_result = (result[0], result[1]);
 
-        elapsed
+        GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {

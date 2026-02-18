@@ -12,7 +12,7 @@ use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueu
 
 use forge_primitives::{
     alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer_slice, BenchTimer, GemmParams,
-    MetalContext, PsoCache,
+    GpuTimer, MetalContext, PsoCache,
 };
 
 use crate::cpu_baselines::accelerate;
@@ -118,8 +118,6 @@ impl Experiment for GemvExperiment {
             .pso_cache
             .get_or_create(ctx.library(), "gemv_f32");
 
-        let timer = BenchTimer::start();
-
         let cmd_buf = ctx
             .queue
             .commandBuffer()
@@ -145,13 +143,11 @@ impl Experiment for GemvExperiment {
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
-
         // Read back result vector
         self.gpu_result =
             unsafe { read_buffer_slice::<f32>(buf_y.as_ref(), self.dim_m) };
 
-        elapsed
+        GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {
