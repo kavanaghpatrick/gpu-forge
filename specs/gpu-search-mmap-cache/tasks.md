@@ -153,7 +153,7 @@ Focus: Wire chunk_cache into app.rs index_thread and search_thread. Add load_fro
 
 Focus: Add integration tests verifying search correctness from cached data, and error paths.
 
-- [ ] 3.1 Integration test: cache round-trip produces identical search results
+- [x] 3.1 Integration test: cache round-trip produces identical search results
   - **Do**:
     1. In chunk_cache.rs tests (or new test), create test that:
        - Creates 500+ fake paths, calls `GpuContentSearch::new_for_paths()`, `load_paths()`
