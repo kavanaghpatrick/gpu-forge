@@ -35,7 +35,7 @@ Focus: Get cache save/load/mmap working end-to-end with unit tests. Skip app int
   - _Requirements: FR-1, FR-3_
   - _Design: Component 3_
 
-- [ ] 1.3 Implement load_chunk_cache()
+- [x] 1.3 Implement load_chunk_cache()
   - **Do**:
     1. In `chunk_cache.rs`, implement `load_chunk_cache(root: &Path) -> Option<MmapChunkData>`
     2. Open cache file, read 64-byte header, validate: magic, version, timestamp freshness (<1 hour), root path prefix match (32 bytes), file_len sanity
