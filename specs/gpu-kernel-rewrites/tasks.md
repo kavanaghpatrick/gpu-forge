@@ -178,7 +178,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-4, FR-2, AC-3.1, AC-6.3, AC-6.4, AC-6.5_
   - _Design: Component 3 - Sort single cmdbuf, Kernel 4 dispatch_
 
-- [ ] 2.3 [VERIFY] Quality checkpoint: build + test + sort validates
+- [x] 2.3 [VERIFY] Quality checkpoint: build + test + sort validates
   - **Do**: Verify sort correctness and overall build health
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build --release 2>&1 | tail -3 && cargo test --release 2>&1 | grep "test result" && cargo run --release -p forge-bench -- sort --sizes 10M --runs 1 --warmup 1 2>&1 | grep -E "speedup|PASS|FAIL"`
   - **Done when**: Build clean, tests pass, sort validates at 10M
@@ -186,7 +186,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Spreadsheet Rewrite (dramatic improvement)
 
-- [ ] 2.4 Rewrite spreadsheet.metal with 2D row-parallel dispatch
+- [x] 2.4 Rewrite spreadsheet.metal with 2D row-parallel dispatch
   - **Do**:
     1. Add `spreadsheet_sum_v2` kernel: 2D dispatch (X=columns, Y=row chunks). Each thread sums `SS_ROWS_PER_CHUNK=64` rows for its column, writes to `partials[row_chunk * cols + col]`. Define `SS_ROWS_PER_CHUNK 64`.
     2. Add `spreadsheet_sum_reduce` kernel: 1D dispatch over columns. Each thread sums all row-chunk partials for one column into final output.
@@ -199,7 +199,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-12, AC-8.1, AC-8.2_
   - _Design: Kernel 5 - Spreadsheet Row-Parallel Coalesced_
 
-- [ ] 2.5 Update spreadsheet.rs: 2D dispatch + partials buffer + single cmdbuf + GpuTimer
+- [x] 2.5 Update spreadsheet.rs: 2D dispatch + partials buffer + single cmdbuf + GpuTimer
   - **Do**:
     1. Add `partials_buffer` field for row-chunk partial sums
     2. In `setup()`: allocate partials buffer sized `ceil(rows/64) * cols * sizeof(f32)`, pre-warm new PSOs
@@ -214,7 +214,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### GEMM Rewrite (simdgroup_matrix)
 
-- [ ] 2.6 Add simdgroup_matrix GEMM kernel to gemm.metal
+- [x] 2.6 Add simdgroup_matrix GEMM kernel to gemm.metal
   - **Do**:
     1. Add `#include <metal_simdgroup_matrix>` and `#include <metal_simdgroup>` headers
     2. Add `gemm_simdgroup_f32` kernel: TG=(16,16)=256 threads=8 SIMD groups. Each SIMD group computes one 8x8 output tile via `simdgroup_matrix<float,8,8>`. 2x2 arrangement of SIMD groups covers 16x16 output tile. Shared memory with `GEMM_PAD=4` between rows for bank conflict avoidance. Loop over K tiles: cooperative load A,B tiles into shared memory, `simdgroup_load`, `simdgroup_multiply_accumulate`, `simdgroup_store` result to C.
@@ -226,7 +226,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-13, AC-9.1, AC-9.2, AC-9.3_
   - _Design: Kernel 6 - GEMM simdgroup_matrix_
 
-- [ ] 2.7 Update gemm.rs to use new kernel + GpuTimer
+- [x] 2.7 Update gemm.rs to use new kernel + GpuTimer
   - **Do**:
     1. Change PSO name from `gemm_naive_f32` to `gemm_simdgroup_f32` in setup() and run_gpu()
     2. Update dispatch: TG=(16,16), grid=(ceil(N/16), ceil(M/16)) threadgroups
@@ -238,7 +238,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-13, FR-2, AC-9.4, AC-9.5_
   - _Design: Kernel 6 dispatch_
 
-- [ ] 2.8 [VERIFY] Quality checkpoint: build + test + validate spreadsheet + gemm
+- [x] 2.8 [VERIFY] Quality checkpoint: build + test + validate spreadsheet + gemm
   - **Do**: Full build, test suite, and verify recent kernels
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build --release 2>&1 | tail -3 && cargo test --release 2>&1 | grep "test result" && cargo run --release -p forge-bench -- spreadsheet --sizes 10M --runs 1 --warmup 1 2>&1 | grep -E "speedup|PASS|FAIL" && cargo run --release -p forge-bench -- gemm --sizes 1M --runs 1 --warmup 1 2>&1 | grep -E "speedup|PASS|FAIL"`
   - **Done when**: Build clean, tests pass, spreadsheet + gemm validate
@@ -246,7 +246,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Filter + Timeseries Rewrites (independent, vectorization)
 
-- [ ] 2.9 Rewrite filter_bench.metal with uint4 vectorized loads + SIMD reduce
+- [x] 2.9 Rewrite filter_bench.metal with uint4 vectorized loads + SIMD reduce
   - **Do**:
     1. Replace `filter_count_gt` kernel: each thread loads `uint4` via `load_uint4_safe(input, gid * 4, params.element_count)`. Evaluate predicate on each component. Sum match count (0-4). Use `simd_sum(match_val)` to aggregate within SIMD group. Only lane 0 does `atomic_fetch_add_explicit` on output.
     2. Add `simd_lane [[thread_index_in_simdgroup]]` to kernel params
@@ -257,7 +257,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-15, AC-11.1_
   - _Design: Kernel 7 - Filter Vectorized Loads_
 
-- [ ] 2.10 Update filter.rs dispatch + GpuTimer
+- [x] 2.10 Update filter.rs dispatch + GpuTimer
   - **Do**:
     1. Change dispatch total_threads from `self.size` to `self.size.div_ceil(4)` (each thread handles 4 elements)
     2. Replace BenchTimer with GpuTimer
@@ -268,7 +268,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-15, FR-2, AC-11.2, AC-11.3_
   - _Design: Kernel 7 dispatch_
 
-- [ ] 2.11 Rewrite timeseries.metal with float4 window reads
+- [x] 2.11 Rewrite timeseries.metal with float4 window reads
   - **Do**:
     1. Modify `timeseries_moving_avg` kernel: in the window summation loop, process 4 elements at a time via `float4(prices[i], prices[i+1], prices[i+2], prices[i+3])` with `sum += chunk.x + chunk.y + chunk.z + chunk.w`. Scalar remainder loop for last 0-3 elements.
   - **Files**: `metal-forge-compute/forge-primitives/shaders/timeseries.metal`
@@ -278,7 +278,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-16, AC-12.1_
   - _Design: Kernel 8 - Timeseries Float4 Window Reads_
 
-- [ ] 2.12 Update timeseries.rs with GpuTimer
+- [x] 2.12 Update timeseries.rs with GpuTimer
   - **Do**:
     1. Replace BenchTimer with GpuTimer in run_gpu()
     2. No dispatch change needed (each thread still handles one output element; vectorization is within the window read)
@@ -291,7 +291,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### JSON Parse + GEMV Scale-Up (lowest priority)
 
-- [ ] 2.13 Update json_parse.rs: add 10M to sizes + GpuTimer
+- [x] 2.13 Update json_parse.rs: add 10M to sizes + GpuTimer
   - **Do**:
     1. Add `10_000_000` to `supported_sizes()` vec
     2. Replace BenchTimer with GpuTimer in run_gpu()
@@ -302,7 +302,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-17, FR-2, AC-13.1_
   - _Design: Kernel 9 - JSON Parse Scale-Up_
 
-- [ ] 2.14 Update gemv.rs: add 4096 to sizes + GpuTimer
+- [x] 2.14 Update gemv.rs: add 4096 to sizes + GpuTimer
   - **Do**:
     1. Add `4096` to `supported_sizes()` vec
     2. Replace BenchTimer with GpuTimer in run_gpu()
@@ -316,7 +316,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ### Remaining GpuTimer Integration (composite + hash_join)
 
-- [ ] 2.15 Add GpuTimer to compact, groupby, pipeline, duckdb, hash_join experiments
+- [x] 2.15 Add GpuTimer to compact, groupby, pipeline, duckdb, hash_join experiments
   - **Do**:
     1. In each of `compact.rs`, `groupby.rs`, `pipeline.rs`, `duckdb.rs`, `hash_join.rs`: replace BenchTimer with GpuTimer in `run_gpu()`. Pattern: remove `let timer = BenchTimer::start();` and `timer.stop()`, add `GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)` after commit+waitUntilCompleted.
     2. Update imports: add `GpuTimer` to use statement, keep `BenchTimer` for `run_cpu()`
