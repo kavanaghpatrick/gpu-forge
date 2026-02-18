@@ -171,7 +171,7 @@ Focus: Add integration tests verifying search correctness from cached data, and 
   - _Requirements: AC-1.2, AC-3.4_
   - _Design: Test Strategy_
 
-- [ ] 3.2 Test fallback on corrupt/missing cache
+- [x] 3.2 Test fallback on corrupt/missing cache
   - **Do**:
     1. Add test `test_fallback_corrupt_cache`: write garbage to chunks.cache, verify load returns None
     2. Add test `test_fallback_missing_cache`: delete cache file, verify load returns None (not panic)
