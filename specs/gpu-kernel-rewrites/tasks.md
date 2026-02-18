@@ -378,7 +378,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - **Done when**: Build succeeds, all tests pass, code formatted
   - **Commit**: `chore(forge): pass local CI` (if fixes needed)
 
-- [ ] 4.2 Create PR and verify CI
+- [x] 4.2 Create PR and verify CI
   - **Do**:
     1. Verify current branch is `feat/gpu-query` (feature branch): `git branch --show-current`
     2. Stage all modified files: `git add -A`
@@ -391,7 +391,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ## Phase 5: PR Lifecycle
 
-- [ ] 5.1 Monitor CI and fix failures
+- [x] 5.1 Monitor CI and fix failures
   - **Do**:
     1. Check CI status: `gh pr checks`
     2. If failures: read failure details, fix locally, push
@@ -400,7 +400,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - **Done when**: CI green
   - **Commit**: `fix(forge): address CI failures` (if needed)
 
-- [ ] 5.2 [VERIFY] AC checklist verification
+- [x] 5.2 [VERIFY] AC checklist verification
   - **Do**: Verify each acceptance criterion from requirements.md is met:
     1. AC-1.1: GpuTimer exists in timing.rs using GPUStartTime/GPUEndTime
     2. AC-1.2: All 15 experiments use GpuTimer in run_gpu()
@@ -419,7 +419,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - **Done when**: All ACs verified via code inspection + benchmark results
   - **Commit**: None
 
-- [ ] 5.3 Final benchmark sweep at 10M with all 15 kernels
+- [x] 5.3 Final benchmark sweep at 10M with all 15 kernels
   - **Do**: Run standard profile across all kernels, capture final speedup numbers
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo run --release -p forge-bench -- all --profile standard 2>&1 | tail -60`
   - **Done when**: All 15 kernels show GPU > 1.0x at 10M, P0 kernels hit minimum targets
