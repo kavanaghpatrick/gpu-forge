@@ -21,7 +21,7 @@ Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardc
   - _Requirements: FR-2, FR-3, FR-4_
   - _Design: Component DedupdKernel_
 
-- [ ] 1.2 Add hash table buffer + dedup pipeline to GpuContentSearch
+- [x] 1.2 Add hash table buffer + dedup pipeline to GpuContentSearch
   - **Do**: In `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`, add fields: `dedup_pipeline: ComputePipelineState`, `hash_table_buffer: Buffer`, `unique_flags_buffer: Buffer`. In `new_for_paths()`, allocate buffers (100K uint32 for hash table, 100K uint8 for flags). Compile dedup_kernel from path_library.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs` (struct GpuContentSearch, impl GpuContentSearch::new_for_paths)
   - **Done when**: GpuContentSearch has dedup_pipeline + buffers initialized, no compiler errors
