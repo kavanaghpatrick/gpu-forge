@@ -135,7 +135,7 @@ Focus: Wire chunk_cache into app.rs index_thread and search_thread. Add load_fro
   - **Done when**: Zero errors, all existing tests pass, no clippy warnings
   - **Commit**: `chore(app): pass quality checkpoint after integration` (only if fixes needed)
 
-- [ ] 2.5 POC Checkpoint: Build release and verify cold start saves cache
+- [x] 2.5 POC Checkpoint: Build release and verify cold start saves cache
   - **Do**:
     1. Build release: `cargo build --release`
     2. Remove existing cache: `rm -f ~/.cache/gpu-search-ui/chunks.cache`
