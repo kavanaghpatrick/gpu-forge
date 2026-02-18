@@ -3,20 +3,53 @@
 //! Each experiment implements the `Experiment` trait, providing GPU and CPU
 //! implementations of the same computation for comparison.
 
+pub mod atomic_contention;
+pub mod atomic_throughput;
+pub mod ballot_compact;
+pub mod bank_conflicts;
+pub mod branch_diverge;
+pub mod byte_search;
+pub mod cache_probe;
 pub mod compact;
+pub mod cross_tg;
+pub mod dispatch_overhead;
 pub mod duckdb;
+pub mod dynamic_cache;
+pub mod encoder_reuse;
 pub mod filter;
+pub mod fp16_advantage;
+pub mod fsm_runtime;
 pub mod gemm;
 pub mod gemv;
+pub mod gpu_scheduler;
 pub mod groupby;
 pub mod hash_join;
 pub mod histogram;
+pub mod ilp_width;
+pub mod indirect_cond;
 pub mod json_parse;
+pub mod mem_compute_overlap;
+pub mod occupancy_sweep;
 pub mod pipeline;
 pub mod reduce;
+pub mod register_pressure;
 pub mod scan;
+pub mod setbytes_lut;
+pub mod simd_matmul;
+pub mod simd_pipeline;
+pub mod simd_register_lut;
+pub mod simd_sort32;
+pub mod simd_taskqueue;
+pub mod simd_vs_tg;
+pub mod slc_lockfree;
+pub mod slc_persistence;
+pub mod slc_residency;
 pub mod sort;
 pub mod spreadsheet;
+pub mod stride_bandwidth;
+pub mod texture_interp;
+pub mod tg_gradient;
+pub mod tick_chain;
 pub mod timeseries;
 
 use std::collections::HashMap;
@@ -70,5 +103,43 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         Box::new(json_parse::JsonParseExperiment::new()),
         Box::new(pipeline::PipelineExperiment::new()),
         Box::new(duckdb::DuckDbExperiment::new()),
+        Box::new(simd_vs_tg::SimdVsTgExperiment::new()),
+        Box::new(slc_residency::SlcResidencyExperiment::new()),
+        Box::new(dynamic_cache::DynamicCacheExperiment::new()),
+        Box::new(indirect_cond::IndirectCondExperiment::new()),
+        Box::new(fp16_advantage::Fp16AdvantageExperiment::new()),
+        Box::new(occupancy_sweep::OccupancySweepExperiment::new()),
+        Box::new(setbytes_lut::SetBytesLutExperiment::new()),
+        Box::new(tg_gradient::TgGradientExperiment::new()),
+        Box::new(encoder_reuse::EncoderReuseExperiment::new()),
+        // Wave 3: Practical kernel design patterns
+        Box::new(atomic_contention::AtomicContentionExperiment::new()),
+        Box::new(stride_bandwidth::StrideBandwidthExperiment::new()),
+        Box::new(branch_diverge::BranchDivergeExperiment::new()),
+        // Wave 4: Creative Metal tricks
+        Box::new(ballot_compact::BallotCompactExperiment::new()),
+        Box::new(simd_register_lut::SimdRegisterLutExperiment::new()),
+        Box::new(byte_search::ByteSearchExperiment::new()),
+        Box::new(texture_interp::TextureInterpExperiment::new()),
+        // Wave 5: Hardware probing & SIMD-as-CPU
+        Box::new(register_pressure::RegisterPressureExperiment::new()),
+        Box::new(ilp_width::IlpWidthExperiment::new()),
+        Box::new(cache_probe::CacheProbeExperiment::new()),
+        Box::new(simd_pipeline::SimdPipelineExperiment::new()),
+        Box::new(simd_sort32::SimdSort32Experiment::new()),
+        Box::new(simd_taskqueue::SimdTaskqueueExperiment::new()),
+        // Wave 6: Micro-architecture deep probes
+        Box::new(slc_persistence::SlcPersistenceExperiment::new()),
+        Box::new(dispatch_overhead::DispatchOverheadExperiment::new()),
+        Box::new(mem_compute_overlap::MemComputeOverlapExperiment::new()),
+        Box::new(bank_conflicts::BankConflictsExperiment::new()),
+        Box::new(simd_matmul::SimdMatmulExperiment::new()),
+        Box::new(atomic_throughput::AtomicThroughputExperiment::new()),
+        Box::new(cross_tg::CrossTgExperiment::new()),
+        // Wave 7: GPU OS Primitives
+        Box::new(slc_lockfree::SlcLockfreeExperiment::new()),
+        Box::new(gpu_scheduler::GpuSchedulerExperiment::new()),
+        Box::new(tick_chain::TickChainExperiment::new()),
+        Box::new(fsm_runtime::FsmRuntimeExperiment::new()),
     ]
 }

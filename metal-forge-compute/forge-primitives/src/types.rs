@@ -116,6 +116,26 @@ pub struct CsvBenchParams {
     pub _pad: [u32; 3],
 }
 
+/// Parameters for GPU exploit experiments.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ExploitParams {
+    pub element_count: u32,
+    pub num_passes: u32,
+    pub mode: u32,
+    pub _pad: u32,
+}
+
+/// Parameters for GPU OS primitive experiments.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GpuOsParams {
+    pub capacity: u32,
+    pub num_ops: u32,
+    pub num_queues: u32,
+    pub mode: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +451,29 @@ mod tests {
     }
 
     #[test]
+    fn test_exploit_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<ExploitParams>(),
+            16,
+            "ExploitParams must be 16 bytes"
+        );
+
+        let p = ExploitParams {
+            element_count: 0,
+            num_passes: 0,
+            mode: 0,
+            _pad: 0,
+        };
+        let base = &p as *const _ as usize;
+        let element_count_offset = &p.element_count as *const _ as usize - base;
+        let num_passes_offset = &p.num_passes as *const _ as usize - base;
+        let mode_offset = &p.mode as *const _ as usize - base;
+        assert_eq!(element_count_offset, 0, "element_count at offset 0");
+        assert_eq!(num_passes_offset, 4, "num_passes at offset 4");
+        assert_eq!(mode_offset, 8, "mode at offset 8");
+    }
+
+    #[test]
     fn test_all_params_are_16_bytes() {
         // Verify all param structs are exactly 16 bytes for Metal alignment
         assert_eq!(std::mem::size_of::<ReduceParams>(), 16);
@@ -445,5 +488,32 @@ mod tests {
         assert_eq!(std::mem::size_of::<TimeSeriesParams>(), 16);
         assert_eq!(std::mem::size_of::<HashJoinParams>(), 16);
         assert_eq!(std::mem::size_of::<CsvBenchParams>(), 16);
+        assert_eq!(std::mem::size_of::<ExploitParams>(), 16);
+        assert_eq!(std::mem::size_of::<GpuOsParams>(), 16);
+    }
+
+    #[test]
+    fn test_gpuos_params_layout() {
+        assert_eq!(
+            std::mem::size_of::<GpuOsParams>(),
+            16,
+            "GpuOsParams must be 16 bytes"
+        );
+
+        let p = GpuOsParams {
+            capacity: 0,
+            num_ops: 0,
+            num_queues: 0,
+            mode: 0,
+        };
+        let base = &p as *const _ as usize;
+        let capacity_offset = &p.capacity as *const _ as usize - base;
+        let num_ops_offset = &p.num_ops as *const _ as usize - base;
+        let num_queues_offset = &p.num_queues as *const _ as usize - base;
+        let mode_offset = &p.mode as *const _ as usize - base;
+        assert_eq!(capacity_offset, 0, "capacity at offset 0");
+        assert_eq!(num_ops_offset, 4, "num_ops at offset 4");
+        assert_eq!(num_queues_offset, 8, "num_queues at offset 8");
+        assert_eq!(mode_offset, 12, "mode at offset 12");
     }
 }

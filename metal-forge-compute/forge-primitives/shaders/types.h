@@ -109,6 +109,24 @@ struct CsvBenchParams {
     uint _pad[3];
 };
 
+/// Parameters for GPU exploit experiments.
+/// Matches Rust ExploitParams in types.rs.
+struct ExploitParams {
+    uint element_count;
+    uint num_passes;
+    uint mode;       // kernel variant selector
+    uint _pad;
+};
+
+/// Parameters for GPU OS primitive experiments.
+/// Matches Rust GpuOsParams in types.rs.
+struct GpuOsParams {
+    uint capacity;      // table/queue capacity, state elements, or FSM count
+    uint num_ops;       // operations per dispatch, ticks, or transitions
+    uint num_queues;    // TG queues (scheduler), cycles (queue), TGs (FSM)
+    uint mode;          // variant selector
+};
+
 /// Vectorized load helpers with bounds checking.
 /// Return zero-initialized vector, then conditionally load each of 4 elements.
 
