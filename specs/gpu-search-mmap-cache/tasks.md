@@ -108,7 +108,7 @@ Focus: Wire chunk_cache into app.rs index_thread and search_thread. Add load_fro
   - _Requirements: FR-2_
   - _Design: Components 6-7, Technical Decisions (Channel type)_
 
-- [ ] 2.3 Integrate chunk cache into index_thread and search_thread
+- [x] 2.3 Integrate chunk cache into index_thread and search_thread
   - **Do**:
     1. In `/Users/patrickkavanagh/gpu-search-ui/src/app.rs`, modify `index_thread()`:
        - Before PathCache check, try `chunk_cache::load_chunk_cache(&root)`
