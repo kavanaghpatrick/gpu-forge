@@ -43,6 +43,7 @@ pub mod simd_taskqueue;
 pub mod simd_vs_tg;
 pub mod slc_lockfree;
 pub mod slc_lockfree_v2;
+pub mod slc_lockfree_v3;
 pub mod slc_persistence;
 pub mod slc_residency;
 pub mod sort;
@@ -140,6 +141,7 @@ pub fn all_experiments() -> Vec<Box<dyn Experiment>> {
         // Wave 7: GPU OS Primitives
         Box::new(slc_lockfree::SlcLockfreeExperiment::new()),
         Box::new(slc_lockfree_v2::SlcLockfreeV2Experiment::new()),
+        Box::new(slc_lockfree_v3::SlcLockfreeV3Experiment::new()),
         Box::new(gpu_scheduler::GpuSchedulerExperiment::new()),
         Box::new(tick_chain::TickChainExperiment::new()),
         Box::new(fsm_runtime::FsmRuntimeExperiment::new()),
