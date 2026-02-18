@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardcoded 100K table. Skip error handling.
 
-- [ ] 1.1 Add dedup_kernel MSL source to shader.rs
+- [x] 1.1 Add dedup_kernel MSL source to shader.rs
   - **Do**: Append `dedup_kernel` to PATH_SEARCH_SHADER. Copy hashtable.metal kernel patterns (atomic_compare_exchange_weak_explicit). Implement FNV-1a hash loop (6 ops/byte). Scan backward/forward for path newline bounds. Linear probing (64 max probes).
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/shader.rs` (add ~40 lines before closing of PATH_SEARCH_SHADER)
   - **Done when**: dedup_kernel compiles without errors, accepts chunks_buffer, matches, hash_table, unique_flags, match_count, params
