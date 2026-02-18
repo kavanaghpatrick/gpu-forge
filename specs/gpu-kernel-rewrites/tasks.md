@@ -337,7 +337,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ## Phase 3: Testing (Per-Kernel Correctness + Benchmark Validation)
 
-- [ ] 3.1 Validate all 15 experiments at 10M elements
+- [x] 3.1 Validate all 15 experiments at 10M elements
   - **Do**:
     1. Run each of the 15 experiments with `--sizes 10M --runs 1 --warmup 1` and verify validate() passes
     2. For GEMM: use `--sizes 1M` (1024x1024 matrix)
@@ -351,7 +351,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-20, AC-15.6, NFR-3, NFR-4_
   - _Design: Test Strategy - Unit Tests_
 
-- [ ] 3.2 Run full benchmark suite with standard profile (10 runs, 3 warmup)
+- [x] 3.2 Run full benchmark suite with standard profile (10 runs, 3 warmup)
   - **Do**:
     1. Run each P0 kernel with standard profile: `--sizes 10M --runs 10 --warmup 3`
     2. Record speedup values for each kernel
@@ -364,7 +364,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: NFR-1, NFR-2, NFR-5_
   - _Design: Test Strategy - Performance Validation_
 
-- [ ] 3.3 [VERIFY] Quality checkpoint: build + test + validate
+- [x] 3.3 [VERIFY] Quality checkpoint: build + test + validate
   - **Do**: Full quality check after testing phase
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build --release 2>&1 | tail -3 && cargo test --release 2>&1 | grep "test result"`
   - **Done when**: Clean build, all tests pass
@@ -372,7 +372,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
 
 ## Phase 4: Quality Gates
 
-- [ ] 4.1 [VERIFY] Full local CI: build + test + fmt check
+- [x] 4.1 [VERIFY] Full local CI: build + test + fmt check
   - **Do**: Run complete local quality suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo fmt --check 2>&1 | tail -5 && cargo build --release 2>&1 | tail -3 && cargo test --release 2>&1 | grep "test result"`
   - **Done when**: Build succeeds, all tests pass, code formatted
