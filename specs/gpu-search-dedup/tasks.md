@@ -30,7 +30,7 @@ Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardc
   - _Requirements: FR-1_
   - _Design: Component GpuContentSearch Integration_
 
-- [ ] 1.3 Implement dedup() method to dispatch kernel
+- [x] 1.3 Implement dedup() method to dispatch kernel
   - **Do**: Add `fn dedup(&self, match_count: u32) -> u64` to GpuContentSearch impl. Create command buffer + encoder. Set compute pipeline (dedup_pipeline). Bind buffers: chunks_buffer(0), path_matches_buffer(1), hash_table_buffer(2), match_count_buffer(3), unique_flags_buffer(4), params_buffer(5). Dispatch threads: total_threads = match_count, 256 per threadgroup. Encode, commit, wait_until_completed(). Return GPU time.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs` (new method dedup)
   - **Done when**: dedup() method compiles and can be called after path_search
