@@ -83,7 +83,7 @@ After POC validated, clean up and add error handling.
   - **Commit**: `refactor(engine): move hash table clear to GPU kernel`
   - _Design: Optimization Opportunities_
 
-- [ ] 2.3 Extend SearchProfile with dedup metrics
+- [x] 2.3 Extend SearchProfile with dedup metrics
   - **Do**: Add `dedup_us: u64`, `dedup_table_size: u32`, `dedup_collisions: u32` to SearchProfile. Update dedup() to return struct. Print in SearchProfile::print().
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
   - **Done when**: SearchProfile includes dedup timings and collision count
