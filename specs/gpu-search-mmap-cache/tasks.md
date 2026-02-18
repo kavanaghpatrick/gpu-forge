@@ -21,7 +21,7 @@ Focus: Get cache save/load/mmap working end-to-end with unit tests. Skip app int
   - _Requirements: FR-1, FR-3, FR-4, NFR-3_
   - _Design: Components 1-2_
 
-- [ ] 1.2 Implement save_chunk_cache()
+- [x] 1.2 Implement save_chunk_cache()
   - **Do**:
     1. In `chunk_cache.rs`, implement `save_chunk_cache(root, chunk_data, chunk_count, path_count) -> Option<()>`
     2. Build 64-byte header: magic "GPSC" (4B), version u32 LE (4B), timestamp u64 LE (8B), chunk_count u32 LE (4B), path_count u32 LE (4B), chunk_data_len u64 LE (8B), root_hash 32B (first 32 bytes of root path, zero-padded)
