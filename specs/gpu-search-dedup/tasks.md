@@ -67,7 +67,7 @@ Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardc
 
 After POC validated, clean up and add error handling.
 
-- [ ] 2.1 Extract dedup helper function + error handling
+- [x] 2.1 Extract dedup helper function + error handling
   - **Do**: Create `fn dedup_with_error(&self, match_count: u32) -> Result<u64, String>`. Add checks: hash_table_buffer null, match_count overflow, GPU allocation failure. Add FNV-1a hash test function (unit test for collision rate).
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
   - **Done when**: dedup_with_error() handles error cases gracefully, logs to error callback
