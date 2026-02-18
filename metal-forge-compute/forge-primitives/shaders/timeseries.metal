@@ -37,7 +37,14 @@ kernel void timeseries_moving_avg(
     uint count = gid - start + 1;
 
     float sum = 0.0f;
-    for (uint i = start; i <= gid; i++) {
+    uint i = start;
+    // Vectorized window read: process 4 elements at a time
+    for (; i + 3 <= gid; i += 4) {
+        float4 chunk = float4(prices[i], prices[i+1], prices[i+2], prices[i+3]);
+        sum += chunk.x + chunk.y + chunk.z + chunk.w;
+    }
+    // Scalar remainder
+    for (; i <= gid; i++) {
         sum += prices[i];
     }
 

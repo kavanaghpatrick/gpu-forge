@@ -14,8 +14,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, MetalContext, PsoCache,
-    TimeSeriesParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer, MetalContext,
+    PsoCache, TimeSeriesParams,
 };
 
 use crate::data_gen::DataGenerator;
@@ -126,8 +126,6 @@ impl Experiment for TimeSeriesExperiment {
             .pso_cache
             .get_or_create(ctx.library(), "timeseries_moving_avg");
 
-        let timer = BenchTimer::start();
-
         let cmd_buf = ctx
             .queue
             .commandBuffer()
@@ -151,12 +149,10 @@ impl Experiment for TimeSeriesExperiment {
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
-
         // Read back result
         self.gpu_result = unsafe { read_buffer_slice::<f32>(buf_output.as_ref(), self.size) };
 
-        elapsed
+        GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {
