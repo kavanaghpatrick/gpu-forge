@@ -50,7 +50,7 @@ Focus: Get cache save/load/mmap working end-to-end with unit tests. Skip app int
   - _Requirements: FR-2, FR-4, FR-6, FR-8, NFR-5_
   - _Design: Component 4_
 
-- [ ] 1.4 Add unit tests for cache round-trip and error cases
+- [x] 1.4 Add unit tests for cache round-trip and error cases
   - **Do**:
     1. Add `#[cfg(test)] mod tests` in `chunk_cache.rs`
     2. `test_save_load_round_trip`: Create fake chunk_data (100 chunks of 4096 bytes with path strings), save, load, verify `chunk_count`, `path_count`, `chunk_data_slice()` matches original
