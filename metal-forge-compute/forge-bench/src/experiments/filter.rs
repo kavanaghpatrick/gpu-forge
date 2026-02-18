@@ -14,7 +14,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer, BenchTimer, FilterBenchParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer, BenchTimer, FilterBenchParams, GpuTimer,
     MetalContext, PsoCache,
 };
 
@@ -128,8 +128,6 @@ impl Experiment for FilterExperiment {
             .pso_cache
             .get_or_create(ctx.library(), "filter_count_gt");
 
-        let timer = BenchTimer::start();
-
         let cmd_buf = ctx
             .queue
             .commandBuffer()
@@ -138,6 +136,7 @@ impl Experiment for FilterExperiment {
             .computeCommandEncoder()
             .expect("Failed to create compute encoder");
 
+        // Each thread handles 4 elements via uint4 vectorized loads
         forge_primitives::dispatch_1d(
             &encoder,
             pso,
@@ -146,19 +145,17 @@ impl Experiment for FilterExperiment {
                 (output.as_ref(), 1),
                 (params.as_ref(), 2),
             ],
-            self.size,
+            self.size.div_ceil(4),
         );
 
         encoder.endEncoding();
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
-
         // Read back match count
         self.gpu_match_count = unsafe { read_buffer::<u32>(output.as_ref()) };
 
-        elapsed
+        GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {

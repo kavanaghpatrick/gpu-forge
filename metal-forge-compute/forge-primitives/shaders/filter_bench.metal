@@ -26,14 +26,17 @@ kernel void filter_count_gt(
     device atomic_uint*        output  [[buffer(1)]],
     constant FilterBenchParams& params  [[buffer(2)]],
     uint gid                           [[thread_position_in_grid]],
-    uint simd_lane                     [[thread_index_in_simdgroup]],
-    uint simd_group                    [[simdgroup_index_in_threadgroup]]
+    uint simd_lane                     [[thread_index_in_simdgroup]]
 ) {
-    // Out-of-bounds threads contribute 0 matches
-    uint match_val = 0;
-    if (gid < params.element_count) {
-        match_val = (input[gid] > params.threshold) ? 1u : 0u;
-    }
+    // Each thread evaluates 4 elements via vectorized load
+    uint base = gid * 4;
+    uint4 vals = load_uint4_safe(input, base, params.element_count);
+    uint threshold = params.threshold;
+
+    uint match_val = uint(vals.x > threshold)
+                   + uint(vals.y > threshold)
+                   + uint(vals.z > threshold)
+                   + uint(vals.w > threshold);
 
     // SIMD-level reduction: sum matches within SIMD group (32 threads)
     uint simd_matches = simd_sum(match_val);
