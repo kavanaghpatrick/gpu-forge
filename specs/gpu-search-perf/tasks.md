@@ -344,7 +344,7 @@ Focus: Add unit tests for new components. Existing integration tests already val
   - _Requirements: AC-3.1_
   - _Design: Test Strategy_
 
-- [ ] 3.2 Add unit tests for `GpuPathMatchResult` and `score_file_extension_cpu()`
+- [x] 3.2 Add unit tests for `GpuPathMatchResult` and `score_file_extension_cpu()`
   - **Do**:
     1. Open `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`
     2. In the existing `#[cfg(test)] mod tests` block (line 968), add:
