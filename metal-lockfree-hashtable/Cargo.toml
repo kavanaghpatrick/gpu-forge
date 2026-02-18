@@ -1,0 +1,12 @@
+[package]
+name = "metal-lockfree-hashtable"
+version = "0.1.0"
+edition = "2021"
+description = "Lock-free GPU hash table on Apple Silicon Metal — 1274 Mops lookup at 64M keys"
+
+[dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+block2 = "0.6"
+rand = "0.8"
