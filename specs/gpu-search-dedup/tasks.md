@@ -39,7 +39,7 @@ Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardc
   - _Requirements: FR-3, FR-6, FR-8_
   - _Design: Component GpuContentSearch Integration_
 
-- [ ] 1.4 Integrate dedup into search_paths()
+- [x] 1.4 Integrate dedup into search_paths()
   - **Do**: In `search_paths()` method, after path_search_kernel dispatch + wait_until_completed (line 460), add: (1) Clear hash_table_buffer with 0xFF (unsafe memset). (2) Call dedup(match_count). (3) Read unique_flags_buffer. (4) Filter matches by unique_flags in result extraction loop. Accept all 50K unique paths in POC (no filtering, will add in Phase 2).
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs` (method search_paths, lines 462-532)
   - **Done when**: search_paths() calls dedup() and returns ContentMatch vector (POC: unfiltered)
