@@ -91,7 +91,7 @@ After POC validated, clean up and add error handling.
   - **Commit**: `feat(engine): add dedup metrics to SearchProfile`
   - _Requirements: FR-8_
 
-- [ ] 2.4 Validate dedup correctness with unit tests
+- [x] 2.4 Validate dedup correctness with unit tests
   - **Do**: Add test in search.rs: `test_dedup_no_duplicates()` — load paths with known duplicates, verify all duplicates marked with unique_flags==0. Test FNV-1a collision rate at 50K scale.
   - **Files**: `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs` (tests module)
   - **Done when**: All dedup tests pass (100% correctness on synthetic data)
