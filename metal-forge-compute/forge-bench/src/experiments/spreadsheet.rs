@@ -17,8 +17,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer_slice, BenchTimer,
-    MetalContext, PsoCache, SpreadsheetParams,
+    alloc_buffer, alloc_buffer_with_data, dispatch_1d, dispatch_2d, read_buffer_slice, BenchTimer,
+    GpuTimer, MetalContext, PsoCache, SpreadsheetParams,
 };
 
 use crate::data_gen::DataGenerator;
@@ -41,8 +41,12 @@ pub struct SpreadsheetExperiment {
     cols: usize,
     /// Metal buffer for grid data.
     buf_grid: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    /// Metal buffer for SUM/AVERAGE output (cols elements).
+    /// Metal buffer for SUM output (cols elements).
     buf_col_output: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Metal buffer for AVERAGE output (cols elements).
+    buf_avg_output: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Metal buffer for row-chunk partials (num_row_chunks * cols elements).
+    buf_partials: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for SpreadsheetParams.
     buf_params: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// Metal buffer for sorted lookup keys.
@@ -84,6 +88,8 @@ impl SpreadsheetExperiment {
             cols: 0,
             buf_grid: None,
             buf_col_output: None,
+            buf_avg_output: None,
+            buf_partials: None,
             buf_params: None,
             buf_lookup_keys: None,
             buf_lookup_vals: None,
@@ -199,6 +205,18 @@ impl Experiment for SpreadsheetExperiment {
             &ctx.device,
             cols * std::mem::size_of::<f32>(),
         ));
+        self.buf_avg_output = Some(alloc_buffer(
+            &ctx.device,
+            cols * std::mem::size_of::<f32>(),
+        ));
+
+        // Partials buffer for 2D row-chunked approach: num_row_chunks * cols
+        let ss_rows_per_chunk = 64usize;
+        let num_row_chunks = rows.div_ceil(ss_rows_per_chunk);
+        self.buf_partials = Some(alloc_buffer(
+            &ctx.device,
+            num_row_chunks * cols * std::mem::size_of::<f32>(),
+        ));
 
         let params = SpreadsheetParams {
             rows: rows as u32,
@@ -227,77 +245,107 @@ impl Experiment for SpreadsheetExperiment {
 
         // Pre-warm PSO cache
         self.pso_cache
-            .get_or_create(ctx.library(), "spreadsheet_sum");
+            .get_or_create(ctx.library(), "spreadsheet_sum_v2");
         self.pso_cache
-            .get_or_create(ctx.library(), "spreadsheet_average");
+            .get_or_create(ctx.library(), "spreadsheet_sum_reduce");
+        self.pso_cache
+            .get_or_create(ctx.library(), "spreadsheet_avg_reduce");
         self.pso_cache
             .get_or_create(ctx.library(), "spreadsheet_vlookup");
     }
 
     fn run_gpu(&mut self, ctx: &MetalContext) -> f64 {
-        let timer = BenchTimer::start();
+        let grid = self.buf_grid.as_ref().expect("setup not called");
+        let partials = self.buf_partials.as_ref().expect("setup not called");
+        let sum_out = self.buf_col_output.as_ref().expect("setup not called");
+        let avg_out = self.buf_avg_output.as_ref().expect("setup not called");
+        let prm = self.buf_params.as_ref().expect("setup not called");
 
-        // --- Kernel 1: Column SUM ---
+        let ss_rows_per_chunk = 64usize;
+        let num_row_chunks = self.rows.div_ceil(ss_rows_per_chunk);
+
+        // Single command buffer for all kernels
+        let cmd = ctx.queue.commandBuffer().expect("cmd buf");
+
+        // --- Encoder 1: spreadsheet_sum_v2 (2D: columns x row_chunks → partials) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_sum");
-            let grid = self.buf_grid.as_ref().expect("setup not called");
-            let out = self.buf_col_output.as_ref().expect("setup not called");
-            let prm = self.buf_params.as_ref().expect("setup not called");
-
-            let cmd = ctx.queue.commandBuffer().expect("cmd buf");
+            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_sum_v2");
             let enc = cmd.computeCommandEncoder().expect("encoder");
-            dispatch_1d(&enc, pso, &[
-                (grid.as_ref(), 0), (out.as_ref(), 1), (prm.as_ref(), 2),
-            ], self.cols);
+            let tg_x = 256usize;
+            dispatch_2d(
+                &enc,
+                pso,
+                &[(grid.as_ref(), 0), (partials.as_ref(), 1), (prm.as_ref(), 2)],
+                self.cols.div_ceil(tg_x),   // threadgroup count X
+                num_row_chunks,              // threadgroup count Y
+                tg_x.min(self.cols),         // threads per TG X
+                1,                           // threads per TG Y
+            );
             enc.endEncoding();
-            cmd.commit();
-            cmd.waitUntilCompleted();
-
-            self.gpu_col_sums = unsafe { read_buffer_slice::<f32>(out.as_ref(), self.cols) };
         }
 
-        // --- Kernel 2: Column AVERAGE ---
+        // --- Encoder 2: spreadsheet_sum_reduce (1D: partials → sum output) ---
         {
-            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_average");
-            let grid = self.buf_grid.as_ref().expect("setup not called");
-            let out = self.buf_col_output.as_ref().expect("setup not called");
-            let prm = self.buf_params.as_ref().expect("setup not called");
-
-            let cmd = ctx.queue.commandBuffer().expect("cmd buf");
+            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_sum_reduce");
             let enc = cmd.computeCommandEncoder().expect("encoder");
-            dispatch_1d(&enc, pso, &[
-                (grid.as_ref(), 0), (out.as_ref(), 1), (prm.as_ref(), 2),
-            ], self.cols);
+            dispatch_1d(
+                &enc,
+                pso,
+                &[(partials.as_ref(), 0), (sum_out.as_ref(), 1), (prm.as_ref(), 2)],
+                self.cols,
+            );
             enc.endEncoding();
-            cmd.commit();
-            cmd.waitUntilCompleted();
-
-            self.gpu_col_avgs = unsafe { read_buffer_slice::<f32>(out.as_ref(), self.cols) };
         }
 
-        // --- Kernel 3: VLOOKUP ---
+        // --- Encoder 3: spreadsheet_avg_reduce (1D: same partials → avg output) ---
+        {
+            let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_avg_reduce");
+            let enc = cmd.computeCommandEncoder().expect("encoder");
+            dispatch_1d(
+                &enc,
+                pso,
+                &[(partials.as_ref(), 0), (avg_out.as_ref(), 1), (prm.as_ref(), 2)],
+                self.cols,
+            );
+            enc.endEncoding();
+        }
+
+        // --- Encoder 4: VLOOKUP (unchanged) ---
         {
             let pso = self.pso_cache.get_or_create(ctx.library(), "spreadsheet_vlookup");
             let keys = self.buf_lookup_keys.as_ref().expect("setup not called");
             let vals = self.buf_lookup_vals.as_ref().expect("setup not called");
             let skeys = self.buf_search_keys.as_ref().expect("setup not called");
-            let out = self.buf_vlookup_output.as_ref().expect("setup not called");
-            let prm = self.buf_vlookup_params.as_ref().expect("setup not called");
+            let vout = self.buf_vlookup_output.as_ref().expect("setup not called");
+            let vprm = self.buf_vlookup_params.as_ref().expect("setup not called");
 
-            let cmd = ctx.queue.commandBuffer().expect("cmd buf");
             let enc = cmd.computeCommandEncoder().expect("encoder");
-            dispatch_1d(&enc, pso, &[
-                (keys.as_ref(), 0), (vals.as_ref(), 1), (skeys.as_ref(), 2),
-                (out.as_ref(), 3), (prm.as_ref(), 4),
-            ], self.rows);
+            dispatch_1d(
+                &enc,
+                pso,
+                &[
+                    (keys.as_ref(), 0),
+                    (vals.as_ref(), 1),
+                    (skeys.as_ref(), 2),
+                    (vout.as_ref(), 3),
+                    (vprm.as_ref(), 4),
+                ],
+                self.rows,
+            );
             enc.endEncoding();
-            cmd.commit();
-            cmd.waitUntilCompleted();
-
-            self.gpu_vlookup = unsafe { read_buffer_slice::<f32>(out.as_ref(), self.rows) };
         }
 
-        timer.stop()
+        // Single commit + wait
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        // Read back results
+        self.gpu_col_sums = unsafe { read_buffer_slice::<f32>(sum_out.as_ref(), self.cols) };
+        self.gpu_col_avgs = unsafe { read_buffer_slice::<f32>(avg_out.as_ref(), self.cols) };
+        let vout = self.buf_vlookup_output.as_ref().expect("setup not called");
+        self.gpu_vlookup = unsafe { read_buffer_slice::<f32>(vout.as_ref(), self.rows) };
+
+        GpuTimer::elapsed_ms(&cmd).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {
