@@ -78,7 +78,7 @@ Focus: Get cache save/load/mmap working end-to-end with unit tests. Skip app int
 
 Focus: Wire chunk_cache into app.rs index_thread and search_thread. Add load_from_cache to search engine.
 
-- [ ] 2.1 Add load_from_cache() method to GpuContentSearch
+- [x] 2.1 Add load_from_cache() method to GpuContentSearch
   - **Do**:
     1. In `/Users/patrickkavanagh/gpu-search-ui/src/engine/search.rs`, add `pub fn load_from_cache(&mut self, mmap: &MmapChunkData) -> usize`
     2. Import `super::chunk_cache::MmapChunkData`
