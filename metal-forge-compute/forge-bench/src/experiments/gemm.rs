@@ -12,7 +12,7 @@ use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueu
 
 use forge_primitives::{
     alloc_buffer, alloc_buffer_with_data, dispatch_2d, read_buffer_slice, BenchTimer, GemmParams,
-    MetalContext, PsoCache,
+    GpuTimer, MetalContext, PsoCache,
 };
 
 use crate::cpu_baselines::accelerate;
@@ -111,7 +111,7 @@ impl Experiment for GemmExperiment {
 
         // Pre-warm PSO cache
         self.pso_cache
-            .get_or_create(ctx.library(), "gemm_naive_f32");
+            .get_or_create(ctx.library(), "gemm_simdgroup_f32");
     }
 
     fn run_gpu(&mut self, ctx: &MetalContext) -> f64 {
@@ -122,9 +122,7 @@ impl Experiment for GemmExperiment {
 
         let pso = self
             .pso_cache
-            .get_or_create(ctx.library(), "gemm_naive_f32");
-
-        let timer = BenchTimer::start();
+            .get_or_create(ctx.library(), "gemm_simdgroup_f32");
 
         let cmd_buf = ctx
             .queue
@@ -134,9 +132,11 @@ impl Experiment for GemmExperiment {
             .computeCommandEncoder()
             .expect("Failed to create compute encoder");
 
-        // Dispatch 2D: threadgroups = (ceil(N/16), ceil(M/16)), threads per TG = (16, 16)
-        let tg_x = self.dim_n.div_ceil(TILE_SIZE);
-        let tg_y = self.dim_m.div_ceil(TILE_SIZE);
+        // simdgroup GEMM: TG covers 32x32 (8 SIMD groups, 2x4, dual accumulators)
+        let gemm_bm = 32usize;
+        let gemm_bn = 32usize;
+        let tg_x = self.dim_n.div_ceil(gemm_bn);
+        let tg_y = self.dim_m.div_ceil(gemm_bm);
 
         dispatch_2d(
             &encoder,
@@ -149,21 +149,19 @@ impl Experiment for GemmExperiment {
             ],
             tg_x,
             tg_y,
-            TILE_SIZE,
-            TILE_SIZE,
+            256, // 8 SIMD groups x 32 threads
+            1,
         );
 
         encoder.endEncoding();
         cmd_buf.commit();
         cmd_buf.waitUntilCompleted();
 
-        let elapsed = timer.stop();
-
         // Read back result matrix
         self.gpu_result =
             unsafe { read_buffer_slice::<f32>(buf_c.as_ref(), self.dim_m * self.dim_n) };
 
-        elapsed
+        GpuTimer::elapsed_ms(&cmd_buf).unwrap_or(0.0)
     }
 
     fn run_cpu(&mut self) -> f64 {
