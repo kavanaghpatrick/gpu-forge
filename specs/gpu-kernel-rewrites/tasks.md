@@ -329,7 +329,7 @@ Focus: Infrastructure (GPU timer, PSO hints, vec helpers) + first 3 kernel rewri
   - _Requirements: FR-2, FR-5, FR-6, AC-1.2, AC-3.2, AC-3.3, AC-3.5_
   - _Design: Component 1 integration, Component 3_
 
-- [ ] 2.16 [VERIFY] Quality checkpoint: full build + test + all 15 experiments compile
+- [x] 2.16 [VERIFY] Quality checkpoint: full build + test + all 15 experiments compile
   - **Do**: Verify everything builds and tests pass after all Phase 2 changes
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build --release 2>&1 | tail -3 && cargo test --release 2>&1 | grep "test result"`
   - **Done when**: Clean build, all tests pass
