@@ -57,7 +57,7 @@ Focus: Validate FNV-1a hashing + atomic CAS dedup works end-to-end. Accept hardc
   - _Requirements: FR-4, AC-1.4_
   - _Design: Component CPU Filter_
 
-- [ ] 1.X POC Checkpoint
+- [x] 1.X POC Checkpoint
   - **Do**: Run full integration test. Search 50K paths with duplicates (e.g., symlinks). Verify results are deduplicated, no false negatives.
   - **Done when**: 50K path search returns unique paths only, <1.5s total time (path_search + dedup GPU + CPU filter)
   - **Verify**: Manual test with test_data/paths_50k.txt (generated from filesystem walk with duplicates)
