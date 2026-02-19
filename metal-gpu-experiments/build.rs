@@ -36,7 +36,7 @@ fn main() {
             "-sdk",
             "macosx",
             "metal",
-            "-std=metal3.1",
+            "-std=metal3.2",
             "-c",
             "-I",
             shader_dir.to_str().unwrap(),
