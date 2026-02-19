@@ -13,7 +13,7 @@ use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeComm
 use std::ptr::NonNull;
 
 const NUM_BINS: usize = 256;
-const TILE_SIZE: usize = 2048;
+const TILE_SIZE: usize = 4096;
 const NUM_PASSES: usize = 4;
 const THREADS_PER_TG: usize = 256;
 const WARMUP: usize = 5;
@@ -236,7 +236,7 @@ pub fn run(ctx: &MetalContext) {
     println!("\n{}", "=".repeat(60));
     println!("Experiment 16: 8-Bit Radix Sort");
     println!("{}", "=".repeat(60));
-    println!("8-bit radix, 4 passes, 256 bins, 2048 elem/tile");
+    println!("8-bit radix, 4 passes, 256 bins, {} elem/tile", TILE_SIZE);
     println!("Per-SG atomic histogram, decoupled lookback (256 threads)\n");
 
     let pso_combined_hist = ctx.make_pipeline("exp16_combined_histogram");

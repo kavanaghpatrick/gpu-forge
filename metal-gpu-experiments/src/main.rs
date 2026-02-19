@@ -50,8 +50,8 @@ fn main() {
     // // Experiment 14: Multi-dispatch sort (coalesced scatter)
     // exp14_multi_dispatch::run(&ctx);
 
-    // Experiment 15: Onesweep fused radix sort
-    // exp15_onesweep::run(&ctx);
+    // Experiment 15: Onesweep fused radix sort (baseline)
+    exp15_onesweep::run(&ctx);
 
     // Experiment 16: 8-bit radix sort
     exp16_8bit::run(&ctx);

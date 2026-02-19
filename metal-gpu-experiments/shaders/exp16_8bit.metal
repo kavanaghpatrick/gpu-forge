@@ -12,13 +12,13 @@ using namespace metal;
 //
 // Architecture: non-persistent dispatch (1 TG/tile), decoupled lookback
 // with device-scope fence for cross-TG coherence (proven in exp12).
-// 8-bit radix, 4 passes, 2048 elements/tile, 256 threads/TG.
+// 8-bit radix, 4 passes, 4096 elements/tile, 256 threads/TG.
 // ═══════════════════════════════════════════════════════════════════
 
 #define EXP16_NUM_BINS   256u
 #define EXP16_NUM_SGS    8u
-#define EXP16_TILE_SIZE  2048u
-#define EXP16_ELEMS      8u
+#define EXP16_TILE_SIZE  4096u
+#define EXP16_ELEMS      16u
 #define EXP16_NUM_PASSES 4u
 #define EXP16_THREADS    256u
 
@@ -201,7 +201,7 @@ kernel void exp16_partition(
     uint md[EXP16_ELEMS];
     bool mv[EXP16_ELEMS];
     for (int e = 0; e < (int)EXP16_ELEMS; e++) {
-        uint idx = base + simd_id * 256u + (uint)e * 32u + simd_lane;
+        uint idx = base + simd_id * (EXP16_ELEMS * 32u) + (uint)e * 32u + simd_lane;
         mv[e] = idx < n;
         mk[e] = mv[e] ? src[idx] : 0xFFFFFFFFu;
         md[e] = mv[e] ? ((mk[e] >> shift) & 0xFFu) : 0xFFu;
