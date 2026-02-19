@@ -176,7 +176,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
 
 After POC validated, clean up code and add fallback analysis.
 
-- [ ] 2.1 Add fallback analysis if target not met
+- [x] 2.1 Add fallback analysis if target not met
   - **Do**:
     1. In `exp17_hybrid.rs`, after benchmark results, add fallback analysis section (FR-10):
        - Print per-phase bandwidth utilization: actual GB/s vs theoretical (245 for MSD DRAM, 469 for inner SLC).

@@ -182,6 +182,8 @@ pub fn run(ctx: &MetalContext) {
     println!("Phase 3: Benchmark + Multi-Size Correctness");
     println!("{}", "=".repeat(60));
 
+    let mut mkeys_16m = 0.0f64;
+
     for &n in &[1_000_000usize, 4_000_000, 16_000_000] {
         let label = if n >= 1_000_000 {
             format!("{}M", n / 1_000_000)
@@ -205,6 +207,7 @@ pub fn run(ctx: &MetalContext) {
         println!("  correctness: {}", if correct { "ok" } else { "FAIL" });
 
         if n == 16_000_000 {
+            mkeys_16m = mkeys;
             println!("\n  Comparison @ 16M:");
             println!("    exp16 baseline:  {:.0} Mkeys/s (known)", BASELINE_MKEYS);
             println!("    exp17 hybrid:    {:.0} Mkeys/s (measured)", mkeys);
@@ -213,7 +216,12 @@ pub fn run(ctx: &MetalContext) {
     }
 
     // Per-phase timing breakdown at 16M
-    bench_phases(ctx, 16_000_000);
+    let (phase_p50s, _full_p50) = bench_phases(ctx, 16_000_000);
+
+    // Fallback analysis if target not met (AC-5.1: trigger when p50 < 5000 Mkeys/s)
+    if mkeys_16m < 5000.0 {
+        print_fallback_analysis(16_000_000, mkeys_16m, &phase_p50s);
+    }
 }
 
 /// BucketDesc: describes one MSD bucket (offset, count, tile_count, tile_base)
@@ -1294,8 +1302,157 @@ fn bench_hybrid(ctx: &MetalContext, n: usize) -> (Vec<f64>, bool) {
     (times, correct)
 }
 
+/// Fallback analysis: print per-phase bandwidth utilization and identify bottleneck.
+/// Called when p50 < 5000 Mkeys/s (AC-5.1 trigger).
+/// phase_p50s: [msd_histogram, msd_bd+pfx+zero+scatter, inner0, inner1, inner2] in ms.
+fn print_fallback_analysis(n: usize, measured_mkeys: f64, phase_p50s: &[f64]) {
+    println!("\n{}", "=".repeat(60));
+    println!("FALLBACK ANALYSIS (p50 < 5000 Mkeys/s)");
+    println!("{}", "=".repeat(60));
+
+    let n_f = n as f64;
+    let mb = n_f * 4.0 / 1e6; // data size in MB (one copy)
+
+    // Per-phase: (label, measured_ms, bytes_MB, theoretical_bw_gbs)
+    // MSD histogram: reads N*4 bytes
+    // MSD scatter (bd+pfx+zero+scatter): reads+writes N*4*2 bytes (dominant is scatter)
+    // Inner passes: each reads+writes N*4*2 bytes (histogram read + scatter read/write)
+    //   but inner also reads tile_hists (~4.5MB), so actual bytes are higher
+    //   For simplicity, use N*8 as the primary data movement
+    struct PhaseInfo {
+        label: &'static str,
+        measured_ms: f64,
+        bytes_mb: f64,
+        theoretical_bw_gbs: f64,
+        bw_label: &'static str,
+    }
+
+    let phases = [
+        PhaseInfo {
+            label: "MSD histogram",
+            measured_ms: phase_p50s[0],
+            bytes_mb: mb,               // reads N*4
+            theoretical_bw_gbs: 245.0,  // DRAM
+            bw_label: "245 (DRAM)",
+        },
+        PhaseInfo {
+            label: "MSD scatter",
+            measured_ms: phase_p50s[1],
+            bytes_mb: mb * 2.0,         // reads N*4 + writes N*4
+            theoretical_bw_gbs: 131.0,  // measured 256-bin scatter BW
+            bw_label: "131 (scatter)",
+        },
+        PhaseInfo {
+            label: "Inner pass 0",
+            measured_ms: phase_p50s[2],
+            bytes_mb: mb * 2.0,         // reads N*4 + writes N*4
+            theoretical_bw_gbs: 469.0,  // SLC target
+            bw_label: "469 (SLC)",
+        },
+        PhaseInfo {
+            label: "Inner pass 1",
+            measured_ms: phase_p50s[3],
+            bytes_mb: mb * 2.0,
+            theoretical_bw_gbs: 469.0,
+            bw_label: "469 (SLC)",
+        },
+        PhaseInfo {
+            label: "Inner pass 2",
+            measured_ms: phase_p50s[4],
+            bytes_mb: mb * 2.0,
+            theoretical_bw_gbs: 469.0,
+            bw_label: "469 (SLC)",
+        },
+    ];
+
+    println!("\n  Per-phase bandwidth utilization @ {}M:", n / 1_000_000);
+    println!(
+        "  {:<20}| {:<10}| {:<9}| {:<10}| {:<14}| {}",
+        "Phase", "Measured", "Bytes", "Actual BW", "Theoretical", "Utilization"
+    );
+    println!("  {}", "-".repeat(85));
+
+    let mut bottleneck_idx = 0usize;
+    let mut worst_ratio = f64::MAX; // lowest utilization = biggest bottleneck
+
+    let mut total_theoretical_ms = 0.0f64;
+
+    for (i, p) in phases.iter().enumerate() {
+        // MB / ms = GB/s (since 1 MB/ms = 1 GB/s)
+        let actual_bw_gbs = if p.measured_ms > 0.0 {
+            p.bytes_mb / p.measured_ms
+        } else {
+            0.0
+        };
+        // theoretical_ms = bytes_MB / bw_GB_per_s (since MB / (GB/s) = ms)
+        let theoretical_ms = p.bytes_mb / p.theoretical_bw_gbs;
+        total_theoretical_ms += theoretical_ms;
+
+        let utilization = if p.measured_ms > 0.0 {
+            actual_bw_gbs / p.theoretical_bw_gbs * 100.0
+        } else {
+            0.0
+        };
+
+        println!(
+            "  {:<20}| {:<10.3}| {:<4.0} MB  | {:<4.0} GB/s  | {:<14}| {:.0}%",
+            p.label, p.measured_ms, p.bytes_mb, actual_bw_gbs, p.bw_label, utilization
+        );
+
+        if utilization < worst_ratio {
+            worst_ratio = utilization;
+            bottleneck_idx = i;
+        }
+    }
+
+    // Identify bottleneck
+    println!(
+        "\n  Bottleneck: {} ({:.0}% utilization)",
+        phases[bottleneck_idx].label, worst_ratio
+    );
+    if bottleneck_idx >= 2 {
+        println!("    Inner passes NOT running at SLC speed -- scatter write amplification likely.");
+    }
+
+    // Theoretical ceiling from measured per-phase bandwidths
+    // Use the actual BW achieved per phase to compute a ceiling
+    let sum_measured_ms: f64 = phase_p50s.iter().sum();
+    let measured_ceiling = n_f / sum_measured_ms / 1e3;
+
+    // Theoretical minimum from bandwidth limits
+    let theoretical_ceiling = n_f / total_theoretical_ms / 1e3;
+
+    println!(
+        "\n  Theoretical ceiling (from BW limits): {:.0} Mkeys/s ({:.3} ms)",
+        theoretical_ceiling, total_theoretical_ms
+    );
+    println!(
+        "  Measured ceiling (sum of phases):      {:.0} Mkeys/s ({:.3} ms)",
+        measured_ceiling, sum_measured_ms
+    );
+
+    // Comparison table
+    println!("\n  Comparison:");
+    println!("    exp16 baseline:  {:.0} Mkeys/s", BASELINE_MKEYS);
+    println!(
+        "    exp17 hybrid:    {:.0} Mkeys/s ({:.2}x)",
+        measured_mkeys,
+        measured_mkeys / BASELINE_MKEYS
+    );
+    println!("    Target:          5000 Mkeys/s");
+    println!("    Gap:             {:.0} Mkeys/s", 5000.0 - measured_mkeys);
+
+    // Root cause analysis
+    println!("\n  Root cause: Inner sort is NOT achieving SLC bandwidth. Possible reasons:");
+    println!("  1. Scatter write amplification even at SLC-resident sizes");
+    println!("  2. 256-bin scatter at ~62K elements per bucket may be too small for GPU occupancy");
+    println!("  3. tile_hists reads add bandwidth not accounted for in simple model");
+    println!("  4. Per-bucket data may not actually reside in SLC (256 buckets * 250KB = 64MB total)");
+}
+
 /// Per-phase timing breakdown: run MSD and inner phases in separate command buffers.
-fn bench_phases(ctx: &MetalContext, n: usize) {
+/// Returns (phase_p50s, full_p50) where phase_p50s = [msd_hist, msd_scatter, inner0, inner1, inner2].
+fn bench_phases(ctx: &MetalContext, n: usize) -> (Vec<f64>, f64) {
     println!("\n  ── Per-Phase Timing Breakdown @ {}M ──", n / 1_000_000);
 
     let num_tiles = n.div_ceil(TILE_SIZE);
@@ -1543,8 +1700,10 @@ fn bench_phases(ctx: &MetalContext, n: usize) {
 
     println!("  Phase breakdown @ {}M (median of {} runs):", n / 1_000_000, phase_runs);
     let mut sum_p50 = 0.0;
+    let mut phase_p50s = Vec::new();
     for (i, label) in labels.iter().enumerate() {
         let p50 = percentile(&phase_times[i], 50.0);
+        phase_p50s.push(p50);
         sum_p50 += p50;
         println!("    {:.<28} {:>6.3} ms", label, p50);
     }
@@ -1555,4 +1714,6 @@ fn bench_phases(ctx: &MetalContext, n: usize) {
     println!("    {:.<28} {:>6.3} ms", "Overhead estimate", if overhead > 0.0 { overhead } else { 0.0 });
     let implied_mkeys = n as f64 / full_p50 / 1e3;
     println!("    Implied throughput: {:.0} Mkeys/s", implied_mkeys);
+
+    (phase_p50s, full_p50)
 }
