@@ -45,7 +45,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-3, FR-4, AC-2.1_
   - _Design: Phase 1 MSD Scatter, exp17_msd_histogram_
 
-- [ ] 1.3 Implement GPU-side BucketDesc computation kernel
+- [x] 1.3 Implement GPU-side BucketDesc computation kernel
   - **Do**:
     1. In `exp17_hybrid.metal`, implement `exp17_compute_bucket_descs` per design: 1 TG, 256 threads. Each thread reads `global_hist[lid]` (raw count), computes `tile_count = ceil(count/4096)`. Thread 0 serial prefix sum for offsets. Writes `BucketDesc{offset, count, tile_count, tile_base=0}` to output buffer. Must run AFTER msd_histogram but BEFORE global_prefix (since prefix destroys raw counts).
     2. In `exp17_hybrid.rs`, add `#[repr(C)] struct BucketDesc { offset: u32, count: u32, tile_count: u32, tile_base: u32 }`. Allocate `buf_bucket_descs` (256*16 bytes). After histogram dispatch, dispatch `compute_bucket_descs` with 1 TG. Read back and verify: sum of counts == N, offsets are monotonically increasing, offsets[last] + counts[last] == N.

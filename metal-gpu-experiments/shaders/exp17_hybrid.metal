@@ -113,6 +113,50 @@ kernel void exp17_msd_histogram(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Kernel: Compute BucketDesc — derives offset/count/tile_count from
+// raw histogram. Must run AFTER msd_histogram, BEFORE global_prefix
+// (since prefix overwrites raw counts in-place).
+//
+// 1 TG, 256 threads. Thread lid handles bucket lid.
+// Thread 0 does serial prefix sum for element offsets.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void exp17_compute_bucket_descs(
+    device const uint*    global_hist   [[buffer(0)]],
+    device BucketDesc*    bucket_descs  [[buffer(1)]],
+    constant uint&        tile_size     [[buffer(2)]],
+    uint lid [[thread_position_in_threadgroup]])
+{
+    // Each thread reads the raw count for its bucket
+    uint count = global_hist[lid];
+    uint tile_count = (count + tile_size - 1u) / tile_size;
+
+    // Store count and tile_count in TG memory for thread 0 prefix sum
+    threadgroup uint tg_counts[EXP17_NUM_BINS];
+    tg_counts[lid] = count;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Thread 0 computes serial prefix sum for offsets
+    threadgroup uint tg_offsets[EXP17_NUM_BINS];
+    if (lid == 0u) {
+        uint running = 0u;
+        for (uint i = 0u; i < EXP17_NUM_BINS; i++) {
+            tg_offsets[i] = running;
+            running += tg_counts[i];
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Each thread writes its BucketDesc
+    BucketDesc desc;
+    desc.offset     = tg_offsets[lid];
+    desc.count      = count;
+    desc.tile_count = tile_count;
+    desc.tile_base  = 0u;
+    bucket_descs[lid] = desc;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Kernel: MSD Global Prefix — exclusive prefix sum, 256 bins
 //
 // Cloned from exp16_global_prefix but only 1 pass (SG 0 only).
