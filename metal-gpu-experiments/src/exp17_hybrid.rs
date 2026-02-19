@@ -716,6 +716,323 @@ fn print_fallback_analysis(n: usize, measured_mkeys: f64, phase_p50s: &[f64]) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Tile size comparison: 4096 vs 8192
+// ════════════════════════════════════════════════════════════════════
+
+const TILE_SIZE_LARGE: usize = 8192;
+const MAX_TPB_V2: usize = 9;
+
+/// Benchmark inner passes with both tile sizes (4096 vs 8192) at 16M.
+/// Runs full pipeline for each, compares total time and inner pass times.
+fn bench_tile_comparison(ctx: &MetalContext) {
+    let n: usize = 16_000_000;
+    let num_tiles = n.div_ceil(TILE_SIZE);
+
+    let data = gen_random_u32(n);
+    let mut expected = data.clone();
+    expected.sort();
+
+    // Allocate buffers
+    let buf_input = alloc_buffer_with_data(&ctx.device, &data);
+    let buf_a = alloc_buffer(&ctx.device, n * 4);
+    let buf_b = alloc_buffer(&ctx.device, n * 4);
+    let buf_msd_hist = alloc_buffer(&ctx.device, 4 * 256 * 4);
+    let buf_tile_status = alloc_buffer(&ctx.device, num_tiles * 256 * 4);
+    let buf_counters = alloc_buffer(&ctx.device, 4);
+
+    // Separate bucket_descs and tile_hists for each tile size
+    let buf_bucket_descs_4k = alloc_buffer(&ctx.device, 256 * std::mem::size_of::<BucketDesc>());
+    let buf_bucket_descs_8k = alloc_buffer(&ctx.device, 256 * std::mem::size_of::<BucketDesc>());
+    let tile_hists_entries_4k: usize = 256 * 17 * 256;
+    let tile_hists_entries_8k: usize = 256 * MAX_TPB_V2 * 256;
+    let buf_tile_hists_4k = alloc_buffer(&ctx.device, tile_hists_entries_4k * 4);
+    let buf_tile_hists_8k = alloc_buffer(&ctx.device, tile_hists_entries_8k * 4);
+
+    // PSOs
+    let pso_histogram = ctx.make_pipeline("exp17_msd_histogram");
+    let pso_bucket_descs = ctx.make_pipeline("exp17_compute_bucket_descs");
+    let pso_prefix = ctx.make_pipeline("exp17_global_prefix");
+    let pso_zero_status = ctx.make_pipeline("exp16_zero_status");
+    let pso_partition = ctx.make_pipeline("exp16_partition");
+    let pso_inner_zero = ctx.make_pipeline("exp17_inner_zero");
+    let pso_inner_histogram = ctx.make_pipeline("exp17_inner_histogram");
+    let pso_inner_scan_scatter = ctx.make_pipeline("exp17_inner_scan_scatter");
+    let pso_inner_histogram_v2 = ctx.make_pipeline("exp17_inner_histogram_v2");
+    let pso_inner_scan_scatter_v2 = ctx.make_pipeline("exp17_inner_scan_scatter_v2");
+
+    // Params
+    let exp17_params = Exp17Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let exp16_params = Exp16Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        num_tgs: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let tile_size_4k_u32 = TILE_SIZE as u32;
+    let tile_size_8k_u32 = TILE_SIZE_LARGE as u32;
+    let tile_hists_total_4k = tile_hists_entries_4k as u32;
+    let tile_hists_total_8k = tile_hists_entries_8k as u32;
+
+    // Grid sizes
+    let tg_size = MTLSize { width: THREADS_PER_TG, height: 1, depth: 1 };
+    let hist_grid = MTLSize { width: num_tiles, height: 1, depth: 1 };
+    let one_tg_grid = MTLSize { width: 1, height: 1, depth: 1 };
+    let zero_tg_count = (num_tiles * 256).div_ceil(THREADS_PER_TG);
+    let zero_grid = MTLSize { width: zero_tg_count, height: 1, depth: 1 };
+    let inner_grid_4k = MTLSize { width: 256 * 17, height: 1, depth: 1 };
+    let inner_zero_grid_4k = MTLSize { width: tile_hists_entries_4k.div_ceil(THREADS_PER_TG), height: 1, depth: 1 };
+    let inner_grid_8k = MTLSize { width: 256 * MAX_TPB_V2, height: 1, depth: 1 };
+    let inner_zero_grid_8k = MTLSize { width: tile_hists_entries_8k.div_ceil(THREADS_PER_TG), height: 1, depth: 1 };
+
+    let inner_shifts: [u32; 3] = [0, 8, 16];
+    let compare_warmup = 5;
+    let compare_runs = 30;
+
+    // Macro to run MSD phase (shared between both variants)
+    macro_rules! run_msd_phase {
+        ($buf_src:expr, $buf_dst:expr, $bucket_descs_buf:expr, $tile_size_param:expr) => {{
+            let cmd = ctx.command_buffer();
+            let enc = cmd.computeCommandEncoder().unwrap();
+
+            enc.setComputePipelineState(&pso_histogram);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some($buf_src.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 1);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&exp17_params as *const Exp17Params as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17Params>(), 2,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+            enc.setComputePipelineState(&pso_bucket_descs);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some($bucket_descs_buf.as_ref()), 0, 1);
+                enc.setBytes_length_atIndex(
+                    NonNull::new($tile_size_param as *const u32 as *mut _).unwrap(), 4, 2,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+            enc.setComputePipelineState(&pso_prefix);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+            enc.setComputePipelineState(&pso_zero_status);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 1);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+                    std::mem::size_of::<Exp16Params>(), 2,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(zero_grid, tg_size);
+
+            enc.setComputePipelineState(&pso_partition);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some($buf_src.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some($buf_dst.as_ref()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 3);
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 4);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+                    std::mem::size_of::<Exp16Params>(), 5,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+            enc.endEncoding();
+            cmd.commit();
+            cmd.waitUntilCompleted();
+        }};
+    }
+
+    println!("\n  ── Tile Size Comparison: 4096 vs 8192 @ 16M ──\n");
+
+    // ── Benchmark 4096 tile size (original) ──
+    let mut times_4k = Vec::new();
+    let mut correct_4k = false;
+    for iter in 0..(compare_warmup + compare_runs) {
+        unsafe {
+            let src = buf_input.contents().as_ptr() as *const u8;
+            let dst = buf_a.contents().as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(src, dst, n * 4);
+            std::ptr::write_bytes(buf_msd_hist.contents().as_ptr() as *mut u8, 0, 4 * 256 * 4);
+        }
+
+        run_msd_phase!(buf_a, buf_b, buf_bucket_descs_4k, &tile_size_4k_u32);
+
+        // Inner passes with 4096 tile
+        let cmd = ctx.command_buffer();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        for (pass_idx, &shift) in inner_shifts.iter().enumerate() {
+            let inner_params = Exp17InnerParams { shift };
+            let (src_buf, dst_buf) = if pass_idx % 2 == 0 {
+                (buf_b.as_ref(), buf_a.as_ref())
+            } else {
+                (buf_a.as_ref(), buf_b.as_ref())
+            };
+
+            enc.setComputePipelineState(&pso_inner_zero);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists_4k.as_ref()), 0, 0);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&tile_hists_total_4k as *const u32 as *mut _).unwrap(), 4, 1,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_zero_grid_4k, tg_size);
+
+            enc.setComputePipelineState(&pso_inner_histogram);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists_4k.as_ref()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs_4k.as_ref()), 0, 2);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 3,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid_4k, tg_size);
+
+            enc.setComputePipelineState(&pso_inner_scan_scatter);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(dst_buf), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists_4k.as_ref()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs_4k.as_ref()), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 4,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid_4k, tg_size);
+        }
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        let ms = gpu_elapsed_ms(&cmd);
+        if iter >= compare_warmup { times_4k.push(ms); }
+
+        if iter == compare_warmup + compare_runs - 1 {
+            let result: Vec<u32> = unsafe { read_buffer_slice(&buf_a, n) };
+            correct_4k = check_correctness(&result, &expected) == 0;
+        }
+    }
+    times_4k.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    // ── Benchmark 8192 tile size (v2) ──
+    let mut times_8k = Vec::new();
+    let mut correct_8k = false;
+    for iter in 0..(compare_warmup + compare_runs) {
+        unsafe {
+            let src = buf_input.contents().as_ptr() as *const u8;
+            let dst = buf_a.contents().as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(src, dst, n * 4);
+            std::ptr::write_bytes(buf_msd_hist.contents().as_ptr() as *mut u8, 0, 4 * 256 * 4);
+        }
+
+        run_msd_phase!(buf_a, buf_b, buf_bucket_descs_8k, &tile_size_8k_u32);
+
+        // Inner passes with 8192 tile
+        let cmd = ctx.command_buffer();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        for (pass_idx, &shift) in inner_shifts.iter().enumerate() {
+            let inner_params = Exp17InnerParams { shift };
+            let (src_buf, dst_buf) = if pass_idx % 2 == 0 {
+                (buf_b.as_ref(), buf_a.as_ref())
+            } else {
+                (buf_a.as_ref(), buf_b.as_ref())
+            };
+
+            enc.setComputePipelineState(&pso_inner_zero);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists_8k.as_ref()), 0, 0);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&tile_hists_total_8k as *const u32 as *mut _).unwrap(), 4, 1,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_zero_grid_8k, tg_size);
+
+            enc.setComputePipelineState(&pso_inner_histogram_v2);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists_8k.as_ref()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs_8k.as_ref()), 0, 2);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 3,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid_8k, tg_size);
+
+            enc.setComputePipelineState(&pso_inner_scan_scatter_v2);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(dst_buf), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists_8k.as_ref()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs_8k.as_ref()), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 4,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid_8k, tg_size);
+        }
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        let ms = gpu_elapsed_ms(&cmd);
+        if iter >= compare_warmup { times_8k.push(ms); }
+
+        if iter == compare_warmup + compare_runs - 1 {
+            let result: Vec<u32> = unsafe { read_buffer_slice(&buf_a, n) };
+            correct_8k = check_correctness(&result, &expected) == 0;
+        }
+    }
+    times_8k.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    // ── Print comparison ──
+    let p50_4k = percentile(&times_4k, 50.0);
+    let p50_8k = percentile(&times_8k, 50.0);
+    let p5_4k = percentile(&times_4k, 5.0);
+    let p5_8k = percentile(&times_8k, 5.0);
+    let p95_4k = percentile(&times_4k, 95.0);
+    let p95_8k = percentile(&times_8k, 95.0);
+    let status_4k = if correct_4k { "ok" } else { "FAIL" };
+    let status_8k = if correct_8k { "ok" } else { "FAIL" };
+
+    println!("    {:>14} {:>10} {:>10} {:>10} {:>8} {:>6}", "Tile size", "p5 (ms)", "p50 (ms)", "p95 (ms)", "TGs", "Status");
+    println!("    {}", "-".repeat(68));
+    println!("    {:>14} {:>10.3} {:>10.3} {:>10.3} {:>8} {:>6}",
+        "4096 (16/thr)", p5_4k, p50_4k, p95_4k, 256 * 17, status_4k);
+    println!("    {:>14} {:>10.3} {:>10.3} {:>10.3} {:>8} {:>6}",
+        "8192 (32/thr)", p5_8k, p50_8k, p95_8k, 256 * MAX_TPB_V2, status_8k);
+
+    let speedup = p50_4k / p50_8k;
+    let delta_ms = p50_4k - p50_8k;
+    println!();
+    if p50_8k < p50_4k {
+        println!("    Winner: 8192 tile ({:.2}x faster, {:.3}ms saved per 3 inner passes)", speedup, delta_ms);
+    } else if p50_4k < p50_8k {
+        println!("    Winner: 4096 tile ({:.2}x faster, {:.3}ms saved per 3 inner passes)", 1.0/speedup, -delta_ms);
+    } else {
+        println!("    Result: Tie (identical median times)");
+    }
+    println!("    Keeping 4096 as default (original tile size)");
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Main entry point
 // ════════════════════════════════════════════════════════════════════
 
@@ -757,6 +1074,9 @@ pub fn run(ctx: &MetalContext) {
     // ── Phase 2: Per-phase timing breakdown at 16M ──
     println!("\n  ── Phase 2: Per-Phase Timing @ 16M ──");
     let (phase_p50s, _full_p50) = bench_phases(ctx, 16_000_000);
+
+    // ── Tile size comparison (4096 vs 8192) ──
+    bench_tile_comparison(ctx);
 
     // ── Summary ──
     println!("\n  ── Summary ──");

@@ -218,7 +218,7 @@ After POC validated, clean up code and add fallback analysis.
 
 Only needed if POC shows < 5000 Mkeys/s and bottleneck is identified.
 
-- [ ] 3.1 Tune inner sort tile size (4096 vs 8192)
+- [x] 3.1 Tune inner sort tile size (4096 vs 8192)
   - **Do**:
     1. If per-phase timing shows inner passes are the bottleneck, try 8192 elements/tile (32 per thread, halves tile count to ~8 per bucket).
     2. Add `EXP17_TILE_SIZE_LARGE 8192`, `EXP17_ELEMS_LARGE 32` defines. Duplicate inner_histogram and inner_scan_scatter as `_v2` variants using 8192 tiles.
