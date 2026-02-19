@@ -33,7 +33,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-1, FR-2, AC-1.1 through AC-1.5_
   - _Design: Phase 0 SLC Scatter Bandwidth Benchmark_
 
-- [ ] 1.2 Implement MSD histogram kernel (1-pass, bits 24:31)
+- [x] 1.2 Implement MSD histogram kernel (1-pass, bits 24:31)
   - **Do**:
     1. In `exp17_hybrid.metal`, implement `exp17_msd_histogram` -- clone from `exp16_combined_histogram` but single-pass only (removes the `for (uint p = 0; p < NUM_PASSES; p++)` loop). Key changes: read bits[24:31] only (shift=24, mask=0xFF), write to `global_hist[lid]` (not `global_hist[p*256+lid]`). Same per-SG atomic histogram pattern (TG memory `sg_counts[8*256]`, zero, atomic_fetch_add, reduce across SGs, atomic_fetch_add to global).
     2. Implement `exp17_global_prefix` -- clone from `exp16_global_prefix` but only 1 pass (only SG 0 does work, 256-bin prefix sum via 8 chunks of 32 with `simd_prefix_exclusive_sum`).

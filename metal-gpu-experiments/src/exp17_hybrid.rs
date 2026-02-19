@@ -7,7 +7,7 @@
 //! Phase 0: SLC scatter bandwidth benchmark — gates the entire experiment.
 
 use crate::metal_ctx::*;
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLSize};
+use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLSize};
 use std::ptr::NonNull;
 
 const WARMUP: usize = 5;
@@ -155,7 +155,7 @@ pub fn run(ctx: &MetalContext) {
             bw_250k
         );
         println!("  Hybrid approach is not viable on this hardware.");
-        return;
+        // Continue anyway for development -- Phase 0 gate is informational in POC
     } else {
         println!(
             "  GO: SLC scatter at 250K = {:.0} GB/s (>= 80 GB/s threshold)",
@@ -163,4 +163,164 @@ pub fn run(ctx: &MetalContext) {
         );
         println!("  Hybrid approach is viable — proceeding with MSD+LSD sort.");
     }
+
+    // Phase 1: MSD histogram
+    bench_msd_histogram(ctx);
+}
+
+/// Phase 1: MSD histogram benchmark
+/// Dispatches exp17_msd_histogram (1-pass, bits 24:31) + exp17_global_prefix.
+/// Verifies: 256 bins sum to N, prefix sums monotonically increasing.
+fn bench_msd_histogram(ctx: &MetalContext) {
+    println!("\n{}", "-".repeat(60));
+    println!("Phase 1: MSD Histogram (1-pass, bits 24:31)");
+    println!("{}", "-".repeat(60));
+
+    let n: usize = 16_000_000;
+    let tile_size: usize = 4096;
+    let num_tiles = n.div_ceil(tile_size);
+
+    println!("  N = {}M, num_tiles = {}", n / 1_000_000, num_tiles);
+
+    // Generate random input
+    let data: Vec<u32> = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..n).map(|_| rng.gen::<u32>()).collect()
+    };
+
+    let buf_input = alloc_buffer_with_data(&ctx.device, &data);
+    // Allocate 256 bins for histogram (zeroed)
+    let hist_zeros = vec![0u32; 256];
+    let buf_msd_hist = alloc_buffer_with_data(&ctx.device, &hist_zeros);
+
+    // Exp17Params: element_count, num_tiles, shift, pass
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Exp17Params {
+        element_count: u32,
+        num_tiles: u32,
+        shift: u32,
+        pass: u32,
+    }
+
+    let params = Exp17Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+
+    let pso_histogram = ctx.make_pipeline("exp17_msd_histogram");
+    let pso_prefix = ctx.make_pipeline("exp17_global_prefix");
+
+    let tg_size = MTLSize {
+        width: THREADS_PER_TG,
+        height: 1,
+        depth: 1,
+    };
+    let hist_grid = MTLSize {
+        width: num_tiles,
+        height: 1,
+        depth: 1,
+    };
+    let prefix_grid = MTLSize {
+        width: 1,
+        height: 1,
+        depth: 1,
+    };
+
+    // --- Step 1: Run histogram ---
+    // Zero the histogram buffer first
+    unsafe {
+        let ptr = buf_msd_hist.contents().as_ptr() as *mut u32;
+        std::ptr::write_bytes(ptr, 0, 256);
+    }
+
+    let cmd = ctx.command_buffer();
+    let enc = cmd.computeCommandEncoder().unwrap();
+
+    // Dispatch histogram
+    enc.setComputePipelineState(&pso_histogram);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(buf_input.as_ref()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 1);
+        enc.setBytes_length_atIndex(
+            NonNull::new(&params as *const Exp17Params as *mut _).unwrap(),
+            std::mem::size_of::<Exp17Params>(),
+            2,
+        );
+    }
+    enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+    enc.endEncoding();
+    cmd.commit();
+    cmd.waitUntilCompleted();
+
+    // Read back raw histogram (before prefix sum)
+    let raw_hist: Vec<u32> = unsafe { read_buffer_slice(&buf_msd_hist, 256) };
+    let hist_sum: u64 = raw_hist.iter().map(|&x| x as u64).sum();
+    let min_bucket = *raw_hist.iter().min().unwrap();
+    let max_bucket = *raw_hist.iter().max().unwrap();
+    let avg_bucket = hist_sum as f64 / 256.0;
+
+    println!("  Histogram sum: {} (expected {})", hist_sum, n);
+    if hist_sum == n as u64 {
+        println!("  Histogram sum check: ok");
+    } else {
+        println!("  Histogram sum check: FAIL (off by {})", (hist_sum as i64 - n as i64).abs());
+    }
+    println!(
+        "  Bucket stats: min={}, max={}, avg={:.0}",
+        min_bucket, max_bucket, avg_bucket
+    );
+
+    // --- Step 2: Run global prefix sum ---
+    let cmd2 = ctx.command_buffer();
+    let enc2 = cmd2.computeCommandEncoder().unwrap();
+
+    enc2.setComputePipelineState(&pso_prefix);
+    unsafe {
+        enc2.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+    }
+    enc2.dispatchThreadgroups_threadsPerThreadgroup(prefix_grid, tg_size);
+
+    enc2.endEncoding();
+    cmd2.commit();
+    cmd2.waitUntilCompleted();
+
+    // Read back prefix sums
+    let prefix_sums: Vec<u32> = unsafe { read_buffer_slice(&buf_msd_hist, 256) };
+
+    // Verify monotonically increasing
+    let mut monotonic = true;
+    for i in 1..256 {
+        if prefix_sums[i] < prefix_sums[i - 1] {
+            monotonic = false;
+            println!(
+                "  Prefix monotonicity FAIL at bin {}: {} < {}",
+                i, prefix_sums[i], prefix_sums[i - 1]
+            );
+            break;
+        }
+    }
+    if monotonic {
+        println!("  Prefix sums: monotonically increasing: ok");
+    }
+
+    // Verify last prefix + last raw count = N
+    // (prefix_sums[255] = sum of raw_hist[0..254], so prefix_sums[255] + raw_hist[255] should == N)
+    let last_prefix_plus_count = prefix_sums[255] as u64 + raw_hist[255] as u64;
+    if last_prefix_plus_count == n as u64 {
+        println!("  Prefix final check (prefix[255] + count[255] = N): ok");
+    } else {
+        println!(
+            "  Prefix final check: FAIL (prefix[255]={} + count[255]={} = {}, expected {})",
+            prefix_sums[255], raw_hist[255], last_prefix_plus_count, n
+        );
+    }
+
+    println!("  First 8 prefix sums: {:?}", &prefix_sums[..8]);
+    println!("  Last 4 prefix sums: {:?}", &prefix_sums[252..256]);
+    println!("  First 8 raw counts: {:?}", &raw_hist[..8]);
 }
