@@ -56,7 +56,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-4, AC-2.3_
   - _Design: exp17_compute_bucket_descs_
 
-- [ ] 1.4 Implement MSD scatter pass (reuse exp16_partition)
+- [x] 1.4 Implement MSD scatter pass (reuse exp16_partition)
   - **Do**:
     1. In `exp17_hybrid.rs`, implement `run_msd_scatter()`: encode the full MSD pipeline in a single command buffer with single encoder and PSO switching (per design -- 1 CB, 1 encoder, PSO switches between dispatches):
        - `setPSO(msd_histogram)` -> dispatch 3907 TGs

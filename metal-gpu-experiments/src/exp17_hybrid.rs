@@ -166,6 +166,9 @@ pub fn run(ctx: &MetalContext) {
 
     // Phase 1: MSD histogram
     bench_msd_histogram(ctx);
+
+    // Phase 1b: MSD scatter (full pipeline: histogram → bucket_descs → prefix → zero → scatter)
+    run_msd_scatter(ctx);
 }
 
 /// BucketDesc: describes one MSD bucket (offset, count, tile_count, tile_base)
@@ -452,4 +455,249 @@ fn bench_msd_histogram(ctx: &MetalContext) {
     println!("  First 8 prefix sums: {:?}", &prefix_sums[..8]);
     println!("  Last 4 prefix sums: {:?}", &prefix_sums[252..256]);
     println!("  First 8 raw counts: {:?}", &raw_hist[..8]);
+}
+
+/// Exp16Params: needed for exp16_partition and exp16_zero_status (5-field struct).
+/// Must match the Metal Exp16Params layout exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Exp16Params {
+    element_count: u32,
+    num_tiles: u32,
+    num_tgs: u32,
+    shift: u32,
+    pass: u32,
+}
+
+/// Phase 1b: MSD Scatter — full single-encoder pipeline.
+///
+/// Dispatches in one command buffer, one encoder, PSO switching:
+///   1. exp17_msd_histogram (3907 TGs) — 256-bin histogram of bits[24:31]
+///   2. exp17_compute_bucket_descs (1 TG) — reads raw histogram to build BucketDesc[256]
+///   3. exp17_global_prefix (1 TG) — in-place prefix sum on histogram
+///   4. exp16_zero_status (3907 TGs) — zero tile_status + counters for scatter
+///   5. exp16_partition (3907 TGs) — decoupled lookback scatter, shift=24, pass=0
+///
+/// Correctness check: every element in buf_b at bucket position has matching MSD byte.
+fn run_msd_scatter(ctx: &MetalContext) {
+    println!("\n{}", "-".repeat(60));
+    println!("Phase 1b: MSD Scatter (single-encoder pipeline)");
+    println!("{}", "-".repeat(60));
+
+    let n: usize = 16_000_000;
+    let tile_size: usize = 4096;
+    let num_tiles = n.div_ceil(tile_size); // 3907
+
+    println!("  N = {}M, num_tiles = {}", n / 1_000_000, num_tiles);
+
+    // Generate random input
+    let data: Vec<u32> = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..n).map(|_| rng.gen::<u32>()).collect()
+    };
+
+    // ── Allocate buffers ──
+    let buf_input = alloc_buffer_with_data(&ctx.device, &data);
+    let buf_a = alloc_buffer(&ctx.device, n * 4);
+    let buf_b = alloc_buffer(&ctx.device, n * 4);
+
+    // Copy input to buf_a (scatter reads from buf_a, writes to buf_b)
+    unsafe {
+        let src = buf_input.contents().as_ptr() as *const u8;
+        let dst = buf_a.contents().as_ptr() as *mut u8;
+        std::ptr::copy_nonoverlapping(src, dst, n * 4);
+    }
+
+    // MSD histogram buffer: 4 passes * 256 bins * 4 bytes = 4096 bytes
+    // (exp16_partition reads global_hist[pass*256+d]; with pass=0 it reads [0..255])
+    let buf_msd_hist = alloc_buffer(&ctx.device, 4 * 256 * 4);
+    // Zero the histogram buffer
+    unsafe {
+        std::ptr::write_bytes(buf_msd_hist.contents().as_ptr() as *mut u8, 0, 4 * 256 * 4);
+    }
+
+    // Tile status for decoupled lookback: num_tiles * 256 entries * 4 bytes
+    let buf_tile_status = alloc_buffer(&ctx.device, num_tiles * 256 * 4);
+
+    // Atomic work counter for exp16_partition: 4 bytes
+    let buf_counters = alloc_buffer(&ctx.device, 4);
+
+    // BucketDesc[256]: 256 * 16 bytes
+    let buf_bucket_descs = alloc_buffer(&ctx.device, 256 * std::mem::size_of::<BucketDesc>());
+
+    // ── Build PSOs ──
+    let pso_histogram = ctx.make_pipeline("exp17_msd_histogram");
+    let pso_bucket_descs = ctx.make_pipeline("exp17_compute_bucket_descs");
+    let pso_prefix = ctx.make_pipeline("exp17_global_prefix");
+    let pso_zero_status = ctx.make_pipeline("exp16_zero_status");
+    let pso_partition = ctx.make_pipeline("exp16_partition");
+
+    // ── Params ──
+    // Exp17Params for MSD histogram (4 fields)
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Exp17Params {
+        element_count: u32,
+        num_tiles: u32,
+        shift: u32,
+        pass: u32,
+    }
+
+    let exp17_params = Exp17Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+
+    // Exp16Params for zero_status and partition (5 fields)
+    let exp16_params = Exp16Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        num_tgs: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+
+    let tile_size_u32 = tile_size as u32;
+
+    // ── Grid sizes ──
+    let tg_size = MTLSize { width: THREADS_PER_TG, height: 1, depth: 1 };
+    let hist_grid = MTLSize { width: num_tiles, height: 1, depth: 1 };
+    let one_tg_grid = MTLSize { width: 1, height: 1, depth: 1 };
+    // Zero TGs: num_tiles * 256 entries / 256 threads per TG = num_tiles
+    let zero_tg_count = (num_tiles * 256).div_ceil(THREADS_PER_TG);
+    let zero_grid = MTLSize { width: zero_tg_count, height: 1, depth: 1 };
+
+    // ════════════════════════════════════════════════════════════════
+    // Single command buffer, single encoder, PSO switching
+    // ════════════════════════════════════════════════════════════════
+    let cmd = ctx.command_buffer();
+    let enc = cmd.computeCommandEncoder().unwrap();
+
+    // ── Dispatch 1: MSD histogram (3907 TGs) ──
+    enc.setComputePipelineState(&pso_histogram);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);       // src data
+        enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 1); // global_hist
+        enc.setBytes_length_atIndex(
+            NonNull::new(&exp17_params as *const Exp17Params as *mut _).unwrap(),
+            std::mem::size_of::<Exp17Params>(), 2,
+        );
+    }
+    enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+    // ── Dispatch 2: Compute BucketDesc (1 TG) ──
+    // Must run AFTER histogram but BEFORE global_prefix (prefix destroys raw counts)
+    enc.setComputePipelineState(&pso_bucket_descs);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);       // global_hist (raw counts)
+        enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 1);   // bucket_descs output
+        enc.setBytes_length_atIndex(
+            NonNull::new(&tile_size_u32 as *const u32 as *mut _).unwrap(),
+            4, 2,
+        );
+    }
+    enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+    // ── Dispatch 3: Global prefix sum (1 TG) ──
+    enc.setComputePipelineState(&pso_prefix);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0); // in-place prefix sum
+    }
+    enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+    // ── Dispatch 4: Zero tile_status + counters (3907 TGs) ──
+    enc.setComputePipelineState(&pso_zero_status);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 0); // tile_status
+        enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 1);    // counters
+        enc.setBytes_length_atIndex(
+            NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+            std::mem::size_of::<Exp16Params>(), 2,
+        );
+    }
+    enc.dispatchThreadgroups_threadsPerThreadgroup(zero_grid, tg_size);
+
+    // ── Dispatch 5: MSD scatter / exp16_partition (3907 TGs) ──
+    // shift=24, pass=0 → reads global_hist[0*256+d] = global_hist[d]
+    enc.setComputePipelineState(&pso_partition);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);              // src
+        enc.setBuffer_offset_atIndex(Some(buf_b.as_ref()), 0, 1);              // dst
+        enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 2);    // tile_status
+        enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 3);       // counters
+        enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 4);       // global_hist (prefix sums)
+        enc.setBytes_length_atIndex(
+            NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+            std::mem::size_of::<Exp16Params>(), 5,
+        );
+    }
+    enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+    // ── Commit + wait ──
+    enc.endEncoding();
+    cmd.commit();
+    cmd.waitUntilCompleted();
+
+    let elapsed = gpu_elapsed_ms(&cmd);
+    println!("  Pipeline time: {:.3} ms", elapsed);
+
+    // ════════════════════════════════════════════════════════════════
+    // Correctness check: verify each element is in the correct bucket
+    // ════════════════════════════════════════════════════════════════
+    let output: Vec<u32> = unsafe { read_buffer_slice(&buf_b, n) };
+    let bucket_descs: Vec<BucketDesc> = unsafe {
+        let ptr = buf_bucket_descs.contents().as_ptr() as *const BucketDesc;
+        std::slice::from_raw_parts(ptr, 256).to_vec()
+    };
+
+    let mut mismatches = 0u64;
+    let mut first_mismatches: Vec<String> = Vec::new();
+
+    for b in 0..256u32 {
+        let desc = &bucket_descs[b as usize];
+        let start = desc.offset as usize;
+        let end = start + desc.count as usize;
+        for i in start..end {
+            let elem = output[i];
+            let msd_byte = (elem >> 24) & 0xFF;
+            if msd_byte != b {
+                mismatches += 1;
+                if first_mismatches.len() < 5 {
+                    first_mismatches.push(format!(
+                        "    idx={}: elem=0x{:08X}, MSD byte={}, expected bucket={}",
+                        i, elem, msd_byte, b
+                    ));
+                }
+            }
+        }
+    }
+
+    println!("  MSD scatter correctness: {} mismatches out of {} elements", mismatches, n);
+    if mismatches == 0 {
+        println!("  MSD scatter check: ok");
+    } else {
+        println!("  MSD scatter check: FAIL");
+        for msg in &first_mismatches {
+            println!("{}", msg);
+        }
+    }
+
+    // Print a few bucket stats
+    println!("  First 4 buckets:");
+    for b in 0..4 {
+        let d = &bucket_descs[b];
+        println!("    [{}] offset={}, count={}", b, d.offset, d.count);
+    }
+    println!("  Last bucket:");
+    {
+        let d = &bucket_descs[255];
+        println!("    [255] offset={}, count={}", d.offset, d.count);
+    }
+
+    // Verify total element count across all buckets
+    let total: u64 = bucket_descs.iter().map(|d| d.count as u64).sum();
+    println!("  Total elements across buckets: {} (expected {})", total, n);
 }
