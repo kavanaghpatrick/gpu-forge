@@ -31,6 +31,7 @@ struct Exp17Params {
 
 struct Exp17InnerParams {
     uint shift;
+    uint tg_offset;  // For batched dispatch: gid += tg_offset
 };
 
 struct BucketDesc {
@@ -211,8 +212,9 @@ kernel void exp17_inner_histogram(
     uint simd_id   [[simdgroup_index_in_threadgroup]])
 {
     // Arithmetic mapping: which bucket, which tile within that bucket
-    uint bucket_id      = gid / EXP17_MAX_TPB;
-    uint tile_in_bucket = gid % EXP17_MAX_TPB;
+    uint effective_gid  = gid + params.tg_offset;
+    uint bucket_id      = effective_gid / EXP17_MAX_TPB;
+    uint tile_in_bucket = effective_gid % EXP17_MAX_TPB;
 
     // Read bucket descriptor
     BucketDesc desc = bucket_descs[bucket_id];
@@ -295,8 +297,9 @@ kernel void exp17_inner_scan_scatter(
     uint simd_id   [[simdgroup_index_in_threadgroup]])
 {
     // ── Arithmetic mapping: which bucket, which tile within bucket ──
-    uint bucket_id      = gid / EXP17_MAX_TPB;
-    uint tile_in_bucket = gid % EXP17_MAX_TPB;
+    uint effective_gid  = gid + params.tg_offset;
+    uint bucket_id      = effective_gid / EXP17_MAX_TPB;
+    uint tile_in_bucket = effective_gid % EXP17_MAX_TPB;
 
     // Read bucket descriptor
     BucketDesc desc = bucket_descs[bucket_id];
@@ -434,6 +437,186 @@ kernel void exp17_inner_scan_scatter(
                          + within_sg;
             dst[dst_idx] = keys[e];
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel: Fused Inner Sort — 1 TG per bucket, no tile_hists
+//
+// Eliminates the tile_hists buffer entirely by processing all tiles
+// of a bucket serially within a single TG. Each TG:
+//   Phase 1: Accumulates bucket-wide histogram across all tiles
+//   Phase 2: 256-bin exclusive prefix sum
+//   Phase 3: Re-reads data tile-by-tile, ranks + scatters with
+//            running cross-tile prefix.
+//
+// 256 TGs total. No zeroing dispatch, no histogram dispatch.
+// Data read twice per pass (histogram + scatter) = 192 MB vs 201 MB.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void exp17_inner_fused(
+    device const uint*          src           [[buffer(0)]],
+    device uint*                dst           [[buffer(1)]],
+    device const BucketDesc*    bucket_descs  [[buffer(2)]],
+    constant Exp17InnerParams&  params        [[buffer(3)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint gid       [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_id   [[simdgroup_index_in_threadgroup]])
+{
+    BucketDesc desc = bucket_descs[gid]; // gid = bucket_id
+    if (desc.count == 0u) return;
+
+    uint shift = params.shift;
+    uint tile_count = desc.tile_count;
+
+    // ── TG Memory (~19 KB) ──────────────────────────────────────────
+    threadgroup atomic_uint sg_counts[EXP17_NUM_SGS * EXP17_NUM_BINS]; // 8 KB
+    threadgroup uint sg_prefix[EXP17_NUM_SGS * EXP17_NUM_BINS];        // 8 KB
+    threadgroup uint bucket_hist[EXP17_NUM_BINS];                       // 1 KB
+    threadgroup uint global_pfx[EXP17_NUM_BINS];                        // 1 KB
+    threadgroup uint running_pfx[EXP17_NUM_BINS];                       // 1 KB
+    threadgroup uint chunk_totals[8];                                    // 32 B
+
+    // ═══ PHASE 1: Bucket-wide histogram (serial over tiles) ═════════
+    bucket_hist[lid] = 0u;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint t = 0u; t < tile_count; t++) {
+        uint tile_base = desc.offset + t * EXP17_TILE_SIZE;
+
+        // Zero per-SG counters
+        for (uint i = lid; i < EXP17_NUM_SGS * EXP17_NUM_BINS; i += EXP17_THREADS) {
+            atomic_store_explicit(&sg_counts[i], 0u, memory_order_relaxed);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Per-SG atomic histogram for this tile
+        for (uint e = 0u; e < EXP17_ELEMS; e++) {
+            uint local_idx = t * EXP17_TILE_SIZE + simd_id * (EXP17_ELEMS * 32u) + e * 32u + simd_lane;
+            if (local_idx < desc.count) {
+                uint idx = tile_base + simd_id * (EXP17_ELEMS * 32u) + e * 32u + simd_lane;
+                uint digit = (src[idx] >> shift) & 0xFFu;
+                atomic_fetch_add_explicit(
+                    &sg_counts[simd_id * EXP17_NUM_BINS + digit],
+                    1u, memory_order_relaxed);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Reduce across SGs → accumulate into bucket histogram
+        {
+            uint total = 0u;
+            for (uint sg = 0u; sg < EXP17_NUM_SGS; sg++) {
+                total += atomic_load_explicit(
+                    &sg_counts[sg * EXP17_NUM_BINS + lid],
+                    memory_order_relaxed);
+            }
+            bucket_hist[lid] += total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // ═══ PHASE 2: 256-bin exclusive prefix sum ═══════════════════════
+    {
+        uint chunk = lid / 32u;
+        uint lane = lid % 32u;
+        uint val = bucket_hist[lid];
+        uint prefix = simd_prefix_exclusive_sum(val);
+
+        if (lane == 31u) {
+            chunk_totals[chunk] = prefix + val;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lid == 0u) {
+            uint running = 0u;
+            for (uint c = 0u; c < 8u; c++) {
+                uint ct = chunk_totals[c];
+                chunk_totals[c] = running;
+                running += ct;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        global_pfx[lid] = prefix + chunk_totals[chunk];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ═══ PHASE 3: Serial scatter with running cross-tile prefix ══════
+    running_pfx[lid] = 0u;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint t = 0u; t < tile_count; t++) {
+        uint tile_base = desc.offset + t * EXP17_TILE_SIZE;
+
+        // ── 3a: Load elements ──
+        uint keys[EXP17_ELEMS];
+        uint digits[EXP17_ELEMS];
+        bool valid[EXP17_ELEMS];
+        for (uint e = 0u; e < EXP17_ELEMS; e++) {
+            uint local_idx = t * EXP17_TILE_SIZE + simd_id * (EXP17_ELEMS * 32u) + e * 32u + simd_lane;
+            valid[e] = local_idx < desc.count;
+            uint idx = tile_base + simd_id * (EXP17_ELEMS * 32u) + e * 32u + simd_lane;
+            keys[e] = valid[e] ? src[idx] : 0xFFFFFFFFu;
+            digits[e] = valid[e] ? ((keys[e] >> shift) & 0xFFu) : 0xFFu;
+        }
+
+        // ── 3b: Per-SG histogram for rank computation ──
+        for (uint i = lid; i < EXP17_NUM_SGS * EXP17_NUM_BINS; i += EXP17_THREADS) {
+            atomic_store_explicit(&sg_counts[i], 0u, memory_order_relaxed);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint e = 0u; e < EXP17_ELEMS; e++) {
+            if (valid[e]) {
+                atomic_fetch_add_explicit(
+                    &sg_counts[simd_id * EXP17_NUM_BINS + digits[e]],
+                    1u, memory_order_relaxed);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // ── 3c: Cross-SG exclusive prefix + tile digit count ──
+        uint tile_digit_count; // per-thread: count of digit=lid in this tile
+        {
+            uint total = 0u;
+            for (uint sg = 0u; sg < EXP17_NUM_SGS; sg++) {
+                uint c = atomic_load_explicit(
+                    &sg_counts[sg * EXP17_NUM_BINS + lid],
+                    memory_order_relaxed);
+                sg_prefix[sg * EXP17_NUM_BINS + lid] = total;
+                total += c;
+            }
+            tile_digit_count = total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // ── 3d: Rank + scatter ──
+        for (uint i = lid; i < EXP17_NUM_SGS * EXP17_NUM_BINS; i += EXP17_THREADS) {
+            atomic_store_explicit(&sg_counts[i], 0u, memory_order_relaxed);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint e = 0u; e < EXP17_ELEMS; e++) {
+            if (valid[e]) {
+                uint d = digits[e];
+                uint within_sg = atomic_fetch_add_explicit(
+                    &sg_counts[simd_id * EXP17_NUM_BINS + d],
+                    1u, memory_order_relaxed);
+                uint dst_idx = desc.offset
+                             + global_pfx[d]
+                             + running_pfx[d]
+                             + sg_prefix[simd_id * EXP17_NUM_BINS + d]
+                             + within_sg;
+                dst[dst_idx] = keys[e];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // ── 3e: Advance running prefix ──
+        running_pfx[lid] += tile_digit_count;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
@@ -670,6 +853,231 @@ kernel void exp17_inner_scan_scatter_v2(
             uint dst_idx = desc.offset
                          + global_digit_pfx[d]
                          + exclusive_pfx[d]
+                         + sg_prefix[simd_id * EXP17_NUM_BINS + d]
+                         + within_sg;
+            dst[dst_idx] = keys[e];
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel: Inner Partition (Fused) — one kernel replaces inner_histogram
+// + inner_scan_scatter. Data read ONCE per pass, not twice.
+//
+// Architecture: decoupled lookback within each bucket (max 17 tiles).
+// After lookback, the last tile in each bucket computes the global
+// digit prefix (where each digit's output starts within the bucket)
+// and broadcasts via device memory. Other tiles spin on a flag.
+//
+// Dispatch: 4352 TGs (256 buckets × 17 max tiles per bucket).
+// TG memory: 20 KB (sg_hist_or_rank 8KB, sg_prefix 8KB,
+//   tile_hist 1KB, exclusive_pfx 1KB, digit_pfx 1KB, chunk_sums 32B).
+//
+// Saves 64 MB read per pass × 3 passes = 192 MB total.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void exp17_inner_partition(
+    device const uint*          src              [[buffer(0)]],
+    device uint*                dst              [[buffer(1)]],
+    device atomic_uint*         tile_status      [[buffer(2)]],
+    device const BucketDesc*    bucket_descs     [[buffer(3)]],
+    device uint*                bucket_digit_pfx [[buffer(4)]],
+    device atomic_uint*         bucket_ready     [[buffer(5)]],
+    constant Exp17InnerParams&  params           [[buffer(6)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint gid       [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_id   [[simdgroup_index_in_threadgroup]])
+{
+    // ── Arithmetic mapping ──
+    uint effective_gid  = gid + params.tg_offset;
+    uint bucket_id      = effective_gid / EXP17_MAX_TPB;
+    uint tile_in_bucket = effective_gid % EXP17_MAX_TPB;
+
+    BucketDesc desc = bucket_descs[bucket_id];
+
+    uint tile_start = tile_in_bucket * EXP17_TILE_SIZE;
+    if (tile_start >= desc.count) return;
+
+    uint bucket_count = desc.count;
+    uint base = desc.offset + tile_start;
+    uint shift = params.shift;
+
+    // ── TG Memory (20 KB) ──
+    threadgroup atomic_uint sg_hist_or_rank[EXP17_NUM_SGS * EXP17_NUM_BINS]; // 8 KB
+    threadgroup uint sg_prefix[EXP17_NUM_SGS * EXP17_NUM_BINS];             // 8 KB
+    threadgroup uint tile_hist[EXP17_NUM_BINS];                              // 1 KB
+    threadgroup uint exclusive_pfx[EXP17_NUM_BINS];                          // 1 KB
+    threadgroup uint digit_pfx[EXP17_NUM_BINS];                              // 1 KB
+    threadgroup uint chunk_sums[8];                                           // 32 B
+
+    // ── Phase 1: Load elements ──
+    uint keys[EXP17_ELEMS];
+    uint digits[EXP17_ELEMS];
+    bool valid[EXP17_ELEMS];
+    for (uint e = 0u; e < EXP17_ELEMS; e++) {
+        uint local_idx = tile_start + simd_id * (EXP17_ELEMS * 32u) + e * 32u + simd_lane;
+        valid[e] = local_idx < bucket_count;
+        uint idx = base + simd_id * (EXP17_ELEMS * 32u) + e * 32u + simd_lane;
+        keys[e] = valid[e] ? src[idx] : 0xFFFFFFFFu;
+        digits[e] = valid[e] ? ((keys[e] >> shift) & 0xFFu) : 0xFFu;
+    }
+
+    // ── Phase 2: Per-SG atomic histogram ──
+    for (uint i = lid; i < EXP17_NUM_SGS * EXP17_NUM_BINS; i += EXP17_THREADS) {
+        atomic_store_explicit(&sg_hist_or_rank[i], 0u, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint e = 0u; e < EXP17_ELEMS; e++) {
+        if (valid[e]) {
+            atomic_fetch_add_explicit(
+                &sg_hist_or_rank[simd_id * EXP17_NUM_BINS + digits[e]],
+                1u, memory_order_relaxed);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ── Phase 2b: Tile histogram + cross-SG exclusive prefix ──
+    {
+        uint total = 0u;
+        for (uint sg = 0u; sg < EXP17_NUM_SGS; sg++) {
+            uint c = atomic_load_explicit(
+                &sg_hist_or_rank[sg * EXP17_NUM_BINS + lid],
+                memory_order_relaxed);
+            sg_prefix[sg * EXP17_NUM_BINS + lid] = total;
+            total += c;
+        }
+        tile_hist[lid] = total;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ── Phase 3: Publish AGGREGATE to tile_status ──
+    uint ts_base = bucket_id * EXP17_MAX_TPB * EXP17_NUM_BINS;
+    {
+        uint packed = (FLAG_AGGREGATE << FLAG_SHIFT) | (tile_hist[lid] & VALUE_MASK);
+        atomic_store_explicit(
+            &tile_status[ts_base + tile_in_bucket * EXP17_NUM_BINS + lid],
+            packed, memory_order_relaxed);
+    }
+    atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ── Phase 4: Decoupled lookback within bucket ──
+    {
+        uint lk_running = 0u;
+        if (tile_in_bucket > 0u) {
+            int look = (int)tile_in_bucket - 1;
+            while (look >= 0) {
+                atomic_thread_fence(mem_flags::mem_device,
+                                    memory_order_seq_cst, thread_scope_device);
+                uint val = atomic_load_explicit(
+                    &tile_status[ts_base + (uint)look * EXP17_NUM_BINS + lid],
+                    memory_order_relaxed);
+                uint flag  = val >> FLAG_SHIFT;
+                uint count = val & VALUE_MASK;
+
+                if (flag == FLAG_PREFIX) {
+                    lk_running += count;
+                    break;
+                } else if (flag == FLAG_AGGREGATE) {
+                    lk_running += count;
+                    look--;
+                }
+                // FLAG_NOT_READY: spin
+            }
+        }
+        exclusive_pfx[lid] = lk_running;
+
+        // Publish PREFIX
+        uint inclusive = lk_running + tile_hist[lid];
+        uint packed = (FLAG_PREFIX << FLAG_SHIFT) | (inclusive & VALUE_MASK);
+        atomic_store_explicit(
+            &tile_status[ts_base + tile_in_bucket * EXP17_NUM_BINS + lid],
+            packed, memory_order_relaxed);
+    }
+    atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ── Phase 5: Last tile computes per-bucket digit prefix ──
+    // After lookback, last tile's inclusive = total count per digit.
+    // Compute exclusive prefix sum across digits → where each digit
+    // starts in the bucket's output region. Broadcast via device memory.
+    uint last_tile_idx = desc.tile_count - 1u;
+    bool is_last_tile = (tile_in_bucket == last_tile_idx);
+
+    if (is_last_tile) {
+        uint digit_total = exclusive_pfx[lid] + tile_hist[lid];
+
+        // 256-element exclusive prefix sum using SIMD (8 chunks of 32)
+        uint chunk = lid / 32u;
+        uint prefix = simd_prefix_exclusive_sum(digit_total);
+
+        if ((lid % 32u) == 31u) {
+            chunk_sums[chunk] = prefix + digit_total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lid == 0u) {
+            uint running = 0u;
+            for (uint c = 0u; c < 8u; c++) {
+                uint ct = chunk_sums[c];
+                chunk_sums[c] = running;
+                running += ct;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint global_pfx = prefix + chunk_sums[chunk];
+        digit_pfx[lid] = global_pfx;
+
+        // Write to device memory for other tiles to read
+        bucket_digit_pfx[bucket_id * EXP17_NUM_BINS + lid] = global_pfx;
+
+        // Signal ready
+        atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+        if (lid == 0u) {
+            atomic_store_explicit(&bucket_ready[bucket_id], 1u, memory_order_relaxed);
+        }
+        atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+    }
+
+    // ── Phase 6: Non-last tiles wait for bucket prefix ──
+    if (!is_last_tile) {
+        if (lid == 0u) {
+            while (true) {
+                atomic_thread_fence(mem_flags::mem_device,
+                                    memory_order_seq_cst, thread_scope_device);
+                uint ready = atomic_load_explicit(
+                    &bucket_ready[bucket_id], memory_order_relaxed);
+                if (ready != 0u) break;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Device fence so ALL threads see last tile's bucket_digit_pfx writes
+        atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+
+        // Read bucket_digit_pfx from device memory into TG memory
+        digit_pfx[lid] = bucket_digit_pfx[bucket_id * EXP17_NUM_BINS + lid];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // ── Phase 7: Per-SG atomic rank + scatter ──
+    for (uint i = lid; i < EXP17_NUM_SGS * EXP17_NUM_BINS; i += EXP17_THREADS) {
+        atomic_store_explicit(&sg_hist_or_rank[i], 0u, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint e = 0u; e < EXP17_ELEMS; e++) {
+        if (valid[e]) {
+            uint d = digits[e];
+            uint within_sg = atomic_fetch_add_explicit(
+                &sg_hist_or_rank[simd_id * EXP17_NUM_BINS + d],
+                1u, memory_order_relaxed);
+            uint dst_idx = desc.offset
+                         + digit_pfx[d]       // where digit d starts in bucket
+                         + exclusive_pfx[d]    // cross-tile prefix from lookback
                          + sg_prefix[simd_id * EXP17_NUM_BINS + d]
                          + within_sg;
             dst[dst_idx] = keys[e];
