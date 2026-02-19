@@ -12,7 +12,11 @@ use std::ptr::NonNull;
 
 const WARMUP: usize = 5;
 const RUNS: usize = 20;
+const BENCH_WARMUP: usize = 5;
+const BENCH_RUNS: usize = 50;
 const THREADS_PER_TG: usize = 256;
+const TILE_SIZE: usize = 4096;
+const BASELINE_MKEYS: f64 = 3003.0; // exp16 8-bit 4-pass baseline at 16M
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
@@ -172,6 +176,44 @@ pub fn run(ctx: &MetalContext) {
 
     // Phase 2: End-to-end hybrid sort (MSD scatter + 3 inner LSD passes)
     run_hybrid_sort(ctx);
+
+    // Phase 3: Benchmark + multi-size correctness
+    println!("\n{}", "=".repeat(60));
+    println!("Phase 3: Benchmark + Multi-Size Correctness");
+    println!("{}", "=".repeat(60));
+
+    for &n in &[1_000_000usize, 4_000_000, 16_000_000] {
+        let label = if n >= 1_000_000 {
+            format!("{}M", n / 1_000_000)
+        } else {
+            format!("{}K", n / 1_000)
+        };
+        println!("\n  ── Hybrid Sort @ {} ──", label);
+        let (times, correct) = bench_hybrid(ctx, n);
+        let mut sorted_times = times.clone();
+        sorted_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p5 = percentile(&sorted_times, 5.0);
+        let p50 = percentile(&sorted_times, 50.0);
+        let p95 = percentile(&sorted_times, 95.0);
+        let spread = if p50 > 0.0 { (p95 - p5) / p50 * 100.0 } else { 0.0 };
+        let mkeys = n as f64 / p50 / 1e3;
+        println!(
+            "  p5={:.3}ms  p50={:.3}ms  p95={:.3}ms  (spread {:.1}%)",
+            p5, p50, p95, spread
+        );
+        println!("  p50 throughput: {:.0} Mkeys/s", mkeys);
+        println!("  correctness: {}", if correct { "ok" } else { "FAIL" });
+
+        if n == 16_000_000 {
+            println!("\n  Comparison @ 16M:");
+            println!("    exp16 baseline:  {:.0} Mkeys/s (known)", BASELINE_MKEYS);
+            println!("    exp17 hybrid:    {:.0} Mkeys/s (measured)", mkeys);
+            println!("    Speedup:         {:.2}x", mkeys / BASELINE_MKEYS);
+        }
+    }
+
+    // Per-phase timing breakdown at 16M
+    bench_phases(ctx, 16_000_000);
 }
 
 /// BucketDesc: describes one MSD bucket (offset, count, tile_count, tile_base)
@@ -1019,4 +1061,498 @@ fn run_hybrid_sort(ctx: &MetalContext) {
     } else {
         println!("  Per-bucket sorted check: FAIL ({} buckets not sorted)", bucket_failures);
     }
+}
+
+/// Benchmark the full hybrid sort pipeline at size n.
+/// Returns (times_ms, correctness_ok).
+fn bench_hybrid(ctx: &MetalContext, n: usize) -> (Vec<f64>, bool) {
+    let num_tiles = n.div_ceil(TILE_SIZE);
+    let inner_tg_count: usize = 256 * 17; // 4352
+    let tile_hists_entries: usize = 256 * 17 * 256;
+    let inner_zero_tg_count = tile_hists_entries.div_ceil(THREADS_PER_TG);
+
+    // Generate random input + CPU reference
+    let data: Vec<u32> = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..n).map(|_| rng.gen::<u32>()).collect()
+    };
+    let mut expected = data.clone();
+    expected.sort();
+
+    // ── Allocate buffers (reused across iterations) ──
+    let buf_input = alloc_buffer_with_data(&ctx.device, &data);
+    let buf_a = alloc_buffer(&ctx.device, n * 4);
+    let buf_b = alloc_buffer(&ctx.device, n * 4);
+    let buf_msd_hist = alloc_buffer(&ctx.device, 4 * 256 * 4);
+    let buf_tile_status = alloc_buffer(&ctx.device, num_tiles * 256 * 4);
+    let buf_counters = alloc_buffer(&ctx.device, 4);
+    let buf_bucket_descs = alloc_buffer(&ctx.device, 256 * std::mem::size_of::<BucketDesc>());
+    let buf_tile_hists = alloc_buffer(&ctx.device, tile_hists_entries * 4);
+
+    // ── Build PSOs ──
+    let pso_histogram = ctx.make_pipeline("exp17_msd_histogram");
+    let pso_bucket_descs = ctx.make_pipeline("exp17_compute_bucket_descs");
+    let pso_prefix = ctx.make_pipeline("exp17_global_prefix");
+    let pso_zero_status = ctx.make_pipeline("exp16_zero_status");
+    let pso_partition = ctx.make_pipeline("exp16_partition");
+    let pso_inner_zero = ctx.make_pipeline("exp17_inner_zero");
+    let pso_inner_histogram = ctx.make_pipeline("exp17_inner_histogram");
+    let pso_inner_scan_scatter = ctx.make_pipeline("exp17_inner_scan_scatter");
+
+    // ── Params ──
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Exp17Params {
+        element_count: u32,
+        num_tiles: u32,
+        shift: u32,
+        pass: u32,
+    }
+
+    let exp17_params = Exp17Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let exp16_params = Exp16Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        num_tgs: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let tile_size_u32 = TILE_SIZE as u32;
+    let tile_hists_total = tile_hists_entries as u32;
+
+    // ── Grid sizes ──
+    let tg_size = MTLSize { width: THREADS_PER_TG, height: 1, depth: 1 };
+    let hist_grid = MTLSize { width: num_tiles, height: 1, depth: 1 };
+    let one_tg_grid = MTLSize { width: 1, height: 1, depth: 1 };
+    let zero_tg_count = (num_tiles * 256).div_ceil(THREADS_PER_TG);
+    let zero_grid = MTLSize { width: zero_tg_count, height: 1, depth: 1 };
+    let inner_grid = MTLSize { width: inner_tg_count, height: 1, depth: 1 };
+    let inner_zero_grid = MTLSize { width: inner_zero_tg_count, height: 1, depth: 1 };
+
+    let inner_shifts: [u32; 3] = [0, 8, 16];
+
+    let mut times = Vec::new();
+    let mut correct = false;
+
+    for iter in 0..(BENCH_WARMUP + BENCH_RUNS) {
+        // Reset: copy input to buf_a, zero msd_hist
+        unsafe {
+            let src = buf_input.contents().as_ptr() as *const u8;
+            let dst = buf_a.contents().as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(src, dst, n * 4);
+            std::ptr::write_bytes(buf_msd_hist.contents().as_ptr() as *mut u8, 0, 4 * 256 * 4);
+        }
+
+        let cmd = ctx.command_buffer();
+        let enc = cmd.computeCommandEncoder().unwrap();
+
+        // ── MSD phase (5 dispatches) ──
+        // 1. MSD histogram
+        enc.setComputePipelineState(&pso_histogram);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 1);
+            enc.setBytes_length_atIndex(
+                NonNull::new(&exp17_params as *const Exp17Params as *mut _).unwrap(),
+                std::mem::size_of::<Exp17Params>(), 2,
+            );
+        }
+        enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+        // 2. BucketDesc
+        enc.setComputePipelineState(&pso_bucket_descs);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 1);
+            enc.setBytes_length_atIndex(
+                NonNull::new(&tile_size_u32 as *const u32 as *mut _).unwrap(),
+                4, 2,
+            );
+        }
+        enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+        // 3. Global prefix
+        enc.setComputePipelineState(&pso_prefix);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+        }
+        enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+        // 4. Zero tile_status + counters
+        enc.setComputePipelineState(&pso_zero_status);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 1);
+            enc.setBytes_length_atIndex(
+                NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+                std::mem::size_of::<Exp16Params>(), 2,
+            );
+        }
+        enc.dispatchThreadgroups_threadsPerThreadgroup(zero_grid, tg_size);
+
+        // 5. MSD scatter
+        enc.setComputePipelineState(&pso_partition);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(buf_b.as_ref()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 2);
+            enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 3);
+            enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 4);
+            enc.setBytes_length_atIndex(
+                NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+                std::mem::size_of::<Exp16Params>(), 5,
+            );
+        }
+        enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+        // ── Inner sort (3 passes x 3 dispatches = 9 dispatches) ──
+        for (pass_idx, &shift) in inner_shifts.iter().enumerate() {
+            let inner_params = Exp17InnerParams { shift };
+            let (src_buf, dst_buf) = if pass_idx % 2 == 0 {
+                (buf_b.as_ref(), buf_a.as_ref())
+            } else {
+                (buf_a.as_ref(), buf_b.as_ref())
+            };
+
+            // Zero tile_hists
+            enc.setComputePipelineState(&pso_inner_zero);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists.as_ref()), 0, 0);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&tile_hists_total as *const u32 as *mut _).unwrap(),
+                    4, 1,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_zero_grid, tg_size);
+
+            // Inner histogram
+            enc.setComputePipelineState(&pso_inner_histogram);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists.as_ref()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 2);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 3,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid, tg_size);
+
+            // Inner scan+scatter
+            enc.setComputePipelineState(&pso_inner_scan_scatter);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(dst_buf), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists.as_ref()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 4,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid, tg_size);
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        let ms = gpu_elapsed_ms(&cmd);
+        if iter >= BENCH_WARMUP {
+            times.push(ms);
+        }
+
+        // Correctness check on last iteration
+        if iter == BENCH_WARMUP + BENCH_RUNS - 1 {
+            let result: Vec<u32> = unsafe { read_buffer_slice(&buf_a, n) };
+            let mut mismatches = 0usize;
+            for i in 0..n {
+                if result[i] != expected[i] {
+                    mismatches += 1;
+                    if mismatches <= 3 {
+                        println!(
+                            "    mismatch idx={}: got=0x{:08X} expected=0x{:08X}",
+                            i, result[i], expected[i]
+                        );
+                    }
+                }
+            }
+            correct = mismatches == 0;
+            if mismatches > 0 {
+                println!("    {} mismatches out of {}", mismatches, n);
+            }
+        }
+    }
+
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (times, correct)
+}
+
+/// Per-phase timing breakdown: run MSD and inner phases in separate command buffers.
+fn bench_phases(ctx: &MetalContext, n: usize) {
+    println!("\n  ── Per-Phase Timing Breakdown @ {}M ──", n / 1_000_000);
+
+    let num_tiles = n.div_ceil(TILE_SIZE);
+    let inner_tg_count: usize = 256 * 17;
+    let tile_hists_entries: usize = 256 * 17 * 256;
+    let inner_zero_tg_count = tile_hists_entries.div_ceil(THREADS_PER_TG);
+
+    // Generate random input
+    let data: Vec<u32> = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..n).map(|_| rng.gen::<u32>()).collect()
+    };
+
+    let buf_input = alloc_buffer_with_data(&ctx.device, &data);
+    let buf_a = alloc_buffer(&ctx.device, n * 4);
+    let buf_b = alloc_buffer(&ctx.device, n * 4);
+    let buf_msd_hist = alloc_buffer(&ctx.device, 4 * 256 * 4);
+    let buf_tile_status = alloc_buffer(&ctx.device, num_tiles * 256 * 4);
+    let buf_counters = alloc_buffer(&ctx.device, 4);
+    let buf_bucket_descs = alloc_buffer(&ctx.device, 256 * std::mem::size_of::<BucketDesc>());
+    let buf_tile_hists = alloc_buffer(&ctx.device, tile_hists_entries * 4);
+
+    let pso_histogram = ctx.make_pipeline("exp17_msd_histogram");
+    let pso_bucket_descs = ctx.make_pipeline("exp17_compute_bucket_descs");
+    let pso_prefix = ctx.make_pipeline("exp17_global_prefix");
+    let pso_zero_status = ctx.make_pipeline("exp16_zero_status");
+    let pso_partition = ctx.make_pipeline("exp16_partition");
+    let pso_inner_zero = ctx.make_pipeline("exp17_inner_zero");
+    let pso_inner_histogram = ctx.make_pipeline("exp17_inner_histogram");
+    let pso_inner_scan_scatter = ctx.make_pipeline("exp17_inner_scan_scatter");
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Exp17Params {
+        element_count: u32,
+        num_tiles: u32,
+        shift: u32,
+        pass: u32,
+    }
+
+    let exp17_params = Exp17Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let exp16_params = Exp16Params {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        num_tgs: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let tile_size_u32 = TILE_SIZE as u32;
+    let tile_hists_total = tile_hists_entries as u32;
+
+    let tg_size = MTLSize { width: THREADS_PER_TG, height: 1, depth: 1 };
+    let hist_grid = MTLSize { width: num_tiles, height: 1, depth: 1 };
+    let one_tg_grid = MTLSize { width: 1, height: 1, depth: 1 };
+    let zero_tg_count = (num_tiles * 256).div_ceil(THREADS_PER_TG);
+    let zero_grid = MTLSize { width: zero_tg_count, height: 1, depth: 1 };
+    let inner_grid = MTLSize { width: inner_tg_count, height: 1, depth: 1 };
+    let inner_zero_grid = MTLSize { width: inner_zero_tg_count, height: 1, depth: 1 };
+
+    let inner_shifts: [u32; 3] = [0, 8, 16];
+    let phase_warmup = 3;
+    let phase_runs = 20;
+
+    // Phase labels: [msd_histogram, msd_bd+pfx+zero+scatter, inner0, inner1, inner2]
+    let mut phase_times: Vec<Vec<f64>> = vec![Vec::new(); 5];
+    // Also measure full pipeline for comparison
+    let mut full_times: Vec<f64> = Vec::new();
+
+    for iter in 0..(phase_warmup + phase_runs) {
+        // Reset input + zero histogram
+        unsafe {
+            let src = buf_input.contents().as_ptr() as *const u8;
+            let dst = buf_a.contents().as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(src, dst, n * 4);
+            std::ptr::write_bytes(buf_msd_hist.contents().as_ptr() as *mut u8, 0, 4 * 256 * 4);
+        }
+
+        // ── Phase A: MSD histogram (separate cmd buf) ──
+        {
+            let cmd = ctx.command_buffer();
+            let enc = cmd.computeCommandEncoder().unwrap();
+            enc.setComputePipelineState(&pso_histogram);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 1);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&exp17_params as *const Exp17Params as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17Params>(), 2,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+            enc.endEncoding();
+            cmd.commit();
+            cmd.waitUntilCompleted();
+            if iter >= phase_warmup {
+                phase_times[0].push(gpu_elapsed_ms(&cmd));
+            }
+        }
+
+        // ── Phase B: BucketDesc + prefix + zero + scatter (separate cmd buf) ──
+        {
+            let cmd = ctx.command_buffer();
+            let enc = cmd.computeCommandEncoder().unwrap();
+
+            // BucketDesc
+            enc.setComputePipelineState(&pso_bucket_descs);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 1);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&tile_size_u32 as *const u32 as *mut _).unwrap(),
+                    4, 2,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+            // Global prefix
+            enc.setComputePipelineState(&pso_prefix);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 0);
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+            // Zero tile_status + counters
+            enc.setComputePipelineState(&pso_zero_status);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 1);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+                    std::mem::size_of::<Exp16Params>(), 2,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(zero_grid, tg_size);
+
+            // MSD scatter
+            enc.setComputePipelineState(&pso_partition);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_b.as_ref()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_status.as_ref()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_counters.as_ref()), 0, 3);
+                enc.setBuffer_offset_atIndex(Some(buf_msd_hist.as_ref()), 0, 4);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&exp16_params as *const Exp16Params as *mut _).unwrap(),
+                    std::mem::size_of::<Exp16Params>(), 5,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+            enc.endEncoding();
+            cmd.commit();
+            cmd.waitUntilCompleted();
+            if iter >= phase_warmup {
+                phase_times[1].push(gpu_elapsed_ms(&cmd));
+            }
+        }
+
+        // ── Phases C/D/E: Inner passes 0/1/2 (each in separate cmd buf) ──
+        for (pass_idx, &shift) in inner_shifts.iter().enumerate() {
+            let inner_params = Exp17InnerParams { shift };
+            let (src_buf, dst_buf) = if pass_idx % 2 == 0 {
+                (buf_b.as_ref(), buf_a.as_ref())
+            } else {
+                (buf_a.as_ref(), buf_b.as_ref())
+            };
+
+            let cmd = ctx.command_buffer();
+            let enc = cmd.computeCommandEncoder().unwrap();
+
+            // Zero tile_hists
+            enc.setComputePipelineState(&pso_inner_zero);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists.as_ref()), 0, 0);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&tile_hists_total as *const u32 as *mut _).unwrap(),
+                    4, 1,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_zero_grid, tg_size);
+
+            // Inner histogram
+            enc.setComputePipelineState(&pso_inner_histogram);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists.as_ref()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 2);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 3,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid, tg_size);
+
+            // Inner scan+scatter
+            enc.setComputePipelineState(&pso_inner_scan_scatter);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src_buf), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(dst_buf), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_tile_hists.as_ref()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_bucket_descs.as_ref()), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const Exp17InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<Exp17InnerParams>(), 4,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(inner_grid, tg_size);
+
+            enc.endEncoding();
+            cmd.commit();
+            cmd.waitUntilCompleted();
+            if iter >= phase_warmup {
+                phase_times[2 + pass_idx].push(gpu_elapsed_ms(&cmd));
+            }
+        }
+
+        // Also measure full pipeline time (sum of individual phases for this iteration)
+        if iter >= phase_warmup {
+            let idx = iter - phase_warmup;
+            let full = phase_times[0][idx] + phase_times[1][idx]
+                + phase_times[2][idx] + phase_times[3][idx] + phase_times[4][idx];
+            full_times.push(full);
+        }
+    }
+
+    // Sort and print
+    for t in phase_times.iter_mut() {
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    }
+    full_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let labels = [
+        "MSD histogram",
+        "MSD bd+pfx+zero+scatter",
+        "Inner pass 0",
+        "Inner pass 1",
+        "Inner pass 2",
+    ];
+
+    println!("  Phase breakdown @ {}M (median of {} runs):", n / 1_000_000, phase_runs);
+    let mut sum_p50 = 0.0;
+    for (i, label) in labels.iter().enumerate() {
+        let p50 = percentile(&phase_times[i], 50.0);
+        sum_p50 += p50;
+        println!("    {:.<28} {:>6.3} ms", label, p50);
+    }
+    println!("    {:.<28} {:>6.3} ms", "Sum of phases", sum_p50);
+    let full_p50 = percentile(&full_times, 50.0);
+    println!("    {:.<28} {:>6.3} ms", "Full pipeline (sum)", full_p50);
+    let overhead = full_p50 - sum_p50;
+    println!("    {:.<28} {:>6.3} ms", "Overhead estimate", if overhead > 0.0 { overhead } else { 0.0 });
+    let implied_mkeys = n as f64 / full_p50 / 1e3;
+    println!("    Implied throughput: {:.0} Mkeys/s", implied_mkeys);
 }

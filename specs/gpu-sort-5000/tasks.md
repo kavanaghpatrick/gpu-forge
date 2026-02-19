@@ -152,7 +152,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - **Done when**: Build succeeds with exit code 0
   - **Commit**: `chore(exp17): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.10 Add benchmark loop + per-phase timing + multi-size correctness
+- [x] 1.10 Add benchmark loop + per-phase timing + multi-size correctness
   - **Do**:
     1. In `exp17_hybrid.rs`, add benchmark: 5 warmup + 50 timed iterations of the full hybrid pipeline at 16M. Compute p5/p50/p95 timing and Mkeys/s using `percentile()` and `print_stats()`.
     2. Add per-phase timing: run MSD phase and inner phases in separate command buffers to measure individual GPU times. Print breakdown: MSD histogram time, MSD scatter time (includes prefix+zero), inner pass 0/1/2 time, dispatch overhead estimate (total - sum of phases).
