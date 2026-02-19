@@ -165,7 +165,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-8, FR-9, AC-4.1 through AC-4.6_
   - _Design: Benchmark Methodology, Performance Budget_
 
-- [ ] 1.11 POC Checkpoint
+- [x] 1.11 POC Checkpoint
   - **Do**: Run the full experiment end-to-end. Verify Phase 0 SLC benchmark runs, MSD scatter correct, inner sort correct, end-to-end benchmark prints results. Capture output. This is the POC validation -- the hybrid sort compiles, runs, and produces correct results. Performance target may or may not be met.
   - **Done when**: `cargo run --release -p metal-gpu-experiments` completes without error and prints all benchmark results
   - **Verify**: `rm -rf target/release/build/metal-gpu-experiments-* && cargo run --release -p metal-gpu-experiments 2>&1 | grep -E '(Mkeys|scatter|ABORT|FAIL|ok|mismatch)' | head -30`
