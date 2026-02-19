@@ -208,7 +208,7 @@ After POC validated, clean up code and add fallback analysis.
   - **Commit**: `refactor(exp17): clean output formatting and extract helpers`
   - _Design: Existing Patterns to Follow_
 
-- [ ] 2.3 [VERIFY] Quality checkpoint: build + correctness
+- [x] 2.3 [VERIFY] Quality checkpoint: build + correctness
   - **Do**: Full rebuild, run, verify no regressions in correctness at all sizes.
   - **Verify**: `rm -rf target/release/build/metal-gpu-experiments-* && cargo build --release -p metal-gpu-experiments 2>&1 | tail -5`
   - **Done when**: Build succeeds, no correctness regressions
