@@ -118,7 +118,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-5, FR-6, FR-7, AC-3.1, AC-3.4_
   - _Design: exp17_inner_scan_scatter, Serial scan prefix_
 
-- [ ] 1.8 Wire up inner sort in Rust host + end-to-end correctness
+- [x] 1.8 Wire up inner sort in Rust host + end-to-end correctness
   - **Do**:
     1. In `exp17_hybrid.rs`, implement `run_hybrid_sort()`:
        - Allocate all buffers per design: buf_a (64MB), buf_b (64MB), buf_msd_hist (4*256*4 for exp16_partition compat), buf_tile_status (3907*256*4), buf_counters (4), buf_bucket_descs (256*16), buf_tile_hists (256*17*256*4 = ~4.5MB).
