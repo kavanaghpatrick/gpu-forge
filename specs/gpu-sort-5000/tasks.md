@@ -100,7 +100,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-5, FR-6, AC-3.2, AC-3.3_
   - _Design: exp17_inner_histogram, exp17_inner_zero_
 
-- [ ] 1.7 Implement inner scan+scatter kernel (serial prefix + rank + scatter)
+- [x] 1.7 Implement inner scan+scatter kernel (serial prefix + rank + scatter)
   - **Do**:
     1. In `exp17_hybrid.metal`, implement `exp17_inner_scan_scatter`:
        - Same dispatch geometry as inner_histogram (4352 TGs, arithmetic mapping).
