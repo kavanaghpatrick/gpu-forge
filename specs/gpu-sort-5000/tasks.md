@@ -146,7 +146,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-5, FR-8, FR-9, AC-4.1, AC-4.6_
   - _Design: Command Structure, Buffer Layout, Data Flow_
 
-- [ ] 1.9 [VERIFY] Quality checkpoint: full build + run
+- [x] 1.9 [VERIFY] Quality checkpoint: full build + run
   - **Do**: Full shader rebuild + build. Run the binary and verify it completes without panics and produces correct output.
   - **Verify**: `rm -rf target/release/build/metal-gpu-experiments-* && cargo build --release -p metal-gpu-experiments 2>&1 | tail -5`
   - **Done when**: Build succeeds with exit code 0
