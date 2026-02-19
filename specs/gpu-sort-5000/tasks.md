@@ -81,7 +81,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - **Done when**: Build succeeds with exit code 0
   - **Commit**: `chore(exp17): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.6 Implement inner histogram kernel (per-tile, all buckets in one dispatch)
+- [x] 1.6 Implement inner histogram kernel (per-tile, all buckets in one dispatch)
   - **Do**:
     1. In `exp17_hybrid.metal`, implement `exp17_inner_histogram`:
        - Fixed dispatch: 4352 TGs (17 tiles x 256 buckets). Arithmetic mapping: `bucket_id = gid / EXP17_MAX_TPB`, `tile_in_bucket = gid % EXP17_MAX_TPB`.

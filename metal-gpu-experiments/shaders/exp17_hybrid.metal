@@ -164,6 +164,114 @@ kernel void exp17_compute_bucket_descs(
 // Input/output: global_hist (in-place).
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+// Kernel: Inner Zero — zero the tile_hists buffer between inner passes
+//
+// Simple 1D zero: if (tid < total_entries) tile_hists[tid] = 0;
+// total_entries = 256 buckets * 17 tiles * 256 bins = 1,114,112
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void exp17_inner_zero(
+    device uint*      tile_hists    [[buffer(0)]],
+    constant uint&    total_entries [[buffer(1)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid < total_entries)
+        tile_hists[tid] = 0u;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel: Inner Histogram — per-tile, all buckets in one dispatch
+//
+// Fixed dispatch: 4352 TGs (EXP17_MAX_TPB * 256 = 17 * 256).
+// Arithmetic mapping:
+//   bucket_id       = gid / EXP17_MAX_TPB
+//   tile_in_bucket  = gid % EXP17_MAX_TPB
+//
+// Each TG processes one tile of one bucket. Reads BucketDesc for
+// bucket boundaries, early-exits if tile exceeds bucket count.
+// Same per-SG atomic histogram pattern as exp16 Phase 2.
+//
+// Output: tile_hists[bucket_id * MAX_TPB * 256 + tile_in_bucket * 256 + bin]
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void exp17_inner_histogram(
+    device const uint*          data          [[buffer(0)]],
+    device uint*                tile_hists    [[buffer(1)]],
+    device const BucketDesc*    bucket_descs  [[buffer(2)]],
+    constant Exp17InnerParams&  params        [[buffer(3)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint gid       [[threadgroup_position_in_grid]],
+    uint simd_id   [[simdgroup_index_in_threadgroup]])
+{
+    // Arithmetic mapping: which bucket, which tile within that bucket
+    uint bucket_id      = gid / EXP17_MAX_TPB;
+    uint tile_in_bucket = gid % EXP17_MAX_TPB;
+
+    // Read bucket descriptor
+    BucketDesc desc = bucket_descs[bucket_id];
+
+    // Early-exit if this tile is beyond the bucket's element count
+    uint tile_start = tile_in_bucket * EXP17_TILE_SIZE;
+    if (tile_start >= desc.count) return;
+
+    uint bucket_count = desc.count;
+    uint base = desc.offset + tile_start;
+    uint shift = params.shift;
+
+    // ── Phase 1: Load elements (SG-contiguous layout) ────────────
+    uint keys[EXP17_ELEMS];
+    bool valid[EXP17_ELEMS];
+    for (uint e = 0u; e < EXP17_ELEMS; e++) {
+        uint idx = base + simd_id * (EXP17_ELEMS * 32u) + e * 32u + (lid % 32u);
+        uint local_idx = tile_start + simd_id * (EXP17_ELEMS * 32u) + e * 32u + (lid % 32u);
+        valid[e] = local_idx < bucket_count;
+        keys[e] = valid[e] ? data[idx] : 0u;
+    }
+
+    // ── Phase 2: Per-SG atomic histogram on TG memory ────────────
+    threadgroup atomic_uint sg_counts[EXP17_NUM_SGS * EXP17_NUM_BINS]; // 8 KB
+
+    // Zero sg_counts (all 256 threads cooperate)
+    for (uint i = lid; i < EXP17_NUM_SGS * EXP17_NUM_BINS; i += EXP17_THREADS) {
+        atomic_store_explicit(&sg_counts[i], 0u, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Per-SG atomic histogram
+    for (uint e = 0u; e < EXP17_ELEMS; e++) {
+        if (valid[e]) {
+            uint digit = (keys[e] >> shift) & 0xFFu;
+            atomic_fetch_add_explicit(
+                &sg_counts[simd_id * EXP17_NUM_BINS + digit],
+                1u, memory_order_relaxed);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ── Reduce across SGs: 256 threads handle one bin each ───────
+    {
+        uint total = 0u;
+        for (uint sg = 0u; sg < EXP17_NUM_SGS; sg++) {
+            total += atomic_load_explicit(
+                &sg_counts[sg * EXP17_NUM_BINS + lid],
+                memory_order_relaxed);
+        }
+        // Write to tile_hists: [bucket_id * MAX_TPB * 256 + tile_in_bucket * 256 + bin]
+        tile_hists[bucket_id * EXP17_MAX_TPB * EXP17_NUM_BINS
+                   + tile_in_bucket * EXP17_NUM_BINS
+                   + lid] = total;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel: MSD Global Prefix — exclusive prefix sum, 256 bins
+//
+// Cloned from exp16_global_prefix but only 1 pass (SG 0 only).
+// 256-bin prefix sum via 8 chunks of 32 with simd_prefix_exclusive_sum.
+// Input/output: global_hist (in-place).
+// ═══════════════════════════════════════════════════════════════════
+
 kernel void exp17_global_prefix(
     device uint* global_hist [[buffer(0)]],
     uint lid [[thread_position_in_threadgroup]],
