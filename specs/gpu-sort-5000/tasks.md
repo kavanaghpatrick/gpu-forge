@@ -191,7 +191,7 @@ After POC validated, clean up code and add fallback analysis.
   - _Requirements: FR-10, AC-5.1 through AC-5.4_
   - _Design: Critical Path Optimization_
 
-- [ ] 2.2 Refactor run() for clean output formatting
+- [x] 2.2 Refactor run() for clean output formatting
   - **Do**:
     1. Structure the `run()` function output to match exp16 style:
        - Section header: "Experiment 17: MSD+LSD Hybrid Radix Sort"
