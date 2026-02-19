@@ -75,7 +75,7 @@ Focus: Get Phase 0 SLC benchmark running, then MSD scatter, then inner sort, the
   - _Requirements: FR-3, AC-2.1, AC-2.2, AC-2.5_
   - _Design: Phase 1 MSD Scatter, Command Structure_
 
-- [ ] 1.5 [VERIFY] Quality checkpoint: build compiles, MSD scatter correctness
+- [x] 1.5 [VERIFY] Quality checkpoint: build compiles, MSD scatter correctness
   - **Do**: Build with shader rebuild, verify the binary compiles and runs without panics. If any compilation errors, fix them.
   - **Verify**: `rm -rf target/release/build/metal-gpu-experiments-* && cargo build --release -p metal-gpu-experiments 2>&1 | tail -5`
   - **Done when**: Build succeeds with exit code 0
