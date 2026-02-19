@@ -35,7 +35,7 @@ Focus: Get 8-bit/4-pass radix sort working with same tile size as exp15. Validat
   - _Requirements: FR-1, FR-2, FR-5, FR-6, FR-8, FR-9, FR-10, FR-12_
   - _Design: K1-K4, TG Memory Layout, Partition Kernel Phase Flow_
 
-- [ ] 1.2 Create exp16 Rust host with bench and correctness verification
+- [x] 1.2 Create exp16 Rust host with bench and correctness verification
   - **Do**:
     1. Create `metal-gpu-experiments/src/exp16_8bit.rs`
     2. Define constants: NUM_BINS=256, TILE_SIZE=2048, NUM_PASSES=4, THREADS_PER_TG=256, WARMUP=5, RUNS=50
