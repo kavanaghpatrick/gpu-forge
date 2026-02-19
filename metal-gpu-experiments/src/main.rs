@@ -15,6 +15,7 @@ mod exp13_ultimate_sort;
 mod exp14_multi_dispatch;
 mod exp15_onesweep;
 mod exp16_8bit;
+mod exp17_hybrid;
 
 use objc2_metal::MTLDevice;
 
@@ -50,11 +51,14 @@ fn main() {
     // // Experiment 14: Multi-dispatch sort (coalesced scatter)
     // exp14_multi_dispatch::run(&ctx);
 
-    // Experiment 15: Onesweep fused radix sort (baseline)
-    exp15_onesweep::run(&ctx);
+    // // Experiment 15: Onesweep fused radix sort (baseline)
+    // exp15_onesweep::run(&ctx);
 
-    // Experiment 16: 8-bit radix sort
-    exp16_8bit::run(&ctx);
+    // // Experiment 16: 8-bit radix sort + 3-pass variant
+    // exp16_8bit::run(&ctx);
+
+    // Experiment 17: MSD+LSD hybrid radix sort
+    exp17_hybrid::run(&ctx);
 
     println!("\n{}", "=".repeat(60));
     println!("All experiments complete.");
