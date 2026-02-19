@@ -231,7 +231,7 @@ Only needed if POC shows < 5000 Mkeys/s and bottleneck is identified.
   - _Requirements: FR-12_
   - _Design: Technical Decisions, tile size_
 
-- [ ] 3.2 [VERIFY] Quality checkpoint after optimization
+- [x] 3.2 [VERIFY] Quality checkpoint after optimization
   - **Do**: Full rebuild, run, verify correctness still holds at all sizes with any optimization changes.
   - **Verify**: `rm -rf target/release/build/metal-gpu-experiments-* && cargo build --release -p metal-gpu-experiments 2>&1 | tail -5`
   - **Done when**: Build succeeds, correctness preserved
