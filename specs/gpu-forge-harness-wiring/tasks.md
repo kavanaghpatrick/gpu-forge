@@ -251,7 +251,7 @@ created: 2026-02-20
 - _Requirements: FR-11 (AC-5.1 through AC-5.9)_
 - _Design: Gap 4: Post-Edit Hook Expansion, post-edit-validator.sh_
 
-### Task 4.2: Add Write matcher to hooks.json (Gap 4)
+### Task 4.2: Add Write matcher to hooks.json (Gap 4) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/hooks/hooks.json`
