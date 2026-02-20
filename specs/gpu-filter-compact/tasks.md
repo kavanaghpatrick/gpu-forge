@@ -258,7 +258,7 @@ Focus: Comprehensive correctness tests, property-based tests, edge cases.
 - _Requirements: AC-1.5, FR-1, FR-2, FR-3_
 - _Design: Test Strategy — Unit Tests_
 
-### Task 3.2: Edge case tests
+### Task 3.2: Edge case tests [x]
 
 - **Do**:
   1. `test_filter_empty_input`: verify FilterError::EmptyInput or Ok with empty result for 0 elements

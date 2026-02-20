@@ -2335,4 +2335,311 @@ mod tests {
             "contents mismatch between compound AND and Between"
         );
     }
+
+    // ===================================================================
+    // Edge case tests (Task 3.2)
+    // ===================================================================
+
+    #[test]
+    fn test_filter_empty_input() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+
+        // Empty slice via filter_u32 convenience method
+        let result = filter
+            .filter_u32(&[], &Predicate::Gt(0u32))
+            .expect("filter_u32 on empty input failed");
+        println!("test_filter_empty_input: result len={}", result.len());
+        assert_eq!(result.len(), 0, "empty input should produce empty output");
+
+        // Also test via FilterBuffer path — allocate capacity 1 but keep len=0
+        let buf = filter.alloc_filter_buffer::<u32>(1);
+        assert_eq!(buf.len(), 0);
+        let result2 = filter
+            .filter(&buf, &Predicate::Gt(0u32))
+            .expect("filter on empty FilterBuffer failed");
+        assert_eq!(result2.len(), 0, "empty FilterBuffer should produce empty result");
+
+        // Test all convenience methods with empty input
+        let empty_i32 = filter
+            .filter_i32(&[], &Predicate::Gt(0i32))
+            .expect("filter_i32 empty failed");
+        assert_eq!(empty_i32.len(), 0);
+        let empty_f32 = filter
+            .filter_f32(&[], &Predicate::Gt(0.0f32))
+            .expect("filter_f32 empty failed");
+        assert_eq!(empty_f32.len(), 0);
+    }
+
+    #[test]
+    fn test_filter_single_element_match() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data = [42u32];
+        let pred = Predicate::Gt(0u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        println!(
+            "test_filter_single_element_match: result={:?}",
+            result
+        );
+        assert_eq!(result.len(), 1, "single matching element should produce 1 result");
+        assert_eq!(result[0], 42, "result should be the matching element");
+    }
+
+    #[test]
+    fn test_filter_single_element_no_match() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data = [42u32];
+        let pred = Predicate::Gt(100u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        println!(
+            "test_filter_single_element_no_match: result len={}",
+            result.len()
+        );
+        assert_eq!(result.len(), 0, "non-matching single element should produce empty result");
+    }
+
+    #[test]
+    fn test_filter_all_same_value() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000;
+        let data: Vec<u32> = vec![777u32; n];
+
+        // Eq(777) should match all
+        let result_eq = filter
+            .filter_u32(&data, &Predicate::Eq(777u32))
+            .expect("filter Eq failed");
+        println!(
+            "test_filter_all_same_value Eq: result={}",
+            result_eq.len()
+        );
+        assert_eq!(result_eq.len(), n, "Eq(777) should match all {} elements", n);
+        assert!(
+            result_eq.iter().all(|&v| v == 777),
+            "all values should be 777"
+        );
+
+        // Gt(777) should match none
+        let result_gt = filter
+            .filter_u32(&data, &Predicate::Gt(777u32))
+            .expect("filter Gt failed");
+        println!(
+            "test_filter_all_same_value Gt: result={}",
+            result_gt.len()
+        );
+        assert_eq!(result_gt.len(), 0, "Gt(777) should match no elements when all are 777");
+    }
+
+    #[test]
+    fn test_filter_max_min_values() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+
+        // Data with extremes: [0, 1, u32::MAX-1, u32::MAX] repeated to fill a tile
+        let mut data: Vec<u32> = Vec::with_capacity(100_000);
+        for _ in 0..25_000 {
+            data.push(u32::MIN);
+            data.push(1);
+            data.push(u32::MAX - 1);
+            data.push(u32::MAX);
+        }
+
+        // Gt(u32::MAX - 1) should match only u32::MAX values
+        let pred_gt_max = Predicate::Gt(u32::MAX - 1);
+        let result = filter
+            .filter_u32(&data, &pred_gt_max)
+            .expect("filter Gt(MAX-1) failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > u32::MAX - 1).copied().collect();
+        println!(
+            "test_filter_max_min_values Gt(MAX-1): GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "Gt(MAX-1) count mismatch");
+        assert_eq!(result, cpu_ref, "Gt(MAX-1) content mismatch");
+
+        // Lt(1) should match only u32::MIN (0) values
+        let pred_lt_min = Predicate::Lt(1u32);
+        let result2 = filter
+            .filter_u32(&data, &pred_lt_min)
+            .expect("filter Lt(1) failed");
+        let cpu_ref2: Vec<u32> = data.iter().filter(|&&x| x < 1).copied().collect();
+        println!(
+            "test_filter_max_min_values Lt(1): GPU={}, CPU={}",
+            result2.len(),
+            cpu_ref2.len()
+        );
+        assert_eq!(result2.len(), cpu_ref2.len(), "Lt(1) count mismatch");
+        assert_eq!(result2, cpu_ref2, "Lt(1) content mismatch");
+
+        // Eq(u32::MAX)
+        let pred_eq_max = Predicate::Eq(u32::MAX);
+        let result3 = filter
+            .filter_u32(&data, &pred_eq_max)
+            .expect("filter Eq(MAX) failed");
+        println!(
+            "test_filter_max_min_values Eq(MAX): GPU={}",
+            result3.len()
+        );
+        assert_eq!(result3.len(), 25_000, "Eq(MAX) should match 25000 elements");
+        assert!(
+            result3.iter().all(|&v| v == u32::MAX),
+            "all Eq(MAX) results should be u32::MAX"
+        );
+
+        // Eq(u32::MIN)
+        let pred_eq_min = Predicate::Eq(u32::MIN);
+        let result4 = filter
+            .filter_u32(&data, &pred_eq_min)
+            .expect("filter Eq(MIN) failed");
+        println!(
+            "test_filter_max_min_values Eq(MIN): GPU={}",
+            result4.len()
+        );
+        assert_eq!(result4.len(), 25_000, "Eq(MIN) should match 25000 elements");
+        assert!(
+            result4.iter().all(|&v| v == u32::MIN),
+            "all Eq(MIN) results should be u32::MIN"
+        );
+    }
+
+    #[test]
+    fn test_filter_f32_inf() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+
+        // Data with inf values interspersed among normal values
+        let mut data: Vec<f32> = Vec::with_capacity(100_000);
+        for i in 0..100_000u32 {
+            match i % 100 {
+                0 => data.push(f32::INFINITY),
+                1 => data.push(f32::NEG_INFINITY),
+                _ => data.push(i as f32 / 100_000.0), // 0.0 .. 1.0
+            }
+        }
+
+        // Gt(0.5) should include +inf but not -inf
+        let pred_gt = Predicate::Gt(0.5f32);
+        let result_gt = filter
+            .filter_f32(&data, &pred_gt)
+            .expect("filter Gt(0.5) failed");
+        let cpu_ref_gt: Vec<f32> = data.iter().filter(|&&x| x > 0.5).copied().collect();
+        println!(
+            "test_filter_f32_inf Gt(0.5): GPU={}, CPU={}",
+            result_gt.len(),
+            cpu_ref_gt.len()
+        );
+        assert_eq!(result_gt.len(), cpu_ref_gt.len(), "Gt(0.5) count mismatch with inf");
+
+        let inf_count = result_gt.iter().filter(|x| x.is_infinite() && x.is_sign_positive()).count();
+        assert_eq!(inf_count, 1000, "expected 1000 +inf values in Gt(0.5) output");
+
+        let neg_inf_count = result_gt.iter().filter(|x| x.is_infinite() && x.is_sign_negative()).count();
+        assert_eq!(neg_inf_count, 0, "-inf should not be in Gt(0.5) output");
+
+        // Lt(0.0) should include -inf but not +inf
+        let pred_lt = Predicate::Lt(0.0f32);
+        let result_lt = filter
+            .filter_f32(&data, &pred_lt)
+            .expect("filter Lt(0.0) failed");
+        let cpu_ref_lt: Vec<f32> = data.iter().filter(|&&x| x < 0.0).copied().collect();
+        println!(
+            "test_filter_f32_inf Lt(0.0): GPU={}, CPU={}",
+            result_lt.len(),
+            cpu_ref_lt.len()
+        );
+        assert_eq!(result_lt.len(), cpu_ref_lt.len(), "Lt(0.0) count mismatch with inf");
+
+        let neg_inf_in_lt = result_lt.iter().filter(|x| x.is_infinite() && x.is_sign_negative()).count();
+        assert_eq!(neg_inf_in_lt, 1000, "expected 1000 -inf values in Lt(0.0) output");
+
+        // Between(-inf, +inf) should match everything
+        let pred_all = Predicate::Between(f32::NEG_INFINITY, f32::INFINITY);
+        let result_all = filter
+            .filter_f32(&data, &pred_all)
+            .expect("filter Between(-inf, +inf) failed");
+        let cpu_ref_all: Vec<f32> = data
+            .iter()
+            .filter(|&&x| x >= f32::NEG_INFINITY && x <= f32::INFINITY)
+            .copied()
+            .collect();
+        println!(
+            "test_filter_f32_inf Between(-inf,+inf): GPU={}, CPU={}",
+            result_all.len(),
+            cpu_ref_all.len()
+        );
+        assert_eq!(result_all.len(), cpu_ref_all.len(), "Between(-inf,+inf) count mismatch");
+    }
+
+    #[test]
+    fn test_filter_preserves_order() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        // Ascending input — filtered output must be in same ascending order
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Gt(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        println!(
+            "test_filter_preserves_order: {} elements in output",
+            result.len()
+        );
+        assert!(result.len() > 1, "need at least 2 elements to check order");
+
+        // Verify strict ascending order (which means original index order is preserved)
+        for i in 1..result.len() {
+            assert!(
+                result[i] > result[i - 1],
+                "order violation at pos {}: {} <= {}",
+                i,
+                result[i],
+                result[i - 1]
+            );
+        }
+
+        // Verify output matches CPU reference exactly (order + content)
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 500_000).copied().collect();
+        assert_eq!(result, cpu_ref, "ordered output must match CPU reference exactly");
+    }
+
+    #[test]
+    fn test_filter_buffer_zero_copy() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+
+        // Allocate FilterBuffer, write data via as_mut_slice (zero-copy into GPU memory)
+        let mut buf = filter.alloc_filter_buffer::<u32>(n);
+        {
+            let slice = buf.as_mut_slice();
+            for i in 0..n {
+                slice[i] = i as u32;
+            }
+        }
+        buf.set_len(n);
+
+        // Verify data was written correctly via as_slice (zero-copy read)
+        let readback = buf.as_slice();
+        assert_eq!(readback.len(), n, "readback length mismatch");
+        assert_eq!(readback[0], 0, "first element should be 0");
+        assert_eq!(readback[n - 1], (n - 1) as u32, "last element mismatch");
+
+        // Filter using the FilterBuffer directly (no intermediate Vec allocation)
+        let pred = Predicate::Gt(50_000u32);
+        let result = filter.filter(&buf, &pred).expect("filter failed");
+
+        // Read result via as_slice (zero-copy from GPU output buffer)
+        let result_slice = result.as_slice();
+        println!(
+            "test_filter_buffer_zero_copy: {} elements matched",
+            result_slice.len()
+        );
+
+        let cpu_ref: Vec<u32> = (0..n as u32).filter(|&x| x > 50_000).collect();
+        assert_eq!(result_slice.len(), cpu_ref.len(), "count mismatch");
+        assert_eq!(result_slice, cpu_ref.as_slice(), "content mismatch");
+
+        // Verify result to_vec also works
+        let vec_result = result.to_vec();
+        assert_eq!(vec_result, cpu_ref, "to_vec mismatch");
+    }
 }
