@@ -1309,14 +1309,19 @@ impl GpuSorter {
         //
         // start_shift is a BYTE index: kernel computes bit shift as start_shift * 8.
         //
-        // Inner #1: bytes 4,5,6 (start_shift=4, pass_count=3)
-        //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 3 passes → result in buf_a.
-        //   vals buffer(4)=vals_a, buffer(5)=vals_b. Values follow same ping-pong.
+        // IMPORTANT: Inner dispatches must run LSB to MSB for radix sort stability.
+        // Sorting byte 0 first, then bytes 1-3, then bytes 4-6 ensures the final
+        // ordering is by bytes 4-6 (most significant within bucket) with bytes 0
+        // as the least significant tiebreaker.
+        //
+        // Inner #1: byte 0 (start_shift=0, pass_count=1)
+        //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 1 pass → result in buf_a.
+        //   vals buffer(4)=vals_a, buffer(5)=vals_b.
         // Inner #2: bytes 1,2,3 (start_shift=1, pass_count=3)
         //   buffer(0)=buf_b, buffer(1)=buf_a. Pass 0 reads buf_a. 3 passes → result in buf_b.
         //   vals buffer(4)=vals_b, buffer(5)=vals_a.
-        // Inner #3: byte 0 (start_shift=0, pass_count=1)
-        //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 1 pass → result in buf_a.
+        // Inner #3: bytes 4,5,6 (start_shift=4, pass_count=3)
+        //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 3 passes → result in buf_a.
         //   vals buffer(4)=vals_a, buffer(5)=vals_b.
 
         let pso_inner = self.pso_cache.get_or_create_specialized(
@@ -1335,10 +1340,16 @@ impl GpuSorter {
             val_5: Option<&'a ProtocolObject<dyn MTLBuffer>>,
         }
 
+        // Inner dispatches must run LSB to MSB for stable radix sort correctness:
+        // byte 0 first, then bytes 1-3, then bytes 4-6.
+        // After MSD scatter: data in buf_b, values (if any) in vals_b.
+        // Inner #1 (byte 0, 1 pass): buf_0=buf_a, buf_1=buf_b → result in buf_a
+        // Inner #2 (bytes 1-3, 3 passes): buf_0=buf_b, buf_1=buf_a → result in buf_b
+        // Inner #3 (bytes 4-6, 3 passes): buf_0=buf_a, buf_1=buf_b → result in buf_a
         let inner_configs = [
-            InnerConfig { start_shift: 4, pass_count: 3, buf_0: buf_a, buf_1: buf_b, val_4: vals_a, val_5: vals_b },
-            InnerConfig { start_shift: 1, pass_count: 3, buf_0: buf_b, buf_1: buf_a, val_4: vals_b, val_5: vals_a },
             InnerConfig { start_shift: 0, pass_count: 1, buf_0: buf_a, buf_1: buf_b, val_4: vals_a, val_5: vals_b },
+            InnerConfig { start_shift: 1, pass_count: 3, buf_0: buf_b, buf_1: buf_a, val_4: vals_b, val_5: vals_a },
+            InnerConfig { start_shift: 4, pass_count: 3, buf_0: buf_a, buf_1: buf_b, val_4: vals_a, val_5: vals_b },
         ];
 
         for cfg in &inner_configs {

@@ -492,7 +492,7 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
   - _Requirements: AC-5.6, AC-5.7_
   - _Design: 64-bit Argsort + KV_
 
-- [ ] 3.6 Add 64-bit correctness tests
+- [x] 3.6 Add 64-bit correctness tests
   - **Do**:
     1. Create `tests/correctness_u64.rs` (~12 tests):
        - `test_sort_u64_boundaries`: [0, 1, MAX-1, MAX]
