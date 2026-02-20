@@ -462,7 +462,7 @@ created: 2026-02-20
 
 ## Phase 5: Quality Gates
 
-### Task 10.1: [VERIFY] Full local CI
+### Task 10.1: [VERIFY] Full local CI [x]
 
 - **Do**: Run complete test suite to verify zero regressions and all new tests pass
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/ --recursive && /Users/patrickkavanagh/gpu_kernel/scripts/kb verify && /Users/patrickkavanagh/gpu_kernel/scripts/kb dedup`
