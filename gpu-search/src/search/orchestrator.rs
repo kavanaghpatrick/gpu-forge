@@ -3365,4 +3365,87 @@ mod tests {
         println!("  no-match query: 0 matches (correct)");
         println!("  No false positives in any search");
     }
+
+    // ====================================================================
+    // FileCache + resolve_from_cache unit tests
+    // ====================================================================
+
+    #[test]
+    fn test_file_cache_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "line one\nline two has pattern\nline three\n").unwrap();
+
+        let cache = FileCache::load(&file, "pattern", true).unwrap();
+        assert_eq!(cache.lines.len(), 3);
+        assert_eq!(cache.line_offsets, vec![0, 9, 30]);
+        assert!(cache.contains_pattern);
+
+        // Pattern not in file
+        let cache2 = FileCache::load(&file, "missing", true).unwrap();
+        assert!(!cache2.contains_pattern);
+    }
+
+    #[test]
+    fn test_resolve_from_cache_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        std::fs::write(&file, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+
+        let cache = FileCache::load(&file, "println", true).unwrap();
+
+        // byte_offset for "println" is at position 17 ("fn main() {\n    p")
+        let result = resolve_from_cache(&cache, 17, "println", true);
+        assert!(result.is_some());
+        let (line_num, line_content, ctx_before, ctx_after, match_col) = result.unwrap();
+        assert_eq!(line_num, 2); // 1-based
+        assert!(line_content.contains("println"));
+        assert_eq!(ctx_before.len(), 1); // "fn main() {"
+        assert_eq!(ctx_after.len(), 1);  // "}"
+        assert_eq!(match_col, 4); // "    println" -> col 4
+    }
+
+    #[test]
+    fn test_resolve_from_cache_binary_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("multi.txt");
+        // Build a file with known byte offsets
+        let content = "aaa\nbbb\nccc\nddd\neee\n";
+        std::fs::write(&file, content).unwrap();
+
+        let cache = FileCache::load(&file, "ccc", true).unwrap();
+        assert_eq!(cache.line_offsets, vec![0, 4, 8, 12, 16]);
+
+        // byte_offset 8 -> line "ccc" (line 3, 1-based)
+        let result = resolve_from_cache(&cache, 8, "ccc", true);
+        assert!(result.is_some());
+        let (line_num, line_content, _, _, _) = result.unwrap();
+        assert_eq!(line_num, 3);
+        assert_eq!(line_content, "ccc");
+
+        // byte_offset at exact line boundary (0 -> line 1)
+        let result = resolve_from_cache(&cache, 0, "aaa", true);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, 1);
+
+        // byte_offset out of bounds
+        let result = resolve_from_cache(&cache, 999, "aaa", true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_from_cache_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("case.txt");
+        std::fs::write(&file, "Hello World\nfoo bar\n").unwrap();
+
+        let cache = FileCache::load(&file, "hello", false).unwrap();
+        assert!(cache.contains_pattern);
+
+        let result = resolve_from_cache(&cache, 0, "hello", false);
+        assert!(result.is_some());
+        let (_, line_content, _, _, match_col) = result.unwrap();
+        assert_eq!(line_content, "Hello World");
+        assert_eq!(match_col, 0);
+    }
 }

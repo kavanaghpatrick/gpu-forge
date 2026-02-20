@@ -2047,4 +2047,54 @@ mod tests {
             assert_eq!(count, 1, "Line {} should have 1 'MARK' match, got {}", line_num, count);
         }
     }
+
+    #[test]
+    fn test_gpu_sort_key_encoding() {
+        // Verify composite key (file_index << 32 | byte_offset) sorts correctly
+        let mut results = vec![
+            ContentMatch { file_index: 2, line_number: 1, column: 0, byte_offset: 100, match_length: 3 },
+            ContentMatch { file_index: 0, line_number: 1, column: 0, byte_offset: 50, match_length: 3 },
+            ContentMatch { file_index: 0, line_number: 1, column: 0, byte_offset: 10, match_length: 3 },
+            ContentMatch { file_index: 1, line_number: 1, column: 0, byte_offset: 0, match_length: 3 },
+        ];
+
+        gpu_sort_results(&mut results);
+
+        assert_eq!(results[0].file_index, 0);
+        assert_eq!(results[0].byte_offset, 10);
+        assert_eq!(results[1].file_index, 0);
+        assert_eq!(results[1].byte_offset, 50);
+        assert_eq!(results[2].file_index, 1);
+        assert_eq!(results[2].byte_offset, 0);
+        assert_eq!(results[3].file_index, 2);
+        assert_eq!(results[3].byte_offset, 100);
+    }
+
+    #[test]
+    fn test_gpu_sort_cpu_fallback() {
+        // With <= 64 results, should use CPU sort (same correct ordering)
+        let mut results = vec![
+            ContentMatch { file_index: 1, line_number: 1, column: 0, byte_offset: 20, match_length: 3 },
+            ContentMatch { file_index: 0, line_number: 1, column: 0, byte_offset: 5, match_length: 3 },
+        ];
+
+        gpu_sort_results(&mut results);
+
+        assert_eq!(results[0].file_index, 0);
+        assert_eq!(results[1].file_index, 1);
+    }
+
+    #[test]
+    fn test_gpu_sort_edge_values() {
+        // Test with edge values: max u32 file_index, max u32 byte_offset
+        let mut results = vec![
+            ContentMatch { file_index: usize::MAX & 0xFFFF_FFFF, line_number: 0, column: 0, byte_offset: u32::MAX, match_length: 1 },
+            ContentMatch { file_index: 0, line_number: 0, column: 0, byte_offset: 0, match_length: 1 },
+        ];
+
+        gpu_sort_results(&mut results);
+
+        assert_eq!(results[0].file_index, 0);
+        assert_eq!(results[0].byte_offset, 0);
+    }
 }
