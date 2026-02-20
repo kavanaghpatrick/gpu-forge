@@ -354,7 +354,7 @@ created: 2026-02-20
 - _Requirements: FR-13 (AC-6.1 through AC-6.4)_
 - _Design: Gap 5: Review-to-KB Feedback_
 
-### Task 7.1: Restructure investigation-agent.md Phase 3+4 (Gap 2)
+### Task 7.1: Restructure investigation-agent.md Phase 3+4 (Gap 2) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/agents/investigation-agent.md`
