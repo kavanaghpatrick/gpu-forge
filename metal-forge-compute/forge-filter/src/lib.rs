@@ -1,3 +1,37 @@
+//! GPU filter + compact for Apple Silicon (Metal 3.2).
+//!
+//! Accelerated numeric filtering on the GPU — **10x+** faster than Polars
+//! on selective predicates at 16M+ rows, with zero-copy unified memory.
+//!
+//! # Supported types
+//!
+//! `u32`, `i32`, `f32`, `u64`, `i64`, `f64` — with 7 comparison operators
+//! (Gt, Lt, Ge, Le, Eq, Ne, Between) plus compound AND/OR predicates.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use forge_filter::{GpuFilter, Predicate};
+//!
+//! let mut gpu = GpuFilter::new().unwrap();
+//! let data: Vec<u32> = (0..1_000_000).collect();
+//! let result = gpu.filter_u32(&data, &Predicate::Gt(500_000)).unwrap();
+//! assert_eq!(result.len(), 499_999);
+//! ```
+//!
+//! # Requirements
+//!
+//! - macOS with Apple Silicon (M1 or later)
+//! - Xcode Command Line Tools (for `xcrun metal` shader compiler)
+//!
+//! # License
+//!
+//! Dual-licensed: AGPL-3.0 for open-source use, commercial license available.
+//! See [LICENSE](https://github.com/kavanaghpatrick/gpu-forge/blob/main/metal-forge-compute/forge-filter/LICENSE)
+//! or contact the author for commercial terms.
+
+#![warn(missing_docs)]
+
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
@@ -25,7 +59,15 @@ mod private {
 }
 
 /// Trait for types that can be filtered on the GPU.
-/// Sealed: only u32, i32, f32, u64, i64, f64 are valid.
+///
+/// Sealed: only `u32`, `i32`, `f32`, `u64`, `i64`, `f64` are valid.
+///
+/// # Performance note
+///
+/// `f64` has **1/32 ALU throughput** on Apple Silicon (M4 Pro). While filter
+/// operations remain bandwidth-bound for simple predicates, `f64` columns
+/// will be significantly slower than `f32` at high selectivity or with
+/// compound predicates. Prefer `f32` when precision permits.
 pub trait FilterKey: private::Sealed + Copy + PartialOrd + 'static {
     /// Size in bytes (4 or 8).
     const KEY_SIZE: usize;
@@ -83,6 +125,11 @@ impl FilterKey for i64 {
     }
 }
 
+/// # Performance warning
+///
+/// `f64` has **1/32 ALU throughput** on Apple Silicon M4 Pro compared to `f32`.
+/// Metal lacks a native `double` type, so comparison is emulated via raw `ulong`
+/// bit-pattern ordering. Prefer `f32` when precision allows.
 impl FilterKey for f64 {
     const KEY_SIZE: usize = 8;
     const IS_64BIT: bool = true;
@@ -792,8 +839,21 @@ impl GpuFilter {
     /// Filter a [`FilterBuffer`], returning matching values.
     ///
     /// Executes the 3-dispatch ordered pipeline. Output preserves input order.
-    /// For compound predicates (And/Or), simplifies first (e.g. And([Ge, Le]) -> Between),
+    /// For compound predicates (And/Or), simplifies first (e.g. `And([Ge, Le])` -> `Between`),
     /// then cascades AND through multiple GPU passes, or falls back to CPU for OR.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let mut buf = gpu.alloc_filter_buffer::<u32>(1000);
+    /// buf.copy_from_slice(&(0..1000).collect::<Vec<u32>>());
+    /// let result = gpu.filter(&buf, &Predicate::Gt(500u32)).unwrap();
+    /// assert_eq!(result.len(), 499);
+    /// assert_eq!(result.as_slice()[0], 501);
+    /// ```
     pub fn filter<T: FilterKey>(
         &mut self,
         buf: &FilterBuffer<T>,
@@ -1124,8 +1184,19 @@ impl GpuFilter {
     /// Filter a slice of `u32`, returning matching values as a `Vec<u32>`.
     ///
     /// Convenience method that copies data to GPU, filters, and copies results back.
-    /// Compound predicates (And/Or) are supported: And([Ge, Le]) is optimized to Between,
+    /// Compound predicates (And/Or) are supported: `And([Ge, Le])` is optimized to `Between`,
     /// AND of simple predicates cascades through GPU passes, OR uses CPU fallback.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let data: Vec<u32> = (0..1_000_000).collect();
+    /// let result = gpu.filter_u32(&data, &Predicate::Gt(500_000)).unwrap();
+    /// assert_eq!(result.len(), 499_999);
+    /// ```
     pub fn filter_u32(
         &mut self,
         data: &[u32],

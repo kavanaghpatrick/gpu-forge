@@ -294,7 +294,7 @@ Focus: Comprehensive correctness tests, property-based tests, edge cases.
 - _Requirements: NFR-1, NFR-2_
 - _Design: Hierarchical Scan_
 
-### Task 3.4: [VERIFY] Quality checkpoint: full test suite + clippy + check
+### Task 3.4: [VERIFY] Quality checkpoint: full test suite + clippy + check [x]
 
 - **Do**: Run complete quality suite
 - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo clippy -p forge-filter -- -D warnings && cargo test -p forge-filter`
@@ -305,7 +305,7 @@ Focus: Comprehensive correctness tests, property-based tests, edge cases.
 
 Focus: Doc comments, benchmarks, README, publish preparation.
 
-### Task 4.1: Add doc comments to all public items
+### Task 4.1: Add doc comments to all public items [x]
 
 - **Do**:
   1. Add module-level rustdoc to `lib.rs` (mirror forge-sort's: description, supported types, quick start example showing 5-line usage, requirements, license)
