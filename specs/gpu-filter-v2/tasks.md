@@ -93,7 +93,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: AC-1.1, AC-1.2, NFR-1_
   - _Design: Performance Projections_
 
-- [ ] 1.6 Add 10,000-iteration correctness oracle test
+- [x] 1.6 Add 10,000-iteration correctness oracle test
   - **Do**:
     1. Add test `test_bitmap_correctness_10k_iterations` that:
        - For 10,000 iterations with ChaCha8Rng(seed=42+i):
