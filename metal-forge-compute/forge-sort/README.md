@@ -1,6 +1,6 @@
 # forge-sort
 
-The fastest GPU radix sort on Apple Silicon. **31x faster** than `sort_unstable()`, **8x faster** than Rayon parallel sort, and **10x faster** than the next best published Apple Silicon implementation.
+The fastest GPU radix sort on Apple Silicon. **29x faster** than `sort_unstable()`, **8x faster** than Rayon parallel sort, and **8x faster** than the next best published Apple Silicon implementation.
 
 ```rust
 use forge_sort::GpuSorter;
@@ -11,31 +11,29 @@ sorter.sort_u32(&mut data)?;
 
 ## Benchmarks
 
-Measured on Apple M4 Pro (20-core GPU, 48GB unified memory). All numbers are median of 10 runs on random `u32` data.
+Measured on Apple M4 Pro (20-core GPU, 48GB unified memory). All numbers are median of 10 runs on random data.
 
 ### sort_u32 (includes memcpy)
 
 | Size | `sort_unstable` | `rayon par_sort` | **forge-sort** | vs CPU | vs Rayon |
 |-----:|----------------:|-----------------:|---------------:|-------:|---------:|
-| 100K | 0.79 ms / 127 Mk/s | 0.35 ms / 285 Mk/s | **0.58 ms / 172 Mk/s** | 1.4x | 0.6x |
-| 1M | 9.05 ms / 110 Mk/s | 2.61 ms / 383 Mk/s | **0.97 ms / 1,028 Mk/s** | 9.3x | 2.7x |
-| 4M | 39.71 ms / 101 Mk/s | 10.55 ms / 379 Mk/s | **1.50 ms / 2,667 Mk/s** | 26.5x | 7.0x |
-| 16M | 172.72 ms / 93 Mk/s | 49.60 ms / 323 Mk/s | **5.67 ms / 2,822 Mk/s** | 30.5x | 8.7x |
-| 32M | 360.91 ms / 89 Mk/s | 90.85 ms / 352 Mk/s | **11.49 ms / 2,785 Mk/s** | 31.4x | 7.9x |
+| 100K | 0.95 ms / 105 Mk/s | 0.41 ms / 245 Mk/s | **0.80 ms / 125 Mk/s** | 1.2x | 0.5x |
+| 1M | 8.82 ms / 113 Mk/s | 2.67 ms / 374 Mk/s | **1.20 ms / 836 Mk/s** | 7.4x | 2.2x |
+| 4M | 38.57 ms / 104 Mk/s | 11.35 ms / 353 Mk/s | **1.77 ms / 2,255 Mk/s** | 21.7x | 6.4x |
+| 16M | 168.19 ms / 95 Mk/s | 44.08 ms / 363 Mk/s | **5.75 ms / 2,784 Mk/s** | 29.3x | 7.7x |
 
 ### sort_buffer (zero-copy, pure GPU speed)
 
-When data is already in a Metal buffer, skip the memcpy for up to **2.3x more throughput**:
+When data is already in a Metal buffer, skip the memcpy for up to **1.8x more throughput**:
 
 | Size | sort_u32 (w/ memcpy) | sort_buffer (zero-copy) | Speedup |
 |-----:|---------------------:|------------------------:|--------:|
-| 1M | 2,703 Mk/s | 2,894 Mk/s | 1.07x |
-| 4M | 2,677 Mk/s | **3,736 Mk/s** | 1.40x |
-| 8M | 2,255 Mk/s | **5,207 Mk/s** | **2.31x** |
-| 16M | 2,746 Mk/s | **4,281 Mk/s** | 1.56x |
-| 32M | 2,795 Mk/s | **4,198 Mk/s** | 1.50x |
+| 100K | 428 Mk/s | 428 Mk/s | 1.00x |
+| 1M | 2,510 Mk/s | 3,432 Mk/s | 1.37x |
+| 4M | 3,097 Mk/s | **5,242 Mk/s** | **1.69x** |
+| 16M | 2,693 Mk/s | **4,131 Mk/s** | 1.53x |
 
-GPU wins above ~200K elements. Sweet spot is 4M-16M where data fits in the System Level Cache.
+GPU wins above ~200K elements. Sweet spot is 4M where data fits in the System Level Cache.
 
 ### Multi-type performance (all 6 types @ 16M elements)
 
@@ -54,8 +52,8 @@ GPU wins above ~200K elements. Sweet spot is 4M-16M where data fits in the Syste
 
 | Implementation | Platform | 1M Mk/s | 16M Mk/s |
 |---------------|----------|--------:|----------:|
-| **forge-sort** (zero-copy) | **M4 Pro (Metal)** | **2,894** | **4,281** |
-| **forge-sort** (sort_u32) | **M4 Pro (Metal)** | **1,028** | **2,822** |
+| **forge-sort** (zero-copy) | **M4 Pro (Metal)** | **3,432** | **4,131** |
+| **forge-sort** (sort_u32) | **M4 Pro (Metal)** | **836** | **2,784** |
 | VSort | M4 Pro (CPU+Metal) | 99 | - |
 | VkRadixSort | RTX 3070 (Vulkan) | 53 | - |
 | MPS | Apple Silicon | *no sort function* | *no sort function* |
