@@ -598,7 +598,7 @@ Focus: Comprehensive test coverage, regression tests, performance validation.
   - **Commit**: `chore(forge-sort): bump version to 0.2.0`
   - _Requirements: FR-17_
 
-- [ ] V7 [VERIFY] Quality checkpoint: all tests pass
+- [x] V7 [VERIFY] Quality checkpoint: all tests pass
   - **Do**: Complete test suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | grep -E "test result|FAILED"`
   - **Done when**: All tests pass
@@ -606,7 +606,7 @@ Focus: Comprehensive test coverage, regression tests, performance validation.
 
 ## Phase 5: Quality Gates + PR
 
-- [ ] 5.1 [VERIFY] Full local CI: check + test + build
+- [x] 5.1 [VERIFY] Full local CI: check + test + build
   - **Do**: Run complete local CI suite
   - **Verify**: All commands must pass:
     ```
@@ -620,7 +620,7 @@ Focus: Comprehensive test coverage, regression tests, performance validation.
   - **Done when**: All commands pass with no errors
   - **Commit**: `fix(forge-sort): address lint/type issues` (if fixes needed)
 
-- [ ] 5.2 Create PR and verify CI
+- [x] 5.2 Create PR and verify CI
   - **Do**:
     1. Verify current branch is a feature branch: `git branch --show-current`
     2. If on default branch, STOP and alert user
@@ -633,13 +633,13 @@ Focus: Comprehensive test coverage, regression tests, performance validation.
   - **Done when**: PR created, CI checks green
   - **If CI fails**: Read failures, fix locally, push fixes, re-verify
 
-- [ ] 5.3 [VERIFY] CI pipeline passes
+- [x] 5.3 [VERIFY] CI pipeline passes (N/A - no CI configured)
   - **Do**: Verify GitHub Actions/CI passes after push
   - **Verify**: `gh pr checks` shows all green
   - **Done when**: CI pipeline passes
   - **Commit**: None
 
-- [ ] 5.4 [VERIFY] AC checklist
+- [x] 5.4 [VERIFY] AC checklist
   - **Do**: Programmatically verify each acceptance criterion:
     1. AC-1.1: Run `cargo test -p forge-sort --release -- test_sort_i32_boundaries`
     2. AC-1.2: Run `cargo test -p forge-sort --release -- test_sort_i32_mixed`
