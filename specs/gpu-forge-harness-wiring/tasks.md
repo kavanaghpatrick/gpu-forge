@@ -175,7 +175,7 @@ created: 2026-02-20
 - _Requirements: AC-2.5_
 - _Design: Gap 1, hooks.bats test_
 
-### Task 2.4: [VERIFY] Quality checkpoint after Gap 8 + Gap 1
+### Task 2.4: [VERIFY] Quality checkpoint after Gap 8 + Gap 1 [x]
 
 - **Do**: Run full unit test suite to verify no regressions after hooks.json changes and new script
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/`
