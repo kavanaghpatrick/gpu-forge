@@ -115,7 +115,7 @@ created: 2026-02-20
 - **Done when**: All unit tests pass, zero regressions
 - **Commit**: `chore(harness): pass quality checkpoint` (only if fixes needed)
 
-### Task 2.1: Create investigation-cleanup.sh hook script
+### Task 2.1: Create investigation-cleanup.sh hook script [x]
 
 - **Do**:
   1. Create `/Users/patrickkavanagh/gpu_kernel/hooks/scripts/investigation-cleanup.sh` with the exact content from design.md:
