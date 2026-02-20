@@ -562,7 +562,7 @@ Focus: Comprehensive test coverage, regression tests, performance validation.
   - _Requirements: AC-7.1 through AC-7.5_
   - _Design: Regression Tests_
 
-- [ ] 4.2 Add performance tests (feature-gated)
+- [x] 4.2 Add performance tests (feature-gated)
   - **Do**:
     1. Add `perf-test` feature to Cargo.toml: `[features] perf-test = []`
     2. Create `tests/performance.rs` with `#[cfg(feature = "perf-test")]` on all tests
