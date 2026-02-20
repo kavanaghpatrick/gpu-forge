@@ -139,6 +139,10 @@ pub struct GpuSorter {
     buf_counters: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     buf_bucket_descs: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     data_buf_capacity: usize,
+    // Value buffers for argsort / key-value sort (lazy allocation)
+    buf_vals_a: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    buf_vals_b: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    vals_buf_capacity: usize,
 }
 
 /// A Metal buffer that can be sorted in-place with zero memcpy.
@@ -551,6 +555,18 @@ impl GpuSorter {
             pso_cache.get_or_create(&library, name);
         }
 
+        // Pre-compile HAS_VALUES=true PSOs for scatter + inner fused (argsort)
+        pso_cache.get_or_create_specialized(
+            &library,
+            "sort_msd_atomic_scatter",
+            &[(0, FnConstant::Bool(true))],
+        );
+        pso_cache.get_or_create_specialized(
+            &library,
+            "sort_inner_fused",
+            &[(0, FnConstant::Bool(true))],
+        );
+
         Ok(Self {
             device: ctx.device,
             queue: ctx.queue,
@@ -562,6 +578,9 @@ impl GpuSorter {
             buf_counters: None,
             buf_bucket_descs: None,
             data_buf_capacity: 0,
+            buf_vals_a: None,
+            buf_vals_b: None,
+            vals_buf_capacity: 0,
         })
     }
 
@@ -988,6 +1007,422 @@ impl GpuSorter {
                 Some(alloc_buffer(&self.device, 256 * std::mem::size_of::<BucketDesc>()));
         }
     }
+
+    /// Allocate data buffers + value buffers for argsort (values are u32 indices).
+    fn ensure_buffers_with_values(&mut self, n: usize) {
+        // Ensure key buffers (buf_a, buf_b) + scratch
+        self.ensure_buffers(n);
+
+        let val_bytes = n * 4; // values are always u32 (indices)
+        if self.buf_vals_a.is_none() || val_bytes > self.vals_buf_capacity {
+            self.buf_vals_a = Some(alloc_buffer(&self.device, val_bytes));
+            self.buf_vals_b = Some(alloc_buffer(&self.device, val_bytes));
+            self.vals_buf_capacity = val_bytes;
+        }
+    }
+
+    /// Encode the full sort pipeline with optional value tracking onto an existing encoder.
+    ///
+    /// When `with_values` is true, uses HAS_VALUES=true PSOs and binds value buffers
+    /// at buffer(4) and buffer(5) for scatter and inner fused kernels.
+    fn encode_sort_pipeline_full(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        buf_a: &ProtocolObject<dyn MTLBuffer>,
+        buf_b: &ProtocolObject<dyn MTLBuffer>,
+        vals_a: Option<&ProtocolObject<dyn MTLBuffer>>,
+        vals_b: Option<&ProtocolObject<dyn MTLBuffer>>,
+        n: usize,
+        num_tiles: usize,
+        with_values: bool,
+    ) {
+        let params = SortParams {
+            element_count: n as u32,
+            num_tiles: num_tiles as u32,
+            shift: 24,
+            pass: 0,
+        };
+        let tile_size_u32 = TILE_SIZE as u32;
+
+        let tg_size = MTLSize {
+            width: THREADS_PER_TG,
+            height: 1,
+            depth: 1,
+        };
+        let hist_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+        let one_tg_grid = MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+        let fused_grid = MTLSize {
+            width: 256,
+            height: 1,
+            depth: 1,
+        };
+
+        // Dispatch 1: MSD histogram (key-only, no change)
+        let pso = self.pso_cache.get_or_create(&self.library, "sort_msd_histogram");
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_msd_hist.as_ref().unwrap()), 0, 1);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&params as *const SortParams as *mut _).unwrap(),
+                std::mem::size_of::<SortParams>(),
+                2,
+            );
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+        // Dispatch 2: MSD prep (no change)
+        let pso = self.pso_cache.get_or_create(&self.library, "sort_msd_prep");
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(self.buf_msd_hist.as_ref().unwrap()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_counters.as_ref().unwrap()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_bucket_descs.as_ref().unwrap()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&tile_size_u32 as *const u32 as *mut _).unwrap(),
+                4,
+                3,
+            );
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+        // Dispatch 3: Atomic MSD scatter (buf_a → buf_b, vals_a → vals_b if with_values)
+        let pso = self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_msd_atomic_scatter",
+            &[(0, FnConstant::Bool(with_values))],
+        );
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_counters.as_ref().unwrap()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&params as *const SortParams as *mut _).unwrap(),
+                std::mem::size_of::<SortParams>(),
+                3,
+            );
+            if with_values {
+                encoder.setBuffer_offset_atIndex(vals_a, 0, 4);
+                encoder.setBuffer_offset_atIndex(vals_b, 0, 5);
+            }
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+        // Dispatch 4: Fused inner sort (3-pass LSD, buf_b ↔ buf_a, vals_b ↔ vals_a)
+        let inner_params = InnerParams {
+            start_shift: 0,
+            pass_count: 3,
+            batch_start: 0,
+        };
+        let pso = self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_inner_fused",
+            &[(0, FnConstant::Bool(with_values))],
+        );
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_bucket_descs.as_ref().unwrap()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&inner_params as *const InnerParams as *mut _).unwrap(),
+                std::mem::size_of::<InnerParams>(),
+                3,
+            );
+            if with_values {
+                encoder.setBuffer_offset_atIndex(vals_a, 0, 4);
+                encoder.setBuffer_offset_atIndex(vals_b, 0, 5);
+            }
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(fused_grid, tg_size);
+    }
+
+    /// Encode sort_init_indices dispatch: fills indices[i] = i.
+    fn encode_init_indices(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        indices_buf: &ProtocolObject<dyn MTLBuffer>,
+        n: usize,
+    ) {
+        let pso = self.pso_cache.get_or_create(&self.library, "sort_init_indices");
+        encoder.setComputePipelineState(pso);
+        let count = n as u32;
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(indices_buf), 0, 0);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&count as *const u32 as *mut _).unwrap(),
+                4,
+                1,
+            );
+        }
+        let grid = MTLSize {
+            width: n.div_ceil(THREADS_PER_TG) * THREADS_PER_TG,
+            height: 1,
+            depth: 1,
+        };
+        let tg = MTLSize {
+            width: THREADS_PER_TG,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatchThreads_threadsPerThreadgroup(grid, tg);
+    }
+
+    /// Return the sorted indices that would sort `data` in ascending order.
+    ///
+    /// `data[indices[0]] <= data[indices[1]] <= ...`. Input `data` is NOT modified.
+    pub fn argsort_u32(&mut self, data: &[u32]) -> Result<Vec<u32>, SortError> {
+        let n = data.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+
+        self.ensure_buffers_with_values(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Copy keys to buf_a, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        // Init indices: buf_vals_a[i] = i
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // Sort pipeline with HAS_VALUES=true
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+        self.encode_sort_pipeline_full(
+            &enc,
+            &buf_a,
+            &buf_b,
+            Some(&vals_a),
+            Some(&vals_b),
+            n,
+            num_tiles,
+            true,
+        );
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read sorted indices from buf_vals_a
+        let mut result = vec![0u32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_a.as_ref().unwrap().contents().as_ptr() as *const u32,
+                result.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Return the sorted indices for i32 data in ascending order.
+    ///
+    /// Uses XOR 0x80000000 transform on keys. Input `data` is NOT modified.
+    pub fn argsort_i32(&mut self, data: &[i32]) -> Result<Vec<u32>, SortError> {
+        let n = data.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+
+        self.ensure_buffers_with_values(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Copy keys to buf_a, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Init indices
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // Forward transform: XOR 0x80000000 (mode 0) on keys only
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
+
+        // Sort pipeline with values
+        self.encode_sort_pipeline_full(
+            &enc,
+            &buf_a,
+            &buf_b,
+            Some(&vals_a),
+            Some(&vals_b),
+            n,
+            num_tiles,
+            true,
+        );
+
+        // No inverse transform needed for argsort (we don't read keys back)
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        let mut result = vec![0u32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_a.as_ref().unwrap().contents().as_ptr() as *const u32,
+                result.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Return the sorted indices for f32 data in ascending order (IEEE 754 total ordering).
+    ///
+    /// Uses FloatFlip transform on keys. Input `data` is NOT modified.
+    pub fn argsort_f32(&mut self, data: &[f32]) -> Result<Vec<u32>, SortError> {
+        let n = data.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+
+        self.ensure_buffers_with_values(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Copy keys to buf_a, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Init indices
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // Forward transform: FloatFlip (mode 1) on keys only
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 1);
+
+        // Sort pipeline with values
+        self.encode_sort_pipeline_full(
+            &enc,
+            &buf_a,
+            &buf_b,
+            Some(&vals_a),
+            Some(&vals_b),
+            n,
+            num_tiles,
+            true,
+        );
+
+        // No inverse transform needed for argsort (we don't read keys back)
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        let mut result = vec![0u32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_a.as_ref().unwrap().contents().as_ptr() as *const u32,
+                result.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -1114,5 +1549,64 @@ mod tests {
             data.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
             expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_argsort_u32_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![30u32, 10, 20];
+        let indices = sorter.argsort_u32(&data).unwrap();
+        assert_eq!(indices, vec![1, 2, 0]);
+        assert_eq!(data, vec![30, 10, 20]); // unchanged
+    }
+
+    #[test]
+    fn test_argsort_u32_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data: Vec<u32> = vec![];
+        let indices = sorter.argsort_u32(&data).unwrap();
+        assert_eq!(indices, vec![]);
+    }
+
+    #[test]
+    fn test_argsort_u32_single() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![42u32];
+        let indices = sorter.argsort_u32(&data).unwrap();
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn test_argsort_i32_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![5i32, -3, 0, -1, 1];
+        let indices = sorter.argsort_i32(&data).unwrap();
+        // sorted: -3, -1, 0, 1, 5 -> indices: 1, 3, 2, 4, 0
+        assert_eq!(indices, vec![1, 3, 2, 4, 0]);
+    }
+
+    #[test]
+    fn test_argsort_f32_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![3.0f32, 1.0, 2.0];
+        let indices = sorter.argsort_f32(&data).unwrap();
+        assert_eq!(indices, vec![1, 2, 0]);
+        assert_eq!(data, vec![3.0, 1.0, 2.0]); // unchanged
+    }
+
+    #[test]
+    fn test_argsort_i32_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data: Vec<i32> = vec![];
+        let indices = sorter.argsort_i32(&data).unwrap();
+        assert_eq!(indices, vec![]);
+    }
+
+    #[test]
+    fn test_argsort_f32_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data: Vec<f32> = vec![];
+        let indices = sorter.argsort_f32(&data).unwrap();
+        assert_eq!(indices, vec![]);
     }
 }

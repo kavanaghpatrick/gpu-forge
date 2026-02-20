@@ -241,13 +241,13 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: FR-5_
   - _Design: sort_inner_fused HAS_VALUES_
 
-- [ ] V3 [VERIFY] Quality checkpoint: shader changes safe
+- [x] V3 [VERIFY] Quality checkpoint: shader changes safe
   - **Do**: Full test suite to verify HAS_VALUES branches don't break default path
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | tail -10`
   - **Done when**: All tests pass (25 existing + i32/f32 tests from Phase 1)
   - **Commit**: `chore(forge-sort): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 2.4 Add sort_init_indices and sort_gather_values kernels
+- [x] 2.4 Add sort_init_indices and sort_gather_values kernels
   - **Do**:
     1. Add `sort_init_indices` kernel to sort.metal (~6 lines):
        ```metal
@@ -277,7 +277,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: FR-6, FR-7_
   - _Design: New Kernels_
 
-- [ ] 2.5 Implement argsort methods and lazy value buffer allocation
+- [x] 2.5 Implement argsort methods and lazy value buffer allocation
   - **Do**:
     1. Add `buf_vals_a`, `buf_vals_b` as `Option<Retained<...>>` fields to GpuSorter
     2. Add `vals_buf_capacity: usize` field
