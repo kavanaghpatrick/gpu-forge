@@ -1,562 +1,1059 @@
-# Developer Experience Analysis: forge-sort Test Suite
+# UX Design: forge-sort v2 Multi-Type API
 
-## Current State Assessment
+## Executive Summary
 
-The existing test suite in `tests/correctness.rs` has 21 integration tests and 3 unit tests in `src/lib.rs`. The current DX has both strengths and significant weaknesses.
+This document defines the developer-facing API for forge-sort v2, which adds signed integer sorting (i32), floating-point sorting (f32/f64), key-value pair sorting, and argsort to the existing u32-only GPU radix sort library. The design prioritizes three principles in order: **zero performance overhead** from the type system, **compile-time type safety** so users cannot accidentally sort i32 data through a u32 path, and **API familiarity** for Rust developers coming from `[T]::sort()`, rayon, or rdst.
 
-### What Works Today
-
-1. **Single-file simplicity**: A new contributor can open one file and see every test. There is no maze of test directories to navigate.
-2. **Helper functions exist**: `sort_and_verify()` and `sort_and_verify_data()` eliminate boilerplate for the common case. This is the right pattern.
-3. **The assertion message in `sort_and_verify_data` is good**: It reports `n` and the first differing index. This is actionable — a developer knows exactly where to look.
-
-### What Fails Today
-
-1. **Flat test names are unscannable**: `test_sort_1k`, `test_sort_4k`, `test_sort_16k` — when one fails in a list of 66 tests, the developer must read every name to find the category. There is no visual hierarchy in `cargo test` output.
-
-2. **No category grouping**: All 21 tests appear in a single flat list. A developer cannot run "just the boundary tests" or "just the bit pattern tests." With 66 tests this becomes a wall of text.
-
-3. **One-liner size tests sacrifice readability for density**:
-   ```rust
-   #[test] fn test_sort_1k()   { sort_and_verify(1_000); }
-   #[test] fn test_sort_4k()   { sort_and_verify(4_000); }
-   ```
-   This saves vertical space but makes grep-for-test-name harder and prevents per-test attributes (`#[ignore]`, `#[cfg(feature)]`).
-
-4. **The perf test has a magic number**: `50ms` with no explanation of where it came from. The comment says "expect ~3ms GPU" but the threshold is 16x looser. There is no relative threshold and no way to distinguish "GPU regression" from "memcpy regression."
-
-5. **No test for error paths**: Only the `Display` impl is tested. No test verifies what happens when the GPU is unavailable, when the command buffer fails, or when you pass adversarial data sizes.
-
-6. **`GpuSorter::new()` is called per-test**: This compiles shaders and creates the Metal context every time. At 21 tests this is tolerable. At 66 tests, this adds ~2-4 seconds of pure overhead. There is no shared fixture.
-
-7. **Buffer reuse test has no assertion messages**: The three `assert_eq!` calls in `test_buffer_reuse` give no context on which phase (first sort, reuse, or shrink) failed.
+The central API decision is **explicit typed methods** (`sort_i32`, `sort_f32`) over generics (`sort::<T>`) or traits. This matches the existing `sort_u32` pattern, avoids trait-bound complexity leaking GPU implementation details, and aligns with CUB's proven API design. A sealed `SortKey` trait provides the generic `SortBuffer<T>` while keeping the method-level API concrete and discoverable.
 
 ---
 
-## Decisions
+## Research: Rust Sorting API Patterns
 
-### Decision 1: File Organization — Single File With Modules
+### Standard Library
 
-**Choice**: Keep all integration tests in a single file `tests/correctness.rs`, organized with `mod` blocks. Do NOT split into multiple files.
+The Rust standard library provides sorting on slices via inherent methods:
 
-**Rationale**: Each file in `tests/` compiles as a separate crate. For a GPU library, this means separate shader compilation and Metal context initialization per file. A single file with modules gives the same organizational benefits (filtering, grouping) without the compilation cost. Additionally, `cargo test` output already prefixes test names with the module path, so `cargo test tile_boundary` filters to just that category.
-
-**Structure**:
-```
-tests/correctness.rs
-  mod helpers         -- shared helpers, NOT a test module
-  mod tile_boundary   -- P0: tile alignment tests
-  mod bit_patterns    -- P0: adversarial bit pattern tests
-  mod determinism     -- P1: multi-run reproducibility
-  mod buffer_reuse    -- P1: buffer lifecycle tests
-  mod scale           -- P2: large input stress tests
-  mod edge_cases      -- P2: empty, single, extremes
-  mod perf            -- P3: performance regression (feature-gated)
-  mod concurrent      -- P3: multi-instance tests
-```
-
-**How cargo test output looks**:
-```
-test tile_boundary::exact_one_tile ... ok
-test tile_boundary::one_tile_plus_one ... ok
-test tile_boundary::one_tile_minus_one ... ok
-test bit_patterns::all_same_msd_byte ... ok
-test bit_patterns::two_msd_buckets_only ... ok
-test determinism::ten_runs_identical_16m ... ok
-test perf::throughput_floor_16m ... ok    (only with --features perf-tests)
-```
-
-A developer can immediately see which category failed. Running `cargo test tile_boundary` executes only that group.
-
-### Decision 2: Test Naming Convention — Category::Behavior Without "test_" Prefix
-
-**Choice**: Use `mod_name::descriptive_behavior` naming. Drop the `test_` prefix since the `#[test]` attribute already marks them. Names describe what is being verified, not the method being called.
-
-**Current** (bad for scanning):
-```
-test_sort_1k
-test_sort_4k
-test_non_tile_aligned
-test_all_zeros
-```
-
-**Proposed** (scannable, self-documenting):
-```
-tile_boundary::exact_one_tile_4096
-tile_boundary::partial_tile_one_element_4097
-tile_boundary::partial_tile_max_minus_one_4095
-bit_patterns::single_msd_bucket_all_0xAA
-bit_patterns::two_msd_buckets_00_and_FF
-scale::random_32m
-edge_cases::empty_slice
-edge_cases::single_element
-```
-
-**Rules**:
-- Module name is the category (what kind of test)
-- Function name is the specific scenario (what makes this test unique)
-- Include the size in the name when size IS the test (e.g., `exact_one_tile_4096`)
-- Do not include the size when it is incidental (e.g., `single_msd_bucket_all_0xAA` — the 1M size is an implementation detail)
-- Use underscores between words, not camelCase
-- Avoid abbreviations except universally understood ones (MSD, LSD, u32, 1m, 16m)
-
-### Decision 3: Helper Function Design — A Layered Verification API
-
-**Choice**: Three layers of helpers, from high-level to diagnostic.
-
-**Layer 1 — The one-liner** (for tests where you just need "sort this and check it"):
 ```rust
-fn assert_sorts_correctly(data: Vec<u32>);
-```
-Creates a sorter, sorts, verifies against CPU reference. Used by 80% of tests. Includes actionable failure messages by default.
+// Direct sort (requires Ord)
+slice.sort();
+slice.sort_unstable();
 
-**Layer 2 — Sorter-reusing** (for tests that need to control the sorter lifecycle):
+// Key-based sort
+slice.sort_by_key(|x| x.field);
+slice.sort_unstable_by_key(|x| x.field);
+
+// Custom comparator
+slice.sort_by(|a, b| a.partial_cmp(b).unwrap());
+```
+
+Key observations:
+- Methods are on `[T]` directly, not behind traits
+- No `argsort` -- Rust developers use the enumerate-sort-extract pattern: `indices.sort_by_key(|&i| &data[i])`
+- `f32` has no `Ord` impl, requiring `sort_by(f32::total_cmp)` or `sort_unstable_by(f32::total_cmp)`
+- Naming is verb-first: `sort_unstable_by_key`, not `unstable_sort_by_key`
+
+### Rayon (Parallel Sort)
+
+[Rayon](https://docs.rs/rayon/latest/rayon/slice/trait.ParallelSliceMut.html) extends slices via the `ParallelSliceMut` trait:
+
 ```rust
-fn assert_sorts_correctly_with(sorter: &mut GpuSorter, data: Vec<u32>);
+use rayon::prelude::*;
+slice.par_sort();
+slice.par_sort_unstable();
+slice.par_sort_by_key(|x| x.field);
 ```
-Same verification, but the caller provides the sorter. Used by buffer reuse tests, concurrent tests, and any test that sorts multiple arrays.
 
-**Layer 3 — Diagnostic assertion** (the underlying verification with rich error messages):
+Key observations:
+- Prefix-based disambiguation: `par_sort` vs `sort`
+- Same method structure as stdlib, just with `par_` prefix
+- No separate type-specific methods -- uses generics throughout
+
+### rdst (Radix Sort)
+
+[rdst](https://crates.io/crates/rdst) uses a trait-based approach:
+
 ```rust
-fn verify_sorted(actual: &[u32], expected: &[u32], context: &str);
+use rdst::RadixSort;
+vec.radix_sort_unstable();  // works for u32, i32, f32, f64, etc.
 ```
-Called by layers 1 and 2. Produces detailed diagnostics on failure. The `context` parameter is a human-readable label that appears in the error message (e.g., "16M random, run 3 of 10").
 
-**Additional helpers**:
+Key observations:
+- Single method handles all types via the `RadixKey` trait
+- `RadixKey` requires `LEVELS: usize` (byte count) and `get_level(level) -> u8`
+- Users implement `RadixKey` for custom types
+- Builder pattern for tuning: `vec.radix_sort_builder().with_low_mem_tuner().sort()`
+
+### radsort
+
+[radsort](https://crates.io/crates/radsort) uses free functions with a sealed `Key` trait:
+
 ```rust
-fn gen_random_seeded(n: usize, seed: u64) -> Vec<u32>;  // Reproducible
-fn gen_pattern(n: usize, f: impl Fn(usize) -> u32) -> Vec<u32>;  // Custom patterns
-fn shared_sorter() -> GpuSorter;  // Lazy-initialized, one per thread
+radsort::sort(&mut data);           // any Key type
+radsort::sort_by_key(&mut items, |x| x.score);
+radsort::sort_by_cached_key(&mut items, |x| x.expensive_key());
 ```
 
-The `gen_random_seeded` helper is essential: when a randomized test fails, the seed appears in the error message, and the developer can reproduce the exact failure. Never use `thread_rng()` without a seed in a test that might fail.
+Key observations:
+- Free functions, not methods
+- Sealed `Key` trait -- users cannot implement it for custom types
+- Supports signed integers, floats, bools, chars out of the box
+- `sort_by_key` is the argsort primitive (sort items by extracted key)
+- Clean, minimal API surface
 
-### Decision 4: Assertion Messages — Five-Line Diagnostic on Failure
+### wgpu_sort (GPU Sort)
 
-**Choice**: Every sort verification failure prints exactly five lines of actionable information.
+[wgpu_sort](https://docs.rs/wgpu_sort) is the closest ecosystem comparator:
 
-**Current** (minimal):
-```
-Sort mismatch at n=4097. First diff at index 4096
-```
-
-**Proposed**:
-```
-SORT MISMATCH [tile_boundary::partial_tile_one_element_4097]
-  context: 4097 elements, partial tile (1 element in last tile)
-  n=4097, first diff at index 4096
-  actual[4096]=0x00000003, expected[4096]=0x00000001
-  actual[4095..4097]=[0x00000001, 0x00000003], expected[4095..4097]=[0x00000001, 0x00000001]
-```
-
-**What each line tells the developer**:
-1. **Category + test name**: Which test, without scrolling up
-2. **Context**: What this test is exercising, in plain English
-3. **Location**: Where the first difference is (index-level)
-4. **Values**: What was there vs what should be there (hex for bit patterns)
-5. **Window**: A few elements around the diff for pattern recognition
-
-**Implementation note**: The `verify_sorted` helper builds this message. The `context` string comes from the test function. Hex formatting is used because this is a radix sort — byte-level inspection matters. Decimal values would hide which radix pass failed.
-
-### Decision 5: Performance Tests — Feature-Gated With Dual Thresholds
-
-**Choice**: Perf tests live in `mod perf` and require `--features perf-tests` to compile. Each test has both a hard threshold (absolute wall-clock) and a relative threshold (scaling ratio).
-
-**Cargo.toml addition**:
-```toml
-[features]
-perf-tests = []
-```
-
-**Why feature-gated, not `#[ignore]`**: `#[ignore]` tests still compile, which means they still import timing infrastructure and increase binary size. Feature-gating with `#[cfg(feature = "perf-tests")]` eliminates them entirely from normal builds. More importantly, `cargo test` gives a clean "24 passed" instead of "24 passed, 5 ignored" — the developer does not wonder whether the ignored tests matter.
-
-**Dual threshold example**:
 ```rust
-#[cfg(feature = "perf-tests")]
-mod perf {
-    #[test]
-    fn throughput_floor_16m() {
-        // Hard threshold: must complete in < 10ms
-        assert!(elapsed_ms < 10.0,
-            "16M sort took {:.2}ms (limit: 10ms). \
-             Throughput: {:.0} Mk/s (floor: 2000 Mk/s)", elapsed_ms, mkeys);
+let sorter = GPUSorter::new(&device, subgroup_size);
+let sort_buffers = sorter.create_sort_buffers(&device, NonZeroU32::new(n).unwrap());
+// upload keys and values
+sorter.sort(&mut encoder, &queue, &sort_buffers, None);
+```
 
-        // Relative threshold: 16M should be < 6x of 4M (sub-linear scaling)
-        assert!(ratio_16m_to_4m < 6.0,
-            "Scaling regression: 16M/4M ratio is {:.2}x (limit: 6x)", ratio);
-    }
+Key observations:
+- Always key-value pairs (no keys-only variant)
+- No type parameterization -- always u32 keys, u32 values
+- Separate `SortBuffers` type holds keys + values
+- Async-compatible (takes encoder, does not block)
+
+---
+
+## API Design Decisions
+
+### Decision 1: Explicit Typed Methods (not generics, not traits)
+
+**Chosen**: `sort_i32()`, `sort_f32()`, `argsort_u32()`, etc.
+
+**Rejected alternatives**:
+
+| Approach | Example | Why Rejected |
+|----------|---------|-------------|
+| Generic method | `sort::<i32>(&mut data)` | Requires `SortKey` trait bound on `T`, which leaks GPU details (byte transformations, buffer layout). Turbofish syntax is unfamiliar for sort operations. Error messages reference trait bounds instead of "i32 not supported". |
+| Trait on slice | `data.gpu_sort()` | Orphan rules prevent implementing foreign traits on foreign types (`[i32]`). A newtype wrapper adds friction. Extension trait pollutes autocomplete with GPU methods on every slice. |
+| Trait on GpuSorter | `sorter.sort(&mut data)` where `T: GpuSortable` | Overloaded `sort` method with different behavior per type is confusing. Which `sort` handles `&mut [u32]` vs `&SortBuffer`? Method resolution becomes complex. |
+| Free functions | `forge_sort::sort(&mut data)` | Cannot access sorter state (Metal device, PSO cache, scratch buffers). Would need a global singleton or per-call initialization. |
+
+**Rationale**:
+1. **Matches v1**: `sort_u32` already exists. `sort_i32`/`sort_f32` are the natural extension.
+2. **Discoverable**: IDE autocomplete on `sorter.sort_` shows all available types immediately.
+3. **Compile-time safety**: Passing `&mut [f32]` to `sort_i32` is a type error, not a runtime error.
+4. **No trait complexity**: Users never see `where T: SortKey` bounds. No orphan rule issues.
+5. **CUB precedent**: NVIDIA CUB uses `SortKeys<KeyT>` with explicit type -- the most successful GPU sort API in production.
+6. **Stable API surface**: Adding `sort_u64` later does not change any existing signatures or trait bounds.
+
+### Decision 2: SortBuffer Gets a Generic Type Parameter
+
+**Chosen**: `SortBuffer<T>` with sealed `SortKey` trait, replacing the untyped `SortBuffer`.
+
+```rust
+// v1 (current)
+pub struct SortBuffer { /* untyped, always u32 */ }
+
+// v2 (proposed)
+pub struct SortBuffer<T: SortKey> { /* typed */ }
+```
+
+The `SortKey` trait is **sealed** (cannot be implemented outside forge-sort):
+
+```rust
+mod private { pub trait Sealed {} }
+
+pub trait SortKey: private::Sealed + Copy + 'static {
+    // Not visible to users -- sealed trait, no user-implementable methods
+}
+
+impl private::Sealed for u32 {}
+impl private::Sealed for i32 {}
+impl private::Sealed for f32 {}
+impl private::Sealed for f64 {}
+
+impl SortKey for u32 {}
+impl SortKey for i32 {}
+impl SortKey for f32 {}
+impl SortKey for f64 {}
+```
+
+**Why sealed**: Users should not be able to implement `SortKey` for arbitrary types. The GPU kernels only support specific bit layouts. An unsealed trait would invite `impl SortKey for MyStruct` which cannot work.
+
+**Why generic instead of `SortBufferI32`, `SortBufferF32`**: Reduces API surface from 4+ buffer types to 1 generic type. `SortBuffer<f32>` is self-documenting. The generic parameter carries zero runtime cost (it only affects which `as_slice` / `as_mut_slice` return type is used, via `PhantomData`).
+
+**Migration**: `SortBuffer` (unqualified) becomes `SortBuffer<u32>`. Since forge-sort is pre-1.0, this breaking change is acceptable (see Migration Path section).
+
+### Decision 3: Argsort as a First-Class Method
+
+**Chosen**: `argsort_*` methods return `Vec<u32>` (indices).
+
+```rust
+let indices: Vec<u32> = sorter.argsort_f32(&data)?;
+// data is NOT modified
+// indices[0] is the index of the smallest element in data
+// data[indices[i]] <= data[indices[i+1]] for all i
+```
+
+**Rationale**:
+1. PM decision: argsort is first-class (Q&A #3).
+2. argsort is the building block for key-value sorting via Strategy B (sort keys+indices, then gather).
+3. Numpy/scipy users expect `argsort` as a named concept. It is the standard term.
+4. Returning `Vec<u32>` (not modifying input) is correct semantics -- argsort observes data, does not mutate it.
+5. The zero-copy variant (`argsort_buffer`) returns a `SortBuffer<u32>` of indices.
+
+### Decision 4: Key-Value Pairs Use Separate Keys/Values Slices
+
+**Chosen**: `sort_pairs_*` takes `(&mut [K], &mut [V])` where `V` is `u32`.
+
+```rust
+sorter.sort_pairs_f32(&mut keys, &mut values)?;
+// keys is sorted, values are rearranged to match
+```
+
+**Why `(&mut [K], &mut [V])` not `&mut [(K, V)]`**:
+- GPU memory layout is Structure of Arrays (SoA), not Array of Structures (AoS). Keys and values are in separate buffers on the GPU.
+- AoS would require splitting into SoA for the GPU and merging back, adding overhead and complexity.
+- SoA matches the internal implementation directly.
+- CUB uses separate key/value pointers for the same reason.
+
+**Why `V` is always `u32`**:
+- PM decision: 32-bit values only (Q&A #2).
+- Covers the dominant `(key, index)` use case. The index pattern (`u32` indices into another array) handles arbitrary value types: sort keys with indices, then gather values by index.
+- Expanding to generic `V: Copy + 'static` where `size_of::<V>() == 4` can come in v2.1 if needed, but u32 covers 90%+ of cases.
+
+### Decision 5: Error Handling Unchanged
+
+**Chosen**: All new methods return `Result<_, SortError>`. `SortError` gains one new variant.
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum SortError {
+    #[error("no Metal GPU device found")]
+    DeviceNotFound,
+
+    #[error("shader compilation failed: {0}")]
+    ShaderCompilation(String),
+
+    #[error("GPU execution failed: {0}")]
+    GpuExecution(String),
+
+    #[error("mismatched lengths: keys ({keys}) != values ({values})")]
+    LengthMismatch { keys: usize, values: usize },
 }
 ```
 
-**Running perf tests**:
-```bash
-cargo test --features perf-tests -- perf    # Just perf tests
-cargo test                                   # Everything except perf
+The new `LengthMismatch` variant is for `sort_pairs_*` when key and value slices have different lengths. This is a programmer error (not a GPU error), but returning `Result` is more ergonomic than panicking -- it lets callers use `?` consistently.
+
+**Considered and rejected**: Separate error types per method family. Adds complexity with no benefit -- all methods share the same failure modes (no device, shader fail, GPU fail), and `LengthMismatch` is harmless as an unused variant for non-pairs methods.
+
+### Decision 6: Naming Convention for Method Families
+
+The naming follows this pattern:
+
+```
+{verb}_{type}                -- sort keys only (memcpy path)
+{verb}_buffer                -- sort buffer in-place (zero-copy, u32 compat)
+{verb}_{type}_buffer         -- sort typed buffer (zero-copy, new)
+argsort_{type}               -- return sorted indices (memcpy path)
+sort_pairs_{type}            -- sort key-value pairs (memcpy path)
+alloc_sort_buffer::<T>       -- allocate typed buffer (zero-copy)
 ```
 
-### Decision 6: Scale Tests — `#[ignore]` for 128M, Inline for Up to 64M
+**Why not `sort_buffer_i32`?** The type comes before `buffer` because the type qualifies the *sort*, not the buffer. You are sorting i32 values, and the buffer is the mechanism. Reading left to right: "sort i32, from a buffer." This also groups by type in IDE autocomplete: `sort_f32`, `sort_f32_buffer` appear adjacent.
 
-**Choice**: Tests up to 64M run normally. The 128M test is `#[ignore]` because it allocates 512MB and takes significant time.
+**Why `argsort_*` returns `Vec<u32>` not `&[u32]`?** Argsort creates new data (the index permutation). It cannot return a reference to data that did not exist before the call. The internal GPU buffer holding the indices is ephemeral scratch space. `Vec<u32>` is the correct return type for owned, newly-created data.
+
+---
+
+## Complete API Specification
+
+### GpuSorter Methods
 
 ```rust
-mod scale {
-    #[test]
-    fn random_32m() { /* runs normally */ }
+impl GpuSorter {
+    // ── Construction ────────────────────────────────────────────
 
-    #[test]
-    fn random_64m() { /* runs normally */ }
+    /// Create a new GPU sorter. Initializes Metal device and compiles sort kernels.
+    pub fn new() -> Result<Self, SortError>;
 
-    #[test]
-    #[ignore] // 512MB allocation, ~20s with CPU reference sort
-    fn random_128m() { /* runs with cargo test -- --ignored */ }
+    // ── Key-Only Sorting (memcpy path) ─────────────────────────
+
+    /// Sort u32 slice in-place on GPU.
+    /// Copies data to GPU buffer, sorts, copies back.
+    pub fn sort_u32(&mut self, data: &mut [u32]) -> Result<(), SortError>;
+
+    /// Sort i32 slice in-place on GPU.
+    /// Negative values sort before positive. i32::MIN is the smallest value.
+    pub fn sort_i32(&mut self, data: &mut [i32]) -> Result<(), SortError>;
+
+    /// Sort f32 slice in-place on GPU.
+    /// Uses IEEE 754 total ordering: -NaN < -Inf < ... < -0.0 < +0.0 < ... < +Inf < +NaN.
+    /// All NaN values sort to the extremes (negative NaN before -Inf, positive NaN after +Inf).
+    pub fn sort_f32(&mut self, data: &mut [f32]) -> Result<(), SortError>;
+
+    /// Sort u64 slice in-place on GPU.
+    /// Requires 8 radix passes (vs 4 for 32-bit types). No bit transformation needed.
+    pub fn sort_u64(&mut self, data: &mut [u64]) -> Result<(), SortError>;
+
+    /// Sort i64 slice in-place on GPU.
+    /// Negative values sort before positive. i64::MIN is the smallest value.
+    /// Uses XOR sign bit (0x8000000000000000) transformation, same concept as i32.
+    /// Requires 8 radix passes (vs 4 for 32-bit types).
+    pub fn sort_i64(&mut self, data: &mut [i64]) -> Result<(), SortError>;
+
+    /// Sort f64 slice in-place on GPU.
+    /// Same ordering semantics as sort_f32. Requires 8 radix passes (vs 4 for 32-bit types).
+    pub fn sort_f64(&mut self, data: &mut [f64]) -> Result<(), SortError>;
+
+    // ── Key-Only Sorting (zero-copy path) ──────────────────────
+
+    /// Sort a SortBuffer<u32> in-place. Zero memcpy.
+    pub fn sort_buffer(&mut self, buf: &SortBuffer<u32>) -> Result<(), SortError>;
+
+    /// Sort a SortBuffer<i32> in-place. Zero memcpy.
+    /// GPU-side bit transformation (no CPU round-trip).
+    pub fn sort_i32_buffer(&mut self, buf: &SortBuffer<i32>) -> Result<(), SortError>;
+
+    /// Sort a SortBuffer<f32> in-place. Zero memcpy.
+    /// GPU-side FloatFlip transformation (no CPU round-trip).
+    pub fn sort_f32_buffer(&mut self, buf: &SortBuffer<f32>) -> Result<(), SortError>;
+
+    /// Sort a SortBuffer<u64> in-place. Zero memcpy.
+    /// No bit transformation needed (unsigned integers sort naturally).
+    pub fn sort_u64_buffer(&mut self, buf: &SortBuffer<u64>) -> Result<(), SortError>;
+
+    /// Sort a SortBuffer<i64> in-place. Zero memcpy.
+    /// GPU-side sign bit XOR transformation (no CPU round-trip).
+    pub fn sort_i64_buffer(&mut self, buf: &SortBuffer<i64>) -> Result<(), SortError>;
+
+    /// Sort a SortBuffer<f64> in-place. Zero memcpy.
+    pub fn sort_f64_buffer(&mut self, buf: &SortBuffer<f64>) -> Result<(), SortError>;
+
+    // ── Argsort (return sorted indices) ────────────────────────
+
+    /// Return indices that would sort the u32 slice.
+    /// The input slice is NOT modified.
+    /// result[i] is the index of the i-th smallest element in data.
+    pub fn argsort_u32(&mut self, data: &[u32]) -> Result<Vec<u32>, SortError>;
+
+    /// Return indices that would sort the i32 slice.
+    pub fn argsort_i32(&mut self, data: &[i32]) -> Result<Vec<u32>, SortError>;
+
+    /// Return indices that would sort the f32 slice.
+    pub fn argsort_f32(&mut self, data: &[f32]) -> Result<Vec<u32>, SortError>;
+
+    /// Return indices that would sort the u64 slice.
+    pub fn argsort_u64(&mut self, data: &[u64]) -> Result<Vec<u32>, SortError>;
+
+    /// Return indices that would sort the i64 slice.
+    pub fn argsort_i64(&mut self, data: &[i64]) -> Result<Vec<u32>, SortError>;
+
+    /// Return indices that would sort the f64 slice.
+    pub fn argsort_f64(&mut self, data: &[f64]) -> Result<Vec<u32>, SortError>;
+
+    // ── Key-Value Pair Sorting (memcpy path) ───────────────────
+
+    /// Sort key-value pairs in-place. Keys are sorted, values are rearranged to match.
+    /// Keys and values must have the same length.
+    pub fn sort_pairs_u32(
+        &mut self, keys: &mut [u32], values: &mut [u32],
+    ) -> Result<(), SortError>;
+
+    /// Sort i32 key-value pairs in-place.
+    pub fn sort_pairs_i32(
+        &mut self, keys: &mut [i32], values: &mut [u32],
+    ) -> Result<(), SortError>;
+
+    /// Sort f32 key-value pairs in-place.
+    pub fn sort_pairs_f32(
+        &mut self, keys: &mut [f32], values: &mut [u32],
+    ) -> Result<(), SortError>;
+
+    /// Sort u64 key-value pairs in-place. 64-bit keys with 32-bit values.
+    pub fn sort_pairs_u64(
+        &mut self, keys: &mut [u64], values: &mut [u32],
+    ) -> Result<(), SortError>;
+
+    /// Sort i64 key-value pairs in-place. 64-bit signed keys with 32-bit values.
+    pub fn sort_pairs_i64(
+        &mut self, keys: &mut [i64], values: &mut [u32],
+    ) -> Result<(), SortError>;
+
+    // ── Buffer Allocation ──────────────────────────────────────
+
+    /// Allocate a typed GPU buffer for zero-copy sorting.
+    /// The buffer uses unified memory (StorageModeShared).
+    pub fn alloc_sort_buffer<T: SortKey>(&self, capacity: usize) -> SortBuffer<T>;
 }
 ```
 
-**Why 64M is NOT ignored**: 256MB is well within Apple Silicon unified memory. The GPU sort itself takes <20ms. The bottleneck is the CPU reference `sort()` for verification (~2-3 seconds at 64M). This is acceptable for a correctness test suite. 128M pushes the CPU reference sort to ~6-8 seconds and the allocation to 512MB, which warrants opt-in.
+### Full Method Table
 
-### Decision 7: Sorter Initialization — Shared Per-Module, Not Per-Test
+| Method | Input | Output | Phase |
+|--------|-------|--------|-------|
+| `sort_u32(&mut [u32])` | mutable slice | in-place | **existing** |
+| `sort_buffer(&SortBuffer<u32>)` | typed buffer | in-place | **existing** (signature changes) |
+| `sort_i32(&mut [i32])` | mutable slice | in-place | Phase 1 |
+| `sort_f32(&mut [f32])` | mutable slice | in-place | Phase 1 |
+| `sort_u64(&mut [u64])` | mutable slice | in-place | Phase 3 |
+| `sort_i64(&mut [i64])` | mutable slice | in-place | Phase 3 |
+| `sort_f64(&mut [f64])` | mutable slice | in-place | Phase 3 |
+| `sort_i32_buffer(&SortBuffer<i32>)` | typed buffer | in-place | Phase 1 |
+| `sort_f32_buffer(&SortBuffer<f32>)` | typed buffer | in-place | Phase 1 |
+| `sort_u64_buffer(&SortBuffer<u64>)` | typed buffer | in-place | Phase 3 |
+| `sort_i64_buffer(&SortBuffer<i64>)` | typed buffer | in-place | Phase 3 |
+| `sort_f64_buffer(&SortBuffer<f64>)` | typed buffer | in-place | Phase 3 |
+| `argsort_u32(&[u32])` | immutable slice | `Vec<u32>` | Phase 2 |
+| `argsort_i32(&[i32])` | immutable slice | `Vec<u32>` | Phase 2 |
+| `argsort_f32(&[f32])` | immutable slice | `Vec<u32>` | Phase 2 |
+| `argsort_u64(&[u64])` | immutable slice | `Vec<u32>` | Phase 3 |
+| `argsort_i64(&[i64])` | immutable slice | `Vec<u32>` | Phase 3 |
+| `argsort_f64(&[f64])` | immutable slice | `Vec<u32>` | Phase 3 |
+| `sort_pairs_u32(&mut [u32], &mut [u32])` | key + value slices | in-place both | Phase 2 |
+| `sort_pairs_i32(&mut [i32], &mut [u32])` | key + value slices | in-place both | Phase 2 |
+| `sort_pairs_f32(&mut [f32], &mut [u32])` | key + value slices | in-place both | Phase 2 |
+| `sort_pairs_u64(&mut [u64], &mut [u32])` | key + value slices | in-place both | Phase 3 |
+| `sort_pairs_i64(&mut [i64], &mut [u32])` | key + value slices | in-place both | Phase 3 |
+| `alloc_sort_buffer::<T>(usize)` | capacity | `SortBuffer<T>` | Phase 1 |
 
-**Choice**: Each test module that runs multiple sorts shares a single `GpuSorter` instance via a module-level helper that creates one lazily.
-
-**Problem**: `GpuSorter::new()` compiles Metal shaders. At 66 tests, that is 66 shader compilations. Even at ~50ms each, this adds 3.3 seconds of pure overhead.
-
-**Solution**: Tests within a module that do not specifically test sorter creation/destruction share a sorter:
+### SortBuffer<T> Methods
 
 ```rust
-mod tile_boundary {
-    use super::helpers::*;
+/// A typed Metal buffer for zero-copy GPU sorting.
+///
+/// Created via [`GpuSorter::alloc_sort_buffer`]. Uses unified memory
+/// (StorageModeShared) -- CPU reads/writes go directly to GPU-visible pages.
+///
+/// # Type Safety
+///
+/// `SortBuffer<f32>` can only be sorted via `sort_f32_buffer()`.
+/// Attempting to pass it to `sort_buffer()` (which expects `SortBuffer<u32>`)
+/// is a compile error.
+pub struct SortBuffer<T: SortKey> {
+    buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    len: usize,
+    capacity: usize,
+    _marker: PhantomData<T>,
+}
 
-    #[test]
-    fn exact_one_tile_4096() {
-        let mut sorter = GpuSorter::new().unwrap();
-        assert_sorts_correctly_with(&mut sorter, gen_random_seeded(4096, 1));
-    }
+impl<T: SortKey> SortBuffer<T> {
+    /// Number of elements currently in this buffer.
+    pub fn len(&self) -> usize;
+
+    /// Whether the buffer is empty.
+    pub fn is_empty(&self) -> bool;
+
+    /// Capacity in elements of type T.
+    pub fn capacity(&self) -> usize;
+
+    /// Get a mutable slice to write data directly into GPU-visible memory.
+    /// Write your data here, then call set_len() to mark how many elements are valid.
+    pub fn as_mut_slice(&mut self) -> &mut [T];
+
+    /// Get a slice to read sorted results directly from GPU-visible memory.
+    pub fn as_slice(&self) -> &[T];
+
+    /// Set the number of valid elements. Must be <= capacity.
+    ///
+    /// # Panics
+    /// Panics if len > capacity.
+    pub fn set_len(&mut self, len: usize);
+
+    /// Copy data from a slice into the buffer. Sets len automatically.
+    ///
+    /// # Panics
+    /// Panics if data.len() > capacity.
+    pub fn copy_from_slice(&mut self, data: &[T]);
+
+    /// Copy sorted results out to a slice.
+    pub fn copy_to_slice(&self, dest: &mut [T]);
+
+    /// Access the underlying Metal buffer (for advanced use / pipeline integration).
+    pub fn metal_buffer(&self) -> &ProtocolObject<dyn MTLBuffer>;
 }
 ```
 
-**Note**: Because `cargo test` runs tests in parallel across threads, and `GpuSorter` requires `&mut self`, each test still creates its own sorter. This is intentional — it avoids needing `Mutex<GpuSorter>` which would serialize all tests. The 66 shader compilations are parallelized by the test runner, so actual wall-clock overhead is modest (only as slow as the slowest thread's compilation). For tests that specifically verify sorter reuse (buffer management category), the test explicitly creates one sorter and calls it multiple times.
+### SortKey Trait (Sealed)
 
-**Exception**: The `concurrent` module creates multiple sorters deliberately. The `buffer_reuse` module creates exactly one sorter and reuses it across multiple sorts within a single test function.
-
-### Decision 8: Seeded Randomness — Every Random Test Is Reproducible
-
-**Choice**: All tests that use random data use a fixed seed. The seed value is the test's "identity" — it appears in the function name comment and in the failure message.
-
-**Current** (non-reproducible):
 ```rust
-fn sort_and_verify(n: usize) {
-    let mut rng = rand::thread_rng();  // Different every run
+/// Marker trait for types that can be GPU-sorted.
+///
+/// This trait is **sealed** -- it cannot be implemented outside forge-sort.
+/// Supported types: u32, i32, f32, u64, i64, f64.
+///
+/// You do not need to interact with this trait directly. It exists only
+/// to constrain SortBuffer<T> and alloc_sort_buffer::<T>() to
+/// supported types.
+pub trait SortKey: private::Sealed + Copy + 'static {}
 ```
 
-**Proposed**:
+The private module pattern:
+
 ```rust
-fn gen_random_seeded(n: usize, seed: u64) -> Vec<u32> {
-    use rand::SeedableRng;
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-    (0..n).map(|_| rng.gen()).collect()
+mod private {
+    pub trait Sealed {}
+    impl Sealed for u32 {}
+    impl Sealed for i32 {}
+    impl Sealed for f32 {}
+    impl Sealed for u64 {}
+    impl Sealed for i64 {}
+    impl Sealed for f64 {}
 }
 ```
 
-**Seed assignment convention**: Each test uses a unique seed. Seeds are sequential within a module (tile_boundary: 100-199, bit_patterns: 200-299, etc.). This avoids accidental seed collisions and makes it trivial to reproduce any failure:
-
-```
-SORT MISMATCH [tile_boundary::exact_one_tile_4096]
-  seed: 101, n=4096, first diff at index 3999
-  ...
-```
-
-The developer runs `cargo test exact_one_tile_4096` and gets the same failure every time.
-
-**The seeded random battery test** (in `determinism` module) runs 100 seeds and reports which specific seeds failed:
-```
-Seeded random battery: 2/100 seeds failed: [42, 77]
-  Seed 42: n=10000, first diff at index 8192
-  Seed 77: n=10000, first diff at index 4096
-```
-
-### Decision 9: CI vs Local Experience — Same Command, Different Depth
-
-**Choice**: `cargo test` runs the fast, essential suite (~55 tests, <30 seconds). CI adds two extra commands for deeper coverage.
-
-**Local development** (the only command a developer needs to remember):
-```bash
-cargo test
-```
-Runs: tile_boundary, bit_patterns, determinism, buffer_reuse, edge_cases, scale (up to 64M), concurrent. Does NOT run perf tests or 128M test.
-
-**CI pipeline** (three commands):
-```bash
-cargo test                                    # Fast correctness (~55 tests, <30s)
-cargo test -- --ignored                       # 128M scale test (~10s)
-cargo test --features perf-tests -- perf      # Performance regression (~15s)
-```
-
-**Why three commands, not one**: A developer who runs `cargo test` and sees all green has high confidence. The CI adds the slow and environment-sensitive tests separately so that a thermal throttle on the CI runner does not block a merge that only changes documentation.
-
-**Test output format**: Use the default `cargo test` output (not `--format json` or `--format terse`). The default output is well-understood, shows only failing test details, and produces a clean summary line:
-
-```
-test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out
-```
-
-### Decision 10: Test Discovery — A New Developer Can Understand the Suite in 60 Seconds
-
-**Choice**: The test file opens with a structural comment that serves as a table of contents.
+### SortError Enum
 
 ```rust
-//! forge-sort correctness tests
+#[derive(Debug, thiserror::Error)]
+pub enum SortError {
+    #[error("no Metal GPU device found")]
+    DeviceNotFound,
+
+    #[error("shader compilation failed: {0}")]
+    ShaderCompilation(String),
+
+    #[error("GPU execution failed: {0}")]
+    GpuExecution(String),
+
+    #[error("mismatched lengths: keys ({keys}) != values ({values})")]
+    LengthMismatch { keys: usize, values: usize },
+}
+```
+
+---
+
+## Error Message Design
+
+### Compile-Time Errors (Type System)
+
+The typed API prevents the most dangerous class of errors at compile time:
+
+```rust
+// COMPILE ERROR: expected `&mut [u32]`, found `&mut [f32]`
+let mut data = vec![1.0f32, 2.0, 3.0];
+sorter.sort_u32(&mut data)?;  // won't compile
+
+// COMPILE ERROR: expected `&SortBuffer<u32>`, found `&SortBuffer<f32>`
+let buf: SortBuffer<f32> = sorter.alloc_sort_buffer(1000);
+sorter.sort_buffer(&buf)?;  // won't compile -- use sort_f32_buffer()
+
+// COMPILE ERROR: trait bound `String: SortKey` is not satisfied
+let buf: SortBuffer<String> = sorter.alloc_sort_buffer(1000);  // won't compile
+```
+
+These produce standard Rust type errors. No custom error messages needed -- the compiler's output is clear.
+
+### Runtime Errors
+
+| Scenario | Error | Message |
+|----------|-------|---------|
+| No Metal GPU | `SortError::DeviceNotFound` | `"no Metal GPU device found"` |
+| Shader compile fail | `SortError::ShaderCompilation(detail)` | `"shader compilation failed: {detail}"` |
+| Command buffer error | `SortError::GpuExecution(detail)` | `"GPU execution failed: {detail}"` |
+| Key/value length mismatch | `SortError::LengthMismatch { keys, values }` | `"mismatched lengths: keys (1000) != values (999)"` |
+
+### Panic Conditions (Programmer Errors)
+
+| Scenario | Behavior | Message |
+|----------|----------|---------|
+| `set_len(len > capacity)` | panic | `"len 2000 exceeds capacity 1000"` |
+| `copy_from_slice(data.len() > capacity)` | panic | `"data len 2000 exceeds capacity 1000"` |
+
+These match the existing v1 panic behavior exactly. They are assertion failures for violated preconditions, not recoverable errors.
+
+---
+
+## Documentation Patterns
+
+### Module-Level Documentation
+
+```rust
+//! # forge-sort
 //!
-//! Organization (run a category with `cargo test <name>`):
-//!   tile_boundary  — TILE_SIZE=4096 alignment edge cases
-//!   bit_patterns   — adversarial byte distributions targeting each radix pass
-//!   determinism    — multi-run reproducibility and seeded random battery
-//!   buffer_reuse   — GpuSorter buffer lifecycle (grow, shrink, reuse)
-//!   scale          — 32M/64M inputs (128M behind #[ignore])
-//!   edge_cases     — empty, single, two-element, all-same, extremes
-//!   perf           — performance thresholds (behind --features perf-tests)
-//!   concurrent     — multiple GpuSorter instances
+//! GPU-accelerated radix sort for Apple Silicon. 31x faster than `sort_unstable()`.
 //!
-//! Quick reference:
-//!   cargo test                              # all fast tests (~55, <30s)
-//!   cargo test tile_boundary                # just tile boundary tests
-//!   cargo test -- --ignored                 # include 128M scale test
-//!   cargo test --features perf-tests        # include performance tests
-
-mod helpers { ... }
-mod tile_boundary { ... }
-...
+//! ## Supported Types
+//!
+//! | Type | Method | Zero-Copy | Argsort | Key-Value |
+//! |------|--------|-----------|---------|-----------|
+//! | `u32` | `sort_u32` | `sort_buffer` | `argsort_u32` | `sort_pairs_u32` |
+//! | `i32` | `sort_i32` | `sort_i32_buffer` | `argsort_i32` | `sort_pairs_i32` |
+//! | `f32` | `sort_f32` | `sort_f32_buffer` | `argsort_f32` | `sort_pairs_f32` |
+//! | `u64` | `sort_u64` | `sort_u64_buffer` | `argsort_u64` | `sort_pairs_u64` |
+//! | `i64` | `sort_i64` | `sort_i64_buffer` | `argsort_i64` | `sort_pairs_i64` |
+//! | `f64` | `sort_f64` | `sort_f64_buffer` | `argsort_f64` | -- |
+//!
+//! ## Quick Start
+//!
+//! ```rust
+//! use forge_sort::GpuSorter;
+//!
+//! let mut sorter = GpuSorter::new()?;
+//!
+//! // Sort integers
+//! let mut ints = vec![5i32, -3, 8, -1, 0];
+//! sorter.sort_i32(&mut ints)?;
+//! assert_eq!(ints, vec![-3, -1, 0, 5, 8]);
+//!
+//! // Sort floats
+//! let mut floats = vec![3.14f32, -2.7, 0.0, 1.0, -0.0];
+//! sorter.sort_f32(&mut floats)?;
+//! // -2.7, -0.0, 0.0, 1.0, 3.14  (total_cmp ordering: -0.0 < +0.0)
+//!
+//! // Get sorted indices without modifying data
+//! let data = vec![30u32, 10, 20];
+//! let indices = sorter.argsort_u32(&data)?;
+//! assert_eq!(indices, vec![1, 2, 0]);  // data[1]=10 < data[2]=20 < data[0]=30
+//!
+//! // Sort key-value pairs (e.g., depth + instance ID for rendering)
+//! let mut depths = vec![5.0f32, 1.0, 3.0];
+//! let mut instance_ids = vec![100u32, 200, 300];
+//! sorter.sort_pairs_f32(&mut depths, &mut instance_ids)?;
+//! assert_eq!(depths, vec![1.0, 3.0, 5.0]);
+//! assert_eq!(instance_ids, vec![200, 300, 100]);
+//! # Ok::<(), forge_sort::SortError>(())
+//! ```
+//!
+//! ## Float Ordering
+//!
+//! Float sorting uses IEEE 754 `total_cmp` semantics:
+//! - `-NaN < -Inf < -1.0 < -0.0 < +0.0 < 1.0 < +Inf < +NaN`
+//! - `-0.0` sorts before `+0.0` (they are distinct values)
+//! - All NaN payloads are preserved; different NaN bit patterns sort to distinct positions
+//! - This matches [`f32::total_cmp`](https://doc.rust-lang.org/std/primitive.f32.html#method.total_cmp)
+//!
+//! ## Stability
+//!
+//! Radix sort is inherently **stable**: equal keys preserve their original relative order.
+//! This is guaranteed for all sort methods.
 ```
 
-This header answers the three questions every new developer asks:
-1. "What categories of tests exist?" (the list)
-2. "How do I run a subset?" (the quick reference)
-3. "Why are some tests not running?" (feature gate and `#[ignore]` explanation)
+### Per-Method Documentation Template
+
+Each method follows this structure: one-sentence summary, ordering semantics (if applicable), performance path note, example, performance numbers, errors.
+
+**sort_f32 example**:
+
+```rust
+/// Sort f32 slice in-place on GPU.
+///
+/// Uses IEEE 754 total ordering: `-NaN < -Inf < ... < -0.0 < +0.0 < ... < +Inf < +NaN`.
+/// The sort is stable (equal values preserve relative order).
+///
+/// Copies data to an internal GPU buffer, sorts, and copies back. For zero-copy
+/// sorting, use [`alloc_sort_buffer::<f32>`](Self::alloc_sort_buffer) +
+/// [`sort_f32_buffer`](Self::sort_f32_buffer).
+///
+/// # Examples
+///
+/// ```rust
+/// # use forge_sort::GpuSorter;
+/// let mut sorter = GpuSorter::new()?;
+/// let mut data = vec![3.14f32, -2.7, 0.0, f32::NAN, -0.0, f32::INFINITY];
+/// sorter.sort_f32(&mut data)?;
+/// assert_eq!(data[0], -2.7);
+/// assert_eq!(data[1].to_bits(), (-0.0f32).to_bits());  // -0.0
+/// assert_eq!(data[2].to_bits(), 0.0f32.to_bits());      // +0.0
+/// assert_eq!(data[3], 3.14);
+/// assert_eq!(data[4], f32::INFINITY);
+/// assert!(data[5].is_nan());
+/// # Ok::<(), forge_sort::SortError>(())
+/// ```
+///
+/// # Performance
+///
+/// ~10% slower than `sort_u32` due to bit transformation overhead.
+/// At 16M elements: ~2500 Mk/s (memcpy path), ~4500 Mk/s (zero-copy).
+///
+/// # Errors
+///
+/// Returns [`SortError::GpuExecution`] if the GPU command buffer fails.
+pub fn sort_f32(&mut self, data: &mut [f32]) -> Result<(), SortError>;
+```
+
+**argsort_f32 example**:
+
+```rust
+/// Return indices that would sort the f32 slice in ascending order.
+///
+/// The input data is **not modified**. Returns a `Vec<u32>` where `result[i]`
+/// is the index of the i-th smallest element in `data`.
+///
+/// This is the GPU equivalent of NumPy's `argsort`. Useful for:
+/// - Sorting multiple arrays by the same key (sort once, gather many)
+/// - Building sorted indices for database-style operations
+/// - Any case where you need the permutation, not the sorted data
+///
+/// # Examples
+///
+/// ```rust
+/// # use forge_sort::GpuSorter;
+/// let mut sorter = GpuSorter::new()?;
+///
+/// let scores = vec![3.5f32, 1.2, 2.8];
+/// let order = sorter.argsort_f32(&scores)?;
+/// assert_eq!(order, vec![1, 2, 0]);  // 1.2 < 2.8 < 3.5
+///
+/// // Use indices to reorder associated data
+/// let names = vec!["Alice", "Bob", "Carol"];
+/// let sorted_names: Vec<&str> = order.iter().map(|&i| names[i as usize]).collect();
+/// assert_eq!(sorted_names, vec!["Bob", "Carol", "Alice"]);
+/// # Ok::<(), forge_sort::SortError>(())
+/// ```
+///
+/// # Relationship to sort_pairs
+///
+/// `argsort` is the primitive that `sort_pairs` is built on internally.
+/// If you need both sorted keys and rearranged values, prefer `sort_pairs_f32`
+/// which does both in one call.
+pub fn argsort_f32(&mut self, data: &[f32]) -> Result<Vec<u32>, SortError>;
+```
+
+**sort_pairs_f32 example**:
+
+```rust
+/// Sort f32 key-value pairs in-place on GPU.
+///
+/// Keys are sorted in ascending order. Values (u32) are rearranged to maintain
+/// the key-value association. The sort is **stable**: equal keys preserve their
+/// original relative order among associated values.
+///
+/// # Examples
+///
+/// ```rust
+/// # use forge_sort::GpuSorter;
+/// let mut sorter = GpuSorter::new()?;
+///
+/// // Sort particles by depth for back-to-front rendering
+/// let mut depths = vec![5.0f32, 1.0, 3.0, 1.0];
+/// let mut ids    = vec![  100,   200,  300,  400];
+/// sorter.sort_pairs_f32(&mut depths, &mut ids)?;
+///
+/// assert_eq!(depths, vec![1.0, 1.0, 3.0, 5.0]);
+/// assert_eq!(ids,    vec![200, 400, 300, 100]);  // stable: 200 before 400
+/// # Ok::<(), forge_sort::SortError>(())
+/// ```
+///
+/// # Errors
+///
+/// Returns [`SortError::LengthMismatch`] if `keys.len() != values.len()`.
+/// Returns [`SortError::GpuExecution`] if the GPU command buffer fails.
+///
+/// # Performance
+///
+/// ~50% slower than key-only sorting due to doubled memory bandwidth.
+/// At 16M elements: ~1400 Mk/s (memcpy path).
+pub fn sort_pairs_f32(
+    &mut self,
+    keys: &mut [f32],
+    values: &mut [u32],
+) -> Result<(), SortError>;
+```
+
+### sort_i32 Documentation
+
+```rust
+/// Sort i32 slice in-place on GPU.
+///
+/// Sorts in ascending signed integer order: `i32::MIN` (-2,147,483,648) is
+/// the smallest value, `i32::MAX` (2,147,483,647) is the largest.
+///
+/// Copies data to an internal GPU buffer, sorts, and copies back. For zero-copy
+/// sorting, use [`alloc_sort_buffer::<i32>`](Self::alloc_sort_buffer) +
+/// [`sort_i32_buffer`](Self::sort_i32_buffer).
+///
+/// # Examples
+///
+/// ```rust
+/// # use forge_sort::GpuSorter;
+/// let mut sorter = GpuSorter::new()?;
+/// let mut data = vec![5i32, -3, 0, i32::MIN, i32::MAX, -1];
+/// sorter.sort_i32(&mut data)?;
+/// assert_eq!(data, vec![i32::MIN, -3, -1, 0, 5, i32::MAX]);
+/// # Ok::<(), forge_sort::SortError>(())
+/// ```
+///
+/// # Performance
+///
+/// Same throughput as `sort_u32` -- the sign bit transformation is negligible.
+/// At 16M elements: ~2800 Mk/s (memcpy path), ~4200 Mk/s (zero-copy).
+///
+/// # Errors
+///
+/// Returns [`SortError::GpuExecution`] if the GPU command buffer fails.
+pub fn sort_i32(&mut self, data: &mut [i32]) -> Result<(), SortError>;
+```
 
 ---
 
-## Complete Module Design
+## Migration Path: v1 to v2
 
-### Module: `helpers`
+### Breaking Changes
+
+1. **`SortBuffer` becomes `SortBuffer<u32>`**: The untyped `SortBuffer` gains a type parameter. This is a breaking change for any code that names the type explicitly.
+
+2. **`alloc_sort_buffer` becomes generic**: The signature changes from `fn alloc_sort_buffer(&self, capacity: usize) -> SortBuffer` to `fn alloc_sort_buffer<T: SortKey>(&self, capacity: usize) -> SortBuffer<T>`. Callers that do not annotate the type must either add a turbofish or let the type be inferred from usage.
+
+### Why No Backward-Compatibility Alias
+
+Since forge-sort is a pre-1.0 crate (`version = "0.1.0"`), the semver expectation is that breaking changes are acceptable between 0.x releases. Adding a deprecated type alias (`type UntypedSortBuffer = SortBuffer<u32>`) creates unnecessary complexity for a crate with very few external users at this stage.
+
+**Recommendation**: Simply change `SortBuffer` to `SortBuffer<u32>`. Bump the version to `0.2.0`.
+
+### Migration Examples
 
 ```rust
-mod helpers {
-    use forge_sort::GpuSorter;
-    use rand::SeedableRng;
-    use rand::Rng;
+// v1 code:
+let mut buf = sorter.alloc_sort_buffer(1_000_000);
+buf.copy_from_slice(&data);
+sorter.sort_buffer(&buf)?;
 
-    /// Sort `data` on GPU and verify against CPU reference sort.
-    /// Panics with detailed diagnostics on mismatch.
-    pub fn assert_sorts_correctly(data: Vec<u32>) {
-        let mut sorter = GpuSorter::new().unwrap();
-        assert_sorts_correctly_with(&mut sorter, data);
-    }
+// v2 code (option A: explicit type annotation):
+let mut buf: SortBuffer<u32> = sorter.alloc_sort_buffer(1_000_000);
+buf.copy_from_slice(&data);
+sorter.sort_buffer(&buf)?;
 
-    /// Sort `data` using the provided sorter and verify.
-    pub fn assert_sorts_correctly_with(sorter: &mut GpuSorter, data: Vec<u32>) {
-        let mut actual = data.clone();
-        let mut expected = data;
-        expected.sort();
-        sorter.sort_u32(&mut actual).unwrap();
-        verify_sorted(&actual, &expected, "");
-    }
+// v2 code (option B: type inference from usage -- works if data is &[u32]):
+let mut buf = sorter.alloc_sort_buffer(1_000_000);
+buf.copy_from_slice(&data);   // data: &[u32] -> infers SortBuffer<u32>
+sorter.sort_buffer(&buf)?;
+```
 
-    /// Sort `data` using the provided sorter and verify, with context label.
-    pub fn assert_sorts_correctly_ctx(
-        sorter: &mut GpuSorter,
-        data: Vec<u32>,
-        context: &str,
-    ) {
-        let mut actual = data.clone();
-        let mut expected = data;
-        expected.sort();
-        sorter.sort_u32(&mut actual).unwrap();
-        verify_sorted(&actual, &expected, context);
-    }
+In most cases, type inference from `copy_from_slice(&[u32])` or `sort_buffer()` will resolve the generic parameter without any code changes. The migration cost is near-zero.
 
-    /// Core verification. Compares actual vs expected with rich diagnostics.
-    pub fn verify_sorted(actual: &[u32], expected: &[u32], context: &str) {
-        assert_eq!(actual.len(), expected.len(),
-            "Length mismatch: actual={}, expected={} [{}]",
-            actual.len(), expected.len(), context);
+### Non-Breaking Additions
 
-        if let Some(idx) = actual.iter().zip(expected.iter()).position(|(a, b)| a != b) {
-            let window_start = idx.saturating_sub(2);
-            let window_end = (idx + 3).min(actual.len());
-            panic!(
-                "\nSORT MISMATCH{}\n  \
-                 n={}, first diff at index {}\n  \
-                 actual[{}]=0x{:08X}, expected[{}]=0x{:08X}\n  \
-                 actual[{}..{}]={:08X?}\n  \
-                 expected[{}..{}]={:08X?}",
-                if context.is_empty() { String::new() } else { format!(" [{}]", context) },
-                actual.len(), idx,
-                idx, actual[idx], idx, expected[idx],
-                window_start, window_end, &actual[window_start..window_end],
-                window_start, window_end, &expected[window_start..window_end],
-            );
-        }
-    }
+All new methods (`sort_i32`, `sort_f32`, `argsort_*`, `sort_pairs_*`) are purely additive. They do not change existing method signatures.
 
-    /// Generate n random u32 values from a fixed seed.
-    pub fn gen_random_seeded(n: usize, seed: u64) -> Vec<u32> {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-        (0..n).map(|_| rng.gen()).collect()
-    }
+---
 
-    /// Generate n values from a pattern function.
-    pub fn gen_pattern(n: usize, f: impl Fn(usize) -> u32) -> Vec<u32> {
-        (0..n).map(f).collect()
-    }
+## Usage Examples by Use Case
+
+### Gaussian Splatting (Primary Target Market)
+
+```rust
+use forge_sort::GpuSorter;
+
+fn sort_splats_by_depth(
+    depths: &mut [f32],       // camera-space Z distances
+    splat_ids: &mut [u32],    // indices into splat attribute arrays
+    sorter: &mut GpuSorter,
+) -> Result<(), forge_sort::SortError> {
+    sorter.sort_pairs_f32(depths, splat_ids)?;
+    // splat_ids[0] is now the nearest splat (smallest depth)
+    // Use splat_ids to index into position, color, opacity, etc. buffers
+    Ok(())
 }
 ```
 
-**Design rationale**:
-- Three layers match three usage patterns (one-liner, reuse, diagnostic)
-- `context` parameter is a free-form string, not a structured type — this keeps tests readable
-- Hex formatting is deliberate: `0x00FF0100` immediately shows which byte position has the issue, mapping directly to which radix pass (MSD: byte 3, inner pass 1: byte 2, inner pass 2: byte 1, inner pass 3: byte 0)
-- Window of 5 elements around the diff helps pattern recognition ("is it off by one index?" "are adjacent elements swapped?")
+### Database Index Building
 
-### Module: `tile_boundary` (9 tests)
+```rust
+use forge_sort::GpuSorter;
 
-```
-tile_boundary::exact_one_tile_4096
-tile_boundary::partial_one_extra_4097
-tile_boundary::partial_max_minus_one_4095
-tile_boundary::exact_two_tiles_8192
-tile_boundary::partial_tile_one_simd_4352    (4096 + 256)
-tile_boundary::partial_tile_one_thread_4097  (4096 + 1 thread)
-tile_boundary::prime_4099
-tile_boundary::prime_8191
-tile_boundary::prime_16381
+fn build_sorted_index(
+    column: &[i32],           // database column values
+    sorter: &mut GpuSorter,
+) -> Result<Vec<u32>, forge_sort::SortError> {
+    // argsort gives row indices sorted by column value
+    let row_order = sorter.argsort_i32(column)?;
+    Ok(row_order)
+}
 ```
 
-Each test uses `gen_random_seeded` with a unique seed, and `assert_sorts_correctly`.
+### Zero-Copy Float Pipeline
 
-### Module: `bit_patterns` (10 tests)
+```rust
+use forge_sort::{GpuSorter, SortBuffer, SortKey};
 
-```
-bit_patterns::single_msd_bucket_all_0xAA
-bit_patterns::two_msd_buckets_00_FF
-bit_patterns::uniform_256_msd_buckets
-bit_patterns::identical_inner_bytes_XX000000
-bit_patterns::all_bits_set_0xFFFFFFFF
-bit_patterns::bit24_boundary_adjacent
-bit_patterns::sequential_high_bytes
-bit_patterns::power_of_two_values
-bit_patterns::alternating_zero_max
-bit_patterns::near_duplicates
-```
+fn gpu_float_pipeline(sorter: &mut GpuSorter) -> Result<(), forge_sort::SortError> {
+    let mut buf: SortBuffer<f32> = sorter.alloc_sort_buffer(4_000_000);
 
-Each test uses `gen_pattern` with a lambda that constructs the specific bit pattern. The test name encodes the pattern, not the assertion.
+    // Write simulation results directly into GPU memory
+    let slice = buf.as_mut_slice();
+    for i in 0..4_000_000 {
+        slice[i] = (i as f32).sin();  // example: sin wave values
+    }
+    buf.set_len(4_000_000);
 
-### Module: `determinism` (3 tests)
+    // Sort in-place -- zero memcpy
+    sorter.sort_f32_buffer(&buf)?;
 
-```
-determinism::ten_runs_identical_1m
-determinism::ten_runs_identical_16m
-determinism::seeded_random_battery_100
-```
+    // Read median directly from GPU memory
+    let median = buf.as_slice()[2_000_000];
+    println!("Median sin value: {median}");
 
-The battery test iterates 100 seeds and collects ALL failures before panicking, so the developer sees the complete failure landscape, not just the first seed that broke.
-
-### Module: `buffer_reuse` (5 tests)
-
-```
-buffer_reuse::large_then_small
-buffer_reuse::small_then_large
-buffer_reuse::same_size_different_data
-buffer_reuse::fifty_reuses
-buffer_reuse::growing_sequence
+    Ok(())
+}
 ```
 
-All tests in this module create a single `GpuSorter` and call `sort_u32` multiple times. Each `assert_sorts_correctly_ctx` call includes a context string like `"phase 2: sort 100K after 1M"`.
+### Multi-Column Sort (argsort composition)
 
-### Module: `scale` (4 tests)
+```rust
+use forge_sort::GpuSorter;
 
-```
-scale::random_32m
-scale::random_64m
-scale::random_128m          (#[ignore])
-scale::rapid_small_1000x
-```
+fn sort_by_two_columns(
+    primary: &[f32],       // sort by this first
+    secondary: &[i32],     // break ties with this
+    sorter: &mut GpuSorter,
+) -> Result<Vec<u32>, forge_sort::SortError> {
+    // Stable radix sort: sort secondary first, then primary
+    // (stable sort on primary preserves secondary ordering within ties)
+    let mut indices = sorter.argsort_i32(secondary)?;
 
-### Module: `edge_cases` (8 tests)
+    // Gather primary values in secondary-sorted order
+    let mut primary_reordered: Vec<f32> = indices.iter()
+        .map(|&i| primary[i as usize])
+        .collect();
 
-```
-edge_cases::empty_slice
-edge_cases::single_element
-edge_cases::two_sorted
-edge_cases::two_reversed
-edge_cases::all_u32_max
-edge_cases::all_u32_min
-edge_cases::max_and_min_interleaved
-edge_cases::sorter_creation
-```
+    // Sort primary, carrying indices along
+    sorter.sort_pairs_f32(&mut primary_reordered, &mut indices)?;
 
-### Module: `perf` (4 tests, feature-gated)
-
-```
-perf::wall_clock_16m_under_10ms
-perf::wall_clock_1m_under_2ms
-perf::throughput_floor_2000_mkps
-perf::scaling_4m_to_16m_sublinear
-```
-
-Perf test names encode the threshold so that the test list itself is a performance contract.
-
-### Module: `concurrent` (2 tests)
-
-```
-concurrent::two_sorters_alternating
-concurrent::rapid_sequential_100
+    Ok(indices)
+}
 ```
 
 ---
 
-## Test Count Summary
+## API Surface Summary
 
-| Module | Tests | Gating |
-|--------|-------|--------|
-| tile_boundary | 9 | Normal |
-| bit_patterns | 10 | Normal |
-| determinism | 3 | Normal |
-| buffer_reuse | 5 | Normal |
-| scale | 4 | 1 `#[ignore]` |
-| edge_cases | 8 | Normal |
-| perf | 4 | `#[cfg(feature = "perf-tests")]` |
-| concurrent | 2 | Normal |
-| **Total integration** | **45 new** | |
-| Unit tests (lib.rs) | 3 existing | Normal |
-| **Grand total** | **~48** | |
+### v1 (current): 5 public items
 
-Combined with the existing tests that will be reorganized into the new modules, the total will be approximately 48 tests (some existing tests merge into the new categories rather than being additive). The PM target of ~66 included keeping the old tests as-is and adding 45 new ones; the reorganized approach is more efficient because it eliminates redundancy (the old `test_sort_1k` through `test_sort_16m` are subsumed by the new tile_boundary, scale, and seeded battery tests).
-
-If the PM requires exactly 66 tests, the seeded random battery can be split into individual test functions (one per size class), and the tile boundary module can be expanded with additional prime sizes. But test count is a vanity metric — the goal is coverage of failure modes, not a number.
-
----
-
-## Dev Dependencies Addition
-
-```toml
-[dev-dependencies]
-rand = "0.8"
-rayon = "1.10"
+```
+GpuSorter::new()
+GpuSorter::sort_u32()
+GpuSorter::alloc_sort_buffer()
+GpuSorter::sort_buffer()
+SortBuffer  (+ 8 methods)
+SortError   (3 variants)
 ```
 
-The `rand` crate with `StdRng` and `SeedableRng` is already available via `rand = "0.8"`. No new dependencies are required for the test reorganization.
+### v2 (proposed): 30 public items
+
+```
+GpuSorter::new()                    (unchanged)
+GpuSorter::sort_u32()               (unchanged)
+GpuSorter::sort_i32()               (new)
+GpuSorter::sort_f32()               (new)
+GpuSorter::sort_u64()               (new, Phase 3)
+GpuSorter::sort_i64()               (new, Phase 3)
+GpuSorter::sort_f64()               (new, Phase 3)
+GpuSorter::sort_buffer()            (signature: SortBuffer -> SortBuffer<u32>)
+GpuSorter::sort_i32_buffer()        (new)
+GpuSorter::sort_f32_buffer()        (new)
+GpuSorter::sort_u64_buffer()        (new, Phase 3)
+GpuSorter::sort_i64_buffer()        (new, Phase 3)
+GpuSorter::sort_f64_buffer()        (new, Phase 3)
+GpuSorter::argsort_u32()            (new)
+GpuSorter::argsort_i32()            (new)
+GpuSorter::argsort_f32()            (new)
+GpuSorter::argsort_u64()            (new, Phase 3)
+GpuSorter::argsort_i64()            (new, Phase 3)
+GpuSorter::argsort_f64()            (new, Phase 3)
+GpuSorter::sort_pairs_u32()         (new)
+GpuSorter::sort_pairs_i32()         (new)
+GpuSorter::sort_pairs_f32()         (new)
+GpuSorter::sort_pairs_u64()         (new, Phase 3)
+GpuSorter::sort_pairs_i64()         (new, Phase 3)
+GpuSorter::alloc_sort_buffer::<T>() (now generic)
+SortBuffer<T>  (+ 8 methods)        (now generic)
+SortKey trait  (sealed)              (new)
+SortError      (4 variants)          (+1 variant)
+```
+
+### Phased Delivery
+
+| Phase | New Methods | Complexity |
+|-------|------------|------------|
+| Phase 1 (P0+P1) | `sort_i32`, `sort_f32`, `sort_i32_buffer`, `sort_f32_buffer`, `SortBuffer<T>`, `SortKey` | Low -- bit transforms only, no shader changes |
+| Phase 2 (P2) | `argsort_*` (u32/i32/f32), `sort_pairs_*` (u32/i32/f32) | Medium -- new gather kernel, index tracking |
+| Phase 3 (P3) | `sort_u64`, `sort_i64`, `sort_f64`, `sort_{u64,i64,f64}_buffer`, `argsort_{u64,i64,f64}`, `sort_pairs_{u64,i64}` | Medium -- 64-bit shader variant, 8 passes. u64/i64 are free once f64 pipeline exists. |
 
 ---
 
-## Research Sources
+## Naming Convention Rationale
 
-- [Test Organization - The Rust Programming Language](https://doc.rust-lang.org/book/ch11-03-test-organization.html)
-- [How to organize your Rust tests - LogRocket Blog](https://blog.logrocket.com/how-to-organize-rust-tests/)
-- [Controlling How Tests Are Run - The Rust Programming Language](https://doc.rust-lang.org/book/ch11-02-running-tests.html)
-- [Everything you need to know about testing in Rust - Shuttle](https://www.shuttle.dev/blog/2024/03/21/testing-in-rust)
-- [Complete Guide To Testing Code In Rust - Zero To Mastery](https://zerotomastery.io/blog/complete-guide-to-testing-code-in-rust/)
-- [Best Practices for Structuring Your Rust Tests - Moldstud](https://moldstud.com/articles/p-best-practices-for-structuring-your-rust-tests-a-comprehensive-guide)
-- [How To Structure Unit Tests in Rust - Better Programming](https://betterprogramming.pub/how-to-structure-unit-tests-in-rust-cc4945536a32)
-- [assert_eq in std - Rust](https://doc.rust-lang.org/std/macro.assert_eq.html)
-- [Improve assert_eq failure message formatting - Rust RFC #1864](https://github.com/rust-lang/rfcs/issues/1864)
-- [cargo test - The Cargo Book](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
-- [Features - The Cargo Book](https://doc.rust-lang.org/cargo/reference/features.html)
+### Why `sort_f32` not `sort_float` or `sort_real`
+
+- Rust convention uses concrete type names (`f32`, `i32`), not abstract names (`float`, `int`).
+- `sort_float` is ambiguous between `f32` and `f64`.
+- The Rust standard library uses `f32::total_cmp`, not `float::total_cmp`.
+- CUB uses template parameters (`float`, `double`) but Rust does not have that style.
+
+### Why `sort_pairs` not `sort_kv` or `sort_by_key`
+
+- `sort_by_key` in Rust stdlib means "extract a sort key from each element via a closure." That is NOT what this does. This sorts explicit key/value arrays.
+- `sort_kv` is abbreviation-heavy and unclear to newcomers.
+- `sort_pairs` is the CUB/Thrust convention (`SortPairs`) and clearly describes the operation: sorting pairs of (key, value).
+
+### Why `argsort` not `sort_indices` or `indirect_sort`
+
+- `argsort` is the universally recognized name from NumPy, SciPy, Julia, MATLAB, and PyTorch.
+- Rust developers working with GPU data are likely to come from Python/ML backgrounds where `argsort` is the standard term.
+- `sort_indices` could be confused with "sort a slice of indices."
+
+### Why `sort_i32_buffer` not `sort_buffer_i32`
+
+- The type qualifier applies to the sort operation, not the buffer: you are sorting i32, from a buffer.
+- Grouping in IDE autocomplete: `sort_f32`, `sort_f32_buffer` appear adjacent, showing both paths for the same type.
+- Reading left to right follows English: "sort i32 buffer" vs "sort buffer i32."
+
+---
+
+## Rejected Design Alternatives
+
+### Alternative A: Single `sort()` Method with Trait Dispatch
+
+```rust
+// REJECTED
+sorter.sort(&mut data)?;  // where data: &mut [T], T: GpuSortable
+```
+
+**Why rejected**: Method resolution becomes ambiguous when multiple `sort` overloads exist (`&mut [T]` vs `&SortBuffer<T>`). IDE autocomplete shows a single `sort` method with complex trait bounds instead of the full menu of options. Error messages reference `GpuSortable` trait bounds that users never implemented. And most critically: the `sort` name collides with the stdlib `[T]::sort()` in developer mental models, causing confusion about which sort is being called.
+
+### Alternative B: Builder Pattern
+
+```rust
+// REJECTED
+sorter.sort()
+    .keys(&mut data)
+    .key_type::<f32>()
+    .values(&mut vals)
+    .execute()?;
+```
+
+**Why rejected**: Over-engineered for a library with 4 types. Adds allocation (builder struct) and runtime type checking where static dispatch suffices. The builder pattern is appropriate for complex configuration (rdst's tuner selection) but not for type selection -- that is what Rust's type system does at zero cost.
+
+### Alternative C: Enum-Based Type Selection
+
+```rust
+// REJECTED
+sorter.sort(&mut data, SortType::F32)?;
+```
+
+**Why rejected**: Runtime type checking instead of compile-time. Users can pass `SortType::F32` with `&mut [u32]` data and get a runtime error instead of a compile error. Loses all type safety benefits.
+
+### Alternative D: Separate Sorter Per Type
+
+```rust
+// REJECTED
+let u32_sorter = GpuSorter::<u32>::new()?;
+let f32_sorter = GpuSorter::<f32>::new()?;
+```
+
+**Why rejected**: Forces users to create multiple sorter instances, each with its own Metal device/queue/PSO cache. Wastes GPU resources. Users who sort multiple types (e.g., depth sort + index sort in the same frame) would need 2+ sorters. The current single-sorter design is correct -- one device, one queue, multiple sort methods.
+
+### Alternative E: Generic SortBuffer Without Sealed Trait
+
+```rust
+// REJECTED
+pub struct SortBuffer<T: Copy + 'static> { ... }
+```
+
+**Why rejected**: Allows `SortBuffer<String>`, `SortBuffer<Vec<u8>>`, `SortBuffer<[f32; 4]>` -- none of which can be GPU-sorted. The sealed trait constrains the generic parameter to exactly the types the GPU supports. Without the seal, users get a runtime error ("unsupported type") instead of a compile error ("trait bound not satisfied").
+
+---
+
+## References
+
+- [rdst -- Rust radix sort crate](https://crates.io/crates/rdst) -- Trait-based (`RadixKey`) approach for custom types
+- [radsort -- Rust scalar radix sort](https://crates.io/crates/radsort) -- Free-function API with sealed `Key` trait
+- [voracious_radix_sort -- Rust radix sort](https://docs.rs/voracious_radix_sort) -- `Radixable` trait with `Dispatcher` pattern
+- [rayon `ParallelSliceMut`](https://docs.rs/rayon/latest/rayon/slice/trait.ParallelSliceMut.html) -- `par_sort_by_key` signature pattern
+- [wgpu_sort -- WebGPU radix sort](https://docs.rs/wgpu_sort) -- GPU sort API with separate key/value buffers
+- [CUB DeviceRadixSort](https://nvidia.github.io/cccl/cub/api/structcub_1_1DeviceRadixSort.html) -- Production GPU sort API reference
+- [Rust `f32::total_cmp`](https://doc.rust-lang.org/std/primitive.f32.html#method.total_cmp) -- IEEE 754 total ordering in Rust
+- [Rust argsort pattern (community)](https://gist.github.com/mbhall88/80cd054410f960cea0c451b8b0edae71) -- enumerate-sort-extract idiom
+- [Rust internals: argsort feature request](https://internals.rust-lang.org/t/feature-request-methods-for-sorting-reordering-with-indices/15568)
+
+## Questions & Answers
+
+### Q1: Should there be a zero-copy argsort_buffer variant?
+**Answer**: Yes, include argsort_u32_buffer, argsort_i32_buffer, argsort_f32_buffer variants that return SortBuffer<u32> indices in GPU memory.
+**Impact**: Enables GPU pipelines where indices feed directly into gather kernels. Adds 4 methods but completes the zero-copy story.
+
+### Q2: Should sort_pairs use a dedicated SortPairsBuffer or two separate SortBuffers?
+**Answer**: Two separate SortBuffers. Reuses existing types, no new public type needed.
+**Impact**: sort_pairs_u32_buffer(&SortBuffer<u32>, &SortBuffer<u32>) signature. Users manage two buffers but the API stays simpler.
+
+### Q3: Should f64 key-value pairs be included?
+**Answer**: No, exclude sort_pairs_f64. f64 is niche + 8-pass sort + doubled bandwidth is too costly.
+**Impact**: f64 is keys-only (sort_f64, argsort_f64). Reduces API surface and testing burden. However, sort_pairs_u64 and sort_pairs_i64 ARE included — database IDs and timestamps are concrete key-value use cases that justify the bandwidth cost.
