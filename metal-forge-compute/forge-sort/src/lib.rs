@@ -720,6 +720,148 @@ impl GpuSorter {
         Ok(())
     }
 
+    /// Sort f32 slice in-place on GPU. Uses FloatFlip/IFloatFlip transform for IEEE 754 total ordering.
+    ///
+    /// Handles all special values correctly: -NaN < -Inf < -1.0 < -0.0 < 0.0 < 1.0 < Inf < NaN.
+    pub fn sort_f32(&mut self, data: &mut [f32]) -> Result<(), SortError> {
+        let n = data.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_buffers(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Copy input data to buf_a + zero the MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        // Create single command buffer with: FloatFlip → sort → IFloatFlip
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        // Forward transform: FloatFlip (mode 1)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, buf_a, n, 1);
+
+        // 4-dispatch sort pipeline
+        encode_sort_pipeline(
+            &enc,
+            &self.library,
+            &mut self.pso_cache,
+            buf_a,
+            buf_b,
+            self.buf_msd_hist.as_ref().unwrap(),
+            self.buf_counters.as_ref().unwrap(),
+            self.buf_bucket_descs.as_ref().unwrap(),
+            n,
+            num_tiles,
+        );
+
+        // Inverse transform: IFloatFlip (mode 2)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, buf_a, n, 2);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy result back from buf_a
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const f32,
+                data.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sort a [`SortBuffer<f32>`] in-place on GPU. **Zero memcpy**.
+    ///
+    /// Uses FloatFlip/IFloatFlip transforms for IEEE 754 total ordering.
+    pub fn sort_f32_buffer(&mut self, buf: &SortBuffer<f32>) -> Result<(), SortError> {
+        let n = buf.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_scratch_buffers(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Zero the MSD histogram
+        unsafe {
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        // Forward transform: FloatFlip (mode 1)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 1);
+
+        // 4-dispatch sort pipeline
+        encode_sort_pipeline(
+            &enc,
+            &self.library,
+            &mut self.pso_cache,
+            &buf.buffer,
+            self.buf_b.as_ref().unwrap(),
+            self.buf_msd_hist.as_ref().unwrap(),
+            self.buf_counters.as_ref().unwrap(),
+            self.buf_bucket_descs.as_ref().unwrap(),
+            n,
+            num_tiles,
+        );
+
+        // Inverse transform: IFloatFlip (mode 2)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 2);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Sort a [`SortBuffer<i32>`] in-place on GPU. **Zero memcpy**.
     pub fn sort_i32_buffer(&mut self, buf: &SortBuffer<i32>) -> Result<(), SortError> {
         let n = buf.len();
@@ -913,5 +1055,37 @@ mod tests {
         let mut expected = vec![5i32, -3, 0, i32::MIN, i32::MAX, -1, 1];
         expected.sort();
         assert_eq!(data, expected);
+    }
+
+    #[test]
+    fn test_sort_f32_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![
+            1.0f32,
+            f32::NAN,
+            -0.0,
+            0.0,
+            f32::NEG_INFINITY,
+            -1.0,
+            f32::INFINITY,
+            -f32::NAN,
+        ];
+        sorter.sort_f32(&mut data).unwrap();
+        // Verify total_cmp ordering via to_bits comparison
+        let mut expected = vec![
+            1.0f32,
+            f32::NAN,
+            -0.0,
+            0.0,
+            f32::NEG_INFINITY,
+            -1.0,
+            f32::INFINITY,
+            -f32::NAN,
+        ];
+        expected.sort_by(f32::total_cmp);
+        assert_eq!(
+            data.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
     }
 }

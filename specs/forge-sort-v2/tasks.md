@@ -116,7 +116,7 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: AC-1.1, AC-1.2, AC-1.3, AC-1.4_
   - _Design: 32-bit Key-Only Sort, dispatch_sort_pipeline_
 
-- [ ] 1.6 Implement sort_f32 and sort_f32_buffer methods
+- [x] 1.6 Implement sort_f32 and sort_f32_buffer methods
   - **Do**:
     1. Add `sort_f32(&mut self, data: &mut [f32]) -> Result<(), SortError>`:
        - Same pattern as sort_i32 but mode=1 (FloatFlip) forward, mode=2 (IFloatFlip) inverse
