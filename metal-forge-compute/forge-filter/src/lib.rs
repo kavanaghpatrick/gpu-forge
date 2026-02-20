@@ -154,6 +154,108 @@ impl<T: FilterKey> Predicate<T> {
             Predicate::And(_) | Predicate::Or(_) => (0, 0),
         }
     }
+
+    /// Returns true if this is a simple (non-compound) predicate that can be
+    /// dispatched directly to the GPU in a single pass.
+    pub fn is_simple(&self) -> bool {
+        !matches!(self, Predicate::And(_) | Predicate::Or(_))
+    }
+
+    /// Simplify the predicate tree, detecting common patterns.
+    ///
+    /// Currently detects:
+    /// - `And([Ge(lo), Le(hi)])` -> `Between(lo, hi)`
+    /// - `And([Gt(lo), Lt(hi)])` is NOT converted (open interval != BETWEEN which is closed)
+    /// - Single-element `And([p])` or `Or([p])` -> p
+    /// - Nested `And(And(...))` and `Or(Or(...))` are flattened
+    pub fn simplify(self) -> Predicate<T> {
+        match self {
+            Predicate::And(preds) => {
+                // Flatten nested ANDs and simplify children
+                let mut flat = Vec::new();
+                for p in preds {
+                    let simplified = p.simplify();
+                    match simplified {
+                        Predicate::And(inner) => flat.extend(inner),
+                        other => flat.push(other),
+                    }
+                }
+
+                // Single-element AND -> unwrap
+                if flat.len() == 1 {
+                    return flat.into_iter().next().unwrap();
+                }
+
+                // Detect Ge(lo) + Le(hi) -> Between(lo, hi)
+                if flat.len() == 2 {
+                    let (a, b) = (&flat[0], &flat[1]);
+                    match (a, b) {
+                        (Predicate::Ge(lo), Predicate::Le(hi)) => {
+                            return Predicate::Between(*lo, *hi);
+                        }
+                        (Predicate::Le(hi), Predicate::Ge(lo)) => {
+                            return Predicate::Between(*lo, *hi);
+                        }
+                        _ => {}
+                    }
+                }
+
+                Predicate::And(flat)
+            }
+            Predicate::Or(preds) => {
+                // Flatten nested ORs and simplify children
+                let mut flat = Vec::new();
+                for p in preds {
+                    let simplified = p.simplify();
+                    match simplified {
+                        Predicate::Or(inner) => flat.extend(inner),
+                        other => flat.push(other),
+                    }
+                }
+
+                // Single-element OR -> unwrap
+                if flat.len() == 1 {
+                    return flat.into_iter().next().unwrap();
+                }
+
+                Predicate::Or(flat)
+            }
+            // Simple predicates pass through
+            other => other,
+        }
+    }
+
+    /// Evaluate this predicate against a single value on the CPU.
+    ///
+    /// Used as a fallback for compound predicates that cannot be dispatched
+    /// to the GPU in a single pass.
+    pub fn evaluate(&self, val: &T) -> bool {
+        match self {
+            Predicate::Gt(t) => val.partial_cmp(t) == Some(std::cmp::Ordering::Greater),
+            Predicate::Lt(t) => val.partial_cmp(t) == Some(std::cmp::Ordering::Less),
+            Predicate::Ge(t) => matches!(
+                val.partial_cmp(t),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            ),
+            Predicate::Le(t) => matches!(
+                val.partial_cmp(t),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            ),
+            Predicate::Eq(t) => val.partial_cmp(t) == Some(std::cmp::Ordering::Equal),
+            Predicate::Ne(t) => val.partial_cmp(t) != Some(std::cmp::Ordering::Equal),
+            Predicate::Between(lo, hi) => {
+                matches!(
+                    val.partial_cmp(lo),
+                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                ) && matches!(
+                    val.partial_cmp(hi),
+                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                )
+            }
+            Predicate::And(preds) => preds.iter().all(|p| p.evaluate(val)),
+            Predicate::Or(preds) => preds.iter().any(|p| p.evaluate(val)),
+        }
+    }
 }
 
 // --- FilterError ---
@@ -584,6 +686,8 @@ impl GpuFilter {
     /// Filter a [`FilterBuffer`], returning matching values.
     ///
     /// Executes the 3-dispatch ordered pipeline. Output preserves input order.
+    /// For compound predicates (And/Or), simplifies first (e.g. And([Ge, Le]) -> Between),
+    /// then cascades AND through multiple GPU passes, or falls back to CPU for OR.
     pub fn filter<T: FilterKey>(
         &mut self,
         buf: &FilterBuffer<T>,
@@ -600,11 +704,107 @@ impl GpuFilter {
             });
         }
 
-        self.ensure_scratch_buffers(n, T::KEY_SIZE);
-        let count = self.dispatch_filter(&buf.buffer, n, pred, true, false)?;
+        // Try simplifying compound predicates first
+        let simplified = pred.clone().simplify();
+        if simplified.is_simple() {
+            self.ensure_scratch_buffers(n, T::KEY_SIZE);
+            let count = self.dispatch_filter(&buf.buffer, n, &simplified, true, false)?;
+            return Ok(FilterResult {
+                count,
+                values_buf: self.buf_output.clone(),
+                indices_buf: None,
+                _capacity: n,
+                _marker: PhantomData,
+            });
+        }
 
+        // For AND of all-simple sub-predicates: cascade through GPU
+        if let Predicate::And(ref subs) = simplified {
+            if subs.iter().all(|s| s.is_simple()) {
+                return self.filter_compound_and_cascade(buf, subs);
+            }
+        }
+
+        // General fallback: CPU evaluation for compound predicates
+        let data = buf.as_slice();
+        let result: Vec<T> = data.iter().filter(|v| simplified.evaluate(v)).copied().collect();
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+        let buf_output = self.buf_output.as_ref().unwrap();
+        let count = result.len();
+        if count > 0 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    result.as_ptr(),
+                    buf_output.contents().as_ptr() as *mut T,
+                    count,
+                );
+            }
+        }
         Ok(FilterResult {
             count,
+            values_buf: self.buf_output.clone(),
+            indices_buf: None,
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Internal: cascade AND of simple predicates through multiple GPU passes.
+    ///
+    /// Filters with the first sub-predicate, then filters the result with the second,
+    /// and so on. Each pass uses the 3-dispatch ordered pipeline.
+    fn filter_compound_and_cascade<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        subs: &[Predicate<T>],
+    ) -> Result<FilterResult<T>, FilterError> {
+        let n = buf.len();
+        if subs.is_empty() || n == 0 {
+            return Ok(FilterResult {
+                count: 0,
+                values_buf: None,
+                indices_buf: None,
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        // First pass: filter from the original buffer
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+        let count = self.dispatch_filter(&buf.buffer, n, &subs[0], true, false)?;
+        if count == 0 || subs.len() == 1 {
+            return Ok(FilterResult {
+                count,
+                values_buf: self.buf_output.clone(),
+                indices_buf: None,
+                _capacity: n,
+                _marker: PhantomData,
+            });
+        }
+
+        // Subsequent passes: filter from the previous output.
+        // We need a temp buffer to hold intermediate results since dispatch_filter
+        // reads from input and writes to buf_output.
+        let temp_buf = alloc_buffer(&self.device, n * T::KEY_SIZE);
+        let mut current_count = count;
+
+        for sub in &subs[1..] {
+            // Copy current output to temp
+            unsafe {
+                let src = self.buf_output.as_ref().unwrap().contents().as_ptr() as *const u8;
+                let dst = temp_buf.contents().as_ptr() as *mut u8;
+                std::ptr::copy_nonoverlapping(src, dst, current_count * T::KEY_SIZE);
+            }
+
+            self.ensure_scratch_buffers(current_count, T::KEY_SIZE);
+            current_count = self.dispatch_filter(&temp_buf, current_count, sub, true, false)?;
+            if current_count == 0 {
+                break;
+            }
+        }
+
+        Ok(FilterResult {
+            count: current_count,
             values_buf: self.buf_output.clone(),
             indices_buf: None,
             _capacity: n,
@@ -818,8 +1018,8 @@ impl GpuFilter {
     /// Filter a slice of `u32`, returning matching values as a `Vec<u32>`.
     ///
     /// Convenience method that copies data to GPU, filters, and copies results back.
-    /// For zero-copy performance, use [`alloc_filter_buffer`](Self::alloc_filter_buffer)
-    /// + [`filter`](Self::filter).
+    /// Compound predicates (And/Or) are supported: And([Ge, Le]) is optimized to Between,
+    /// AND of simple predicates cascades through GPU passes, OR uses CPU fallback.
     pub fn filter_u32(
         &mut self,
         data: &[u32],
@@ -1813,6 +2013,133 @@ mod tests {
             "unordered count {} != CPU count {}",
             unordered_result.len(),
             cpu_count
+        );
+    }
+
+    // --- Compound predicate tests ---
+
+    #[test]
+    fn test_compound_and() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000u32).collect();
+        // And([Gt(100), Lt(900)]) -> values 101..=899 -> 799 matches
+        let pred = Predicate::And(vec![Predicate::Gt(100u32), Predicate::Lt(900u32)]);
+
+        let result = filter.filter_u32(&data, &pred).expect("compound AND failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 100 && x < 900).copied().collect();
+
+        println!(
+            "test_compound_and: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_compound_or() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000u32).collect();
+        // Or([Lt(100), Gt(900)]) -> values 0..=99 ∪ 901..=999 -> 199 matches
+        let pred = Predicate::Or(vec![Predicate::Lt(100u32), Predicate::Gt(900u32)]);
+
+        let result = filter.filter_u32(&data, &pred).expect("compound OR failed");
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .filter(|&&x| x < 100 || x > 900)
+            .copied()
+            .collect();
+
+        println!(
+            "test_compound_or: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_compound_nested() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000u32).collect();
+        // And([Or([Lt(100), Gt(900)]), Ne(950)])
+        // -> (x < 100 || x > 900) && x != 950
+        // -> {0..=99, 901..=949, 951..=999} -> 198 matches
+        let pred = Predicate::And(vec![
+            Predicate::Or(vec![Predicate::Lt(100u32), Predicate::Gt(900u32)]),
+            Predicate::Ne(950u32),
+        ]);
+
+        let result = filter
+            .filter_u32(&data, &pred)
+            .expect("compound nested failed");
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .filter(|&&x| (x < 100 || x > 900) && x != 950)
+            .copied()
+            .collect();
+
+        println!(
+            "test_compound_nested: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_compound_and_as_between() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let lo = 250_000u32;
+        let hi = 750_000u32;
+
+        // And([Ge(lo), Le(hi)]) should be optimized to Between(lo, hi)
+        let pred_compound = Predicate::And(vec![Predicate::Ge(lo), Predicate::Le(hi)]);
+        let pred_between = Predicate::Between(lo, hi);
+
+        // Verify simplify() detects the pattern
+        let simplified = pred_compound.clone().simplify();
+        match &simplified {
+            Predicate::Between(a, b) => {
+                println!(
+                    "test_compound_and_as_between: simplified to Between({}, {})",
+                    a.to_bits(),
+                    b.to_bits()
+                );
+                assert_eq!(a.to_bits(), lo.to_bits(), "lo mismatch");
+                assert_eq!(b.to_bits(), hi.to_bits(), "hi mismatch");
+            }
+            other => panic!(
+                "expected Between after simplify, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+
+        // Verify results match
+        let result_compound = filter
+            .filter_u32(&data, &pred_compound)
+            .expect("compound filter failed");
+        let result_between = filter
+            .filter_u32(&data, &pred_between)
+            .expect("between filter failed");
+
+        println!(
+            "test_compound_and_as_between: compound={}, between={}",
+            result_compound.len(),
+            result_between.len()
+        );
+        assert_eq!(
+            result_compound.len(),
+            result_between.len(),
+            "length mismatch between compound AND and Between"
+        );
+        assert_eq!(
+            result_compound, result_between,
+            "contents mismatch between compound AND and Between"
         );
     }
 }

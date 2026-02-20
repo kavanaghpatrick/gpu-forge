@@ -216,7 +216,7 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 - _Requirements: FR-9, AC-6.1 through AC-6.4_
 - _Design: Kernel 4 (filter_atomic_scatter), Unordered Mode_
 
-### Task 2.7: Compound predicates (AND/OR)
+### Task 2.7: Compound predicates (AND/OR) [x]
 
 - **Do**:
   1. For AND/OR of simple predicates on a single column: implement multi-pass approach in `dispatch_filter`:
