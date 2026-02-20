@@ -59,6 +59,7 @@ impl GpuState {
     }
 
     /// Create a compute pipeline for the named function in the library.
+    #[allow(dead_code)]
     pub fn make_compute_pipeline(
         &self,
         name: &str,
