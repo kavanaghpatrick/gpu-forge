@@ -2090,6 +2090,199 @@ mod tests {
         assert_eq!(result, cpu_ref, "contents mismatch");
     }
 
+    // ===================================================================
+    // Exhaustive 42-combo type x operator correctness matrix (Task 3.1)
+    // ===================================================================
+    //
+    // 6 types (u32, i32, f32, u64, i64, f64) x 7 predicates (Gt, Lt, Ge, Le, Eq, Ne, Between)
+    // = 42 combinations, each at 100K elements with ~50% selectivity.
+    // Uses deterministic RNG (ChaCha8Rng seed 42) for reproducibility.
+
+    use rand::Rng;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    /// Helper: compare GPU filter output to CPU reference for a single type+predicate combo.
+    fn test_filter_correctness<T: FilterKey + PartialOrd + std::fmt::Debug>(
+        data: &[T],
+        pred: &Predicate<T>,
+        filter: &mut GpuFilter,
+        label: &str,
+    ) {
+        // CPU reference using Predicate::evaluate()
+        let cpu_ref: Vec<T> = data.iter().filter(|v| pred.evaluate(v)).copied().collect();
+
+        // GPU path via FilterBuffer
+        let mut buf = filter.alloc_filter_buffer::<T>(data.len());
+        buf.copy_from_slice(data);
+        let result = filter.filter(&buf, pred).expect("GPU filter failed");
+        let gpu_out = result.to_vec();
+
+        println!(
+            "  {}: GPU={}, CPU={} (selectivity {:.1}%)",
+            label,
+            gpu_out.len(),
+            cpu_ref.len(),
+            100.0 * cpu_ref.len() as f64 / data.len() as f64
+        );
+
+        assert_eq!(
+            gpu_out.len(),
+            cpu_ref.len(),
+            "{}: count mismatch GPU={} vs CPU={}",
+            label,
+            gpu_out.len(),
+            cpu_ref.len()
+        );
+        // Full content comparison for correctness
+        assert_eq!(gpu_out, cpu_ref, "{}: content mismatch", label);
+    }
+
+    macro_rules! matrix_test {
+        ($test_name:ident, $T:ty, $type_label:expr, $gen_data:path, $preds_fn:path) => {
+            #[test]
+            fn $test_name() {
+                let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+                let mut rng = ChaCha8Rng::seed_from_u64(42);
+                let data: Vec<$T> = (0..100_000).map(|_| $gen_data(&mut rng)).collect();
+
+                println!("test_matrix_{}: {} elements", $type_label, data.len());
+
+                let preds = $preds_fn(&data);
+                for (pred_label, pred) in &preds {
+                    let label = format!("{}_{}", $type_label, pred_label);
+                    test_filter_correctness(&data, pred, &mut filter, &label);
+                }
+            }
+        };
+    }
+
+    // Helper to pick threshold/range values that give ~50% selectivity.
+    // For sorted data, median = 50th percentile, p25/p75 for Between.
+
+    fn u32_preds(data: &[u32]) -> Vec<(&str, Predicate<u32>)> {
+        let mut sorted = data.to_vec();
+        sorted.sort();
+        let median = sorted[sorted.len() / 2];
+        let p25 = sorted[sorted.len() / 4];
+        let p75 = sorted[3 * sorted.len() / 4];
+        // For Eq: pick median value (appears at least once since it comes from the data)
+        let eq_val = median;
+        vec![
+            ("gt", Predicate::Gt(median)),
+            ("lt", Predicate::Lt(median)),
+            ("ge", Predicate::Ge(median)),
+            ("le", Predicate::Le(median)),
+            ("eq", Predicate::Eq(eq_val)),
+            ("ne", Predicate::Ne(eq_val)),
+            ("between", Predicate::Between(p25, p75)),
+        ]
+    }
+
+    fn i32_preds(data: &[i32]) -> Vec<(&str, Predicate<i32>)> {
+        let mut sorted = data.to_vec();
+        sorted.sort();
+        let median = sorted[sorted.len() / 2];
+        let p25 = sorted[sorted.len() / 4];
+        let p75 = sorted[3 * sorted.len() / 4];
+        let eq_val = median;
+        vec![
+            ("gt", Predicate::Gt(median)),
+            ("lt", Predicate::Lt(median)),
+            ("ge", Predicate::Ge(median)),
+            ("le", Predicate::Le(median)),
+            ("eq", Predicate::Eq(eq_val)),
+            ("ne", Predicate::Ne(eq_val)),
+            ("between", Predicate::Between(p25, p75)),
+        ]
+    }
+
+    fn f32_preds(data: &[f32]) -> Vec<(&str, Predicate<f32>)> {
+        let mut sorted = data.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = sorted[sorted.len() / 2];
+        let p25 = sorted[sorted.len() / 4];
+        let p75 = sorted[3 * sorted.len() / 4];
+        let eq_val = median;
+        vec![
+            ("gt", Predicate::Gt(median)),
+            ("lt", Predicate::Lt(median)),
+            ("ge", Predicate::Ge(median)),
+            ("le", Predicate::Le(median)),
+            ("eq", Predicate::Eq(eq_val)),
+            ("ne", Predicate::Ne(eq_val)),
+            ("between", Predicate::Between(p25, p75)),
+        ]
+    }
+
+    fn u64_preds(data: &[u64]) -> Vec<(&str, Predicate<u64>)> {
+        let mut sorted = data.to_vec();
+        sorted.sort();
+        let median = sorted[sorted.len() / 2];
+        let p25 = sorted[sorted.len() / 4];
+        let p75 = sorted[3 * sorted.len() / 4];
+        let eq_val = median;
+        vec![
+            ("gt", Predicate::Gt(median)),
+            ("lt", Predicate::Lt(median)),
+            ("ge", Predicate::Ge(median)),
+            ("le", Predicate::Le(median)),
+            ("eq", Predicate::Eq(eq_val)),
+            ("ne", Predicate::Ne(eq_val)),
+            ("between", Predicate::Between(p25, p75)),
+        ]
+    }
+
+    fn i64_preds(data: &[i64]) -> Vec<(&str, Predicate<i64>)> {
+        let mut sorted = data.to_vec();
+        sorted.sort();
+        let median = sorted[sorted.len() / 2];
+        let p25 = sorted[sorted.len() / 4];
+        let p75 = sorted[3 * sorted.len() / 4];
+        let eq_val = median;
+        vec![
+            ("gt", Predicate::Gt(median)),
+            ("lt", Predicate::Lt(median)),
+            ("ge", Predicate::Ge(median)),
+            ("le", Predicate::Le(median)),
+            ("eq", Predicate::Eq(eq_val)),
+            ("ne", Predicate::Ne(eq_val)),
+            ("between", Predicate::Between(p25, p75)),
+        ]
+    }
+
+    fn f64_preds(data: &[f64]) -> Vec<(&str, Predicate<f64>)> {
+        let mut sorted = data.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = sorted[sorted.len() / 2];
+        let p25 = sorted[sorted.len() / 4];
+        let p75 = sorted[3 * sorted.len() / 4];
+        let eq_val = median;
+        vec![
+            ("gt", Predicate::Gt(median)),
+            ("lt", Predicate::Lt(median)),
+            ("ge", Predicate::Ge(median)),
+            ("le", Predicate::Le(median)),
+            ("eq", Predicate::Eq(eq_val)),
+            ("ne", Predicate::Ne(eq_val)),
+            ("between", Predicate::Between(p25, p75)),
+        ]
+    }
+
+    fn gen_u32(rng: &mut ChaCha8Rng) -> u32 { rng.gen_range(0u32..1_000_000) }
+    fn gen_i32(rng: &mut ChaCha8Rng) -> i32 { rng.gen_range(-500_000i32..500_000) }
+    fn gen_f32(rng: &mut ChaCha8Rng) -> f32 { rng.gen_range(0.0f32..1.0) }
+    fn gen_u64(rng: &mut ChaCha8Rng) -> u64 { rng.gen_range(0u64..1_000_000) }
+    fn gen_i64(rng: &mut ChaCha8Rng) -> i64 { rng.gen_range(-500_000i64..500_000) }
+    fn gen_f64(rng: &mut ChaCha8Rng) -> f64 { rng.gen_range(0.0f64..1.0) }
+
+    matrix_test!(test_matrix_u32, u32, "u32", gen_u32, u32_preds);
+    matrix_test!(test_matrix_i32, i32, "i32", gen_i32, i32_preds);
+    matrix_test!(test_matrix_f32, f32, "f32", gen_f32, f32_preds);
+    matrix_test!(test_matrix_u64, u64, "u64", gen_u64, u64_preds);
+    matrix_test!(test_matrix_i64, i64, "i64", gen_i64, i64_preds);
+    matrix_test!(test_matrix_f64, f64, "f64", gen_f64, f64_preds);
+
     #[test]
     fn test_compound_and_as_between() {
         let mut filter = GpuFilter::new().expect("GpuFilter::new failed");

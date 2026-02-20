@@ -233,7 +233,7 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 - _Requirements: FR-4, AC-3.1 through AC-3.5_
 - _Design: Compound predicate implementation_
 
-### Task 2.8: [VERIFY] Quality checkpoint: full test suite + clippy
+### Task 2.8: [VERIFY] Quality checkpoint: full test suite + clippy [x]
 
 - **Do**: Run all tests and clippy
 - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo test -p forge-filter && cargo clippy -p forge-filter -- -D warnings`
@@ -244,7 +244,7 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 
 Focus: Comprehensive correctness tests, property-based tests, edge cases.
 
-### Task 3.1: Exhaustive type x operator matrix tests (42 combos)
+### Task 3.1: Exhaustive type x operator matrix tests (42 combos) [x]
 
 - **Do**:
   1. Write a parameterized test helper `fn test_filter_correctness<T: FilterKey + PartialOrd + std::fmt::Debug>(data: &[T], pred: &Predicate<T>, filter: &mut GpuFilter)` that compares GPU output to CPU reference for each combo
