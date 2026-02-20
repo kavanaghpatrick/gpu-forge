@@ -24,7 +24,7 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: FR-9_
   - _Design: PsoCache Extension_
 
-- [ ] 1.2 Add SortKey sealed trait and make SortBuffer generic
+- [x] 1.2 Add SortKey sealed trait and make SortBuffer generic
   - **Do**:
     1. Add `mod private` with `Sealed` trait + impls for u32/i32/f32/u64/i64/f64
     2. Add `pub trait SortKey: private::Sealed + Copy + 'static` with consts: `KEY_SIZE`, `NEEDS_TRANSFORM`, `IS_64BIT`, `TRANSFORM_MODE_FORWARD`, `TRANSFORM_MODE_INVERSE`

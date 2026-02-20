@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use forge_primitives::{alloc_buffer, MetalContext, PsoCache};
@@ -8,6 +9,82 @@ use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLComputeCommandEncoder, MTLDevice, MTLLibrary, MTLSize,
 };
+
+// --- SortKey sealed trait ---
+
+mod private {
+    pub trait Sealed {}
+    impl Sealed for u32 {}
+    impl Sealed for i32 {}
+    impl Sealed for f32 {}
+    impl Sealed for u64 {}
+    impl Sealed for i64 {}
+    impl Sealed for f64 {}
+}
+
+/// Trait for types that can be sorted on the GPU via radix sort.
+///
+/// Sealed: only u32, i32, f32, u64, i64, f64 are valid. `SortBuffer<String>` is a compile error.
+pub trait SortKey: private::Sealed + Copy + 'static {
+    /// Size of the key in bytes (4 or 8).
+    const KEY_SIZE: usize;
+    /// Whether the key needs a bit transformation before/after sorting.
+    const NEEDS_TRANSFORM: bool;
+    /// Whether this is a 64-bit key type.
+    const IS_64BIT: bool;
+    /// Transform mode for forward (pre-sort) transformation.
+    const TRANSFORM_MODE_FORWARD: u32;
+    /// Transform mode for inverse (post-sort) transformation.
+    const TRANSFORM_MODE_INVERSE: u32;
+}
+
+impl SortKey for u32 {
+    const KEY_SIZE: usize = 4;
+    const NEEDS_TRANSFORM: bool = false;
+    const IS_64BIT: bool = false;
+    const TRANSFORM_MODE_FORWARD: u32 = 0;
+    const TRANSFORM_MODE_INVERSE: u32 = 0;
+}
+
+impl SortKey for i32 {
+    const KEY_SIZE: usize = 4;
+    const NEEDS_TRANSFORM: bool = true;
+    const IS_64BIT: bool = false;
+    const TRANSFORM_MODE_FORWARD: u32 = 0;
+    const TRANSFORM_MODE_INVERSE: u32 = 0;
+}
+
+impl SortKey for f32 {
+    const KEY_SIZE: usize = 4;
+    const NEEDS_TRANSFORM: bool = true;
+    const IS_64BIT: bool = false;
+    const TRANSFORM_MODE_FORWARD: u32 = 1;
+    const TRANSFORM_MODE_INVERSE: u32 = 2;
+}
+
+impl SortKey for u64 {
+    const KEY_SIZE: usize = 8;
+    const NEEDS_TRANSFORM: bool = false;
+    const IS_64BIT: bool = true;
+    const TRANSFORM_MODE_FORWARD: u32 = 0;
+    const TRANSFORM_MODE_INVERSE: u32 = 0;
+}
+
+impl SortKey for i64 {
+    const KEY_SIZE: usize = 8;
+    const NEEDS_TRANSFORM: bool = true;
+    const IS_64BIT: bool = true;
+    const TRANSFORM_MODE_FORWARD: u32 = 1;
+    const TRANSFORM_MODE_INVERSE: u32 = 1;
+}
+
+impl SortKey for f64 {
+    const KEY_SIZE: usize = 8;
+    const NEEDS_TRANSFORM: bool = true;
+    const IS_64BIT: bool = true;
+    const TRANSFORM_MODE_FORWARD: u32 = 1;
+    const TRANSFORM_MODE_INVERSE: u32 = 2;
+}
 
 const TILE_SIZE: usize = 4096;
 const THREADS_PER_TG: usize = 256;
@@ -20,6 +97,8 @@ pub enum SortError {
     ShaderCompilation(String),
     #[error("GPU execution failed: {0}")]
     GpuExecution(String),
+    #[error("length mismatch: keys={keys}, values={values}")]
+    LengthMismatch { keys: usize, values: usize },
 }
 
 #[repr(C)]
@@ -57,14 +136,15 @@ pub struct GpuSorter {
 ///
 /// Created via [`GpuSorter::alloc_sort_buffer`]. The buffer uses `StorageModeShared`
 /// (unified memory), so CPU reads/writes go directly to the same physical pages the GPU uses.
-pub struct SortBuffer {
+pub struct SortBuffer<T: SortKey> {
     buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
     len: usize,
     capacity: usize,
+    _marker: PhantomData<T>,
 }
 
-impl SortBuffer {
-    /// Number of u32 elements currently in this buffer.
+impl<T: SortKey> SortBuffer<T> {
+    /// Number of elements currently in this buffer.
     pub fn len(&self) -> usize {
         self.len
     }
@@ -74,26 +154,26 @@ impl SortBuffer {
         self.len == 0
     }
 
-    /// Capacity in u32 elements.
+    /// Capacity in elements.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Get a mutable slice to write data directly into GPU-visible memory.
     /// Write your data here, then call `set_len()` to mark how many elements are valid.
-    pub fn as_mut_slice(&mut self) -> &mut [u32] {
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.buffer.contents().as_ptr() as *mut u32,
+                self.buffer.contents().as_ptr() as *mut T,
                 self.capacity,
             )
         }
     }
 
     /// Get a slice to read sorted results directly from GPU-visible memory.
-    pub fn as_slice(&self) -> &[u32] {
+    pub fn as_slice(&self) -> &[T] {
         unsafe {
-            std::slice::from_raw_parts(self.buffer.contents().as_ptr() as *const u32, self.len)
+            std::slice::from_raw_parts(self.buffer.contents().as_ptr() as *const T, self.len)
         }
     }
 
@@ -109,7 +189,7 @@ impl SortBuffer {
     }
 
     /// Copy data from a slice into the buffer. Sets len automatically.
-    pub fn copy_from_slice(&mut self, data: &[u32]) {
+    pub fn copy_from_slice(&mut self, data: &[T]) {
         assert!(
             data.len() <= self.capacity,
             "data len {} exceeds capacity {}",
@@ -119,7 +199,7 @@ impl SortBuffer {
         unsafe {
             std::ptr::copy_nonoverlapping(
                 data.as_ptr(),
-                self.buffer.contents().as_ptr() as *mut u32,
+                self.buffer.contents().as_ptr() as *mut T,
                 data.len(),
             );
         }
@@ -127,11 +207,11 @@ impl SortBuffer {
     }
 
     /// Copy sorted results out to a slice.
-    pub fn copy_to_slice(&self, dest: &mut [u32]) {
+    pub fn copy_to_slice(&self, dest: &mut [T]) {
         let n = self.len.min(dest.len());
         unsafe {
             std::ptr::copy_nonoverlapping(
-                self.buffer.contents().as_ptr() as *const u32,
+                self.buffer.contents().as_ptr() as *const T,
                 dest.as_mut_ptr(),
                 n,
             );
@@ -309,24 +389,25 @@ impl GpuSorter {
 
     /// Allocate a GPU buffer for zero-copy sorting.
     ///
-    /// Returns a [`SortBuffer`] backed by unified memory (`StorageModeShared`).
+    /// Returns a [`SortBuffer<T>`] backed by unified memory (`StorageModeShared`).
     /// Write data via `as_mut_slice()` or `copy_from_slice()`, then sort with
     /// [`sort_buffer()`](Self::sort_buffer). Read results via `as_slice()`.
     /// No memcpy between CPU and GPU — both see the same physical memory.
-    pub fn alloc_sort_buffer(&self, capacity: usize) -> SortBuffer {
-        let buffer = alloc_buffer(&self.device, capacity * 4);
+    pub fn alloc_sort_buffer<T: SortKey>(&self, capacity: usize) -> SortBuffer<T> {
+        let buffer = alloc_buffer(&self.device, capacity * T::KEY_SIZE);
         SortBuffer {
             buffer,
             len: 0,
             capacity,
+            _marker: PhantomData,
         }
     }
 
-    /// Sort a [`SortBuffer`] in-place on GPU. **Zero memcpy** — full GPU speed.
+    /// Sort a [`SortBuffer<u32>`] in-place on GPU. **Zero memcpy** — full GPU speed.
     ///
     /// The buffer is sorted in-place. Read results via `buf.as_slice()`.
     /// Only scratch buffers are allocated internally (grow-only, reused across calls).
-    pub fn sort_buffer(&mut self, buf: &SortBuffer) -> Result<(), SortError> {
+    pub fn sort_buffer(&mut self, buf: &SortBuffer<u32>) -> Result<(), SortError> {
         let n = buf.len();
         if n <= 1 {
             return Ok(());
@@ -475,5 +556,63 @@ mod tests {
 
         let e = SortError::GpuExecution("timeout".to_string());
         assert_eq!(e.to_string(), "GPU execution failed: timeout");
+
+        let e = SortError::LengthMismatch {
+            keys: 10,
+            values: 5,
+        };
+        assert_eq!(e.to_string(), "length mismatch: keys=10, values=5");
+    }
+
+    #[test]
+    fn test_sort_key_u32_consts() {
+        assert_eq!(u32::KEY_SIZE, 4);
+        assert!(!u32::NEEDS_TRANSFORM);
+        assert!(!u32::IS_64BIT);
+        assert_eq!(u32::TRANSFORM_MODE_FORWARD, 0);
+        assert_eq!(u32::TRANSFORM_MODE_INVERSE, 0);
+    }
+
+    #[test]
+    fn test_sort_key_i32_consts() {
+        assert_eq!(i32::KEY_SIZE, 4);
+        assert!(i32::NEEDS_TRANSFORM);
+        assert!(!i32::IS_64BIT);
+        assert_eq!(i32::TRANSFORM_MODE_FORWARD, 0);
+        assert_eq!(i32::TRANSFORM_MODE_INVERSE, 0);
+    }
+
+    #[test]
+    fn test_sort_key_f32_consts() {
+        assert_eq!(f32::KEY_SIZE, 4);
+        assert!(f32::NEEDS_TRANSFORM);
+        assert!(!f32::IS_64BIT);
+        assert_eq!(f32::TRANSFORM_MODE_FORWARD, 1);
+        assert_eq!(f32::TRANSFORM_MODE_INVERSE, 2);
+    }
+
+    #[test]
+    fn test_sort_key_u64_consts() {
+        assert_eq!(u64::KEY_SIZE, 8);
+        assert!(!u64::NEEDS_TRANSFORM);
+        assert!(u64::IS_64BIT);
+    }
+
+    #[test]
+    fn test_sort_key_i64_consts() {
+        assert_eq!(i64::KEY_SIZE, 8);
+        assert!(i64::NEEDS_TRANSFORM);
+        assert!(i64::IS_64BIT);
+        assert_eq!(i64::TRANSFORM_MODE_FORWARD, 1);
+        assert_eq!(i64::TRANSFORM_MODE_INVERSE, 1);
+    }
+
+    #[test]
+    fn test_sort_key_f64_consts() {
+        assert_eq!(f64::KEY_SIZE, 8);
+        assert!(f64::NEEDS_TRANSFORM);
+        assert!(f64::IS_64BIT);
+        assert_eq!(f64::TRANSFORM_MODE_FORWARD, 1);
+        assert_eq!(f64::TRANSFORM_MODE_INVERSE, 2);
     }
 }
