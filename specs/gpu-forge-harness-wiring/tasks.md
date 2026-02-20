@@ -437,7 +437,7 @@ created: 2026-02-20
 
 ## Phase 4: Integration Tests
 
-### Task 9.1: Create harness-wiring.bats integration test file
+### Task 9.1: Create harness-wiring.bats integration test file [x]
 
 - **Do**:
   1. Create `/Users/patrickkavanagh/gpu_kernel/tests/integration/harness-wiring.bats` with the exact 16 tests from design.md:
