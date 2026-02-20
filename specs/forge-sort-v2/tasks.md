@@ -420,7 +420,7 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
   - _Requirements: FR-2_
   - _Design: sort_transform_64_
 
-- [ ] 3.3 Implement 64-bit dispatch pipeline and sort_u64 method
+- [x] 3.3 Implement 64-bit dispatch pipeline and sort_u64 method
   - **Do**:
     1. Add lazy 64-bit PSO compilation: on first 64-bit sort call, compile IS_64BIT=true PSOs for histogram, scatter, inner (with and without HAS_VALUES)
     2. 64-bit buffer management: buf_a/buf_b need `n * 8` bytes for 64-bit keys

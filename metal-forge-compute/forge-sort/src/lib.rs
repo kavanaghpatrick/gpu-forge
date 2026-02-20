@@ -88,6 +88,7 @@ impl SortKey for f64 {
 }
 
 const TILE_SIZE: usize = 4096;
+const TILE_SIZE_64: usize = 2048;
 const THREADS_PER_TG: usize = 256;
 
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +147,10 @@ pub struct GpuSorter {
     // Original values buffer for sort_pairs (Strategy B: argsort + gather)
     buf_orig_vals: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     orig_vals_capacity: usize,
+    // 64-bit specific: separate capacity for 8-byte key buffers
+    data_buf_capacity_64: usize,
+    // Lazy 64-bit PSO compilation flag
+    psos_64bit_compiled: bool,
 }
 
 /// A Metal buffer that can be sorted in-place with zero memcpy.
@@ -404,6 +409,43 @@ fn encode_transform_32(
     encoder.dispatchThreads_threadsPerThreadgroup(grid, tg);
 }
 
+/// Encode a single sort_transform_64 dispatch onto an existing encoder.
+fn encode_transform_64(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    library: &ProtocolObject<dyn MTLLibrary>,
+    pso_cache: &mut PsoCache,
+    buf: &ProtocolObject<dyn MTLBuffer>,
+    n: usize,
+    mode: u32,
+) {
+    let pso = pso_cache.get_or_create_specialized(
+        library,
+        "sort_transform_64",
+        &[(2, FnConstant::U32(mode))],
+    );
+    encoder.setComputePipelineState(pso);
+    let count = n as u32;
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf), 0, 0);
+        encoder.setBytes_length_atIndex(
+            NonNull::new(&count as *const u32 as *mut _).unwrap(),
+            4,
+            1,
+        );
+    }
+    let grid = MTLSize {
+        width: n.div_ceil(THREADS_PER_TG) * THREADS_PER_TG,
+        height: 1,
+        depth: 1,
+    };
+    let tg = MTLSize {
+        width: THREADS_PER_TG,
+        height: 1,
+        depth: 1,
+    };
+    encoder.dispatchThreads_threadsPerThreadgroup(grid, tg);
+}
+
 /// Encode the 4-dispatch sort pipeline onto an existing encoder.
 /// Like `dispatch_sort` but takes an encoder instead of creating its own command buffer.
 fn encode_sort_pipeline(
@@ -591,6 +633,8 @@ impl GpuSorter {
             vals_buf_capacity: 0,
             buf_orig_vals: None,
             orig_vals_capacity: 0,
+            data_buf_capacity_64: 0,
+            psos_64bit_compiled: false,
         })
     }
 
@@ -1039,6 +1083,236 @@ impl GpuSorter {
         if self.buf_orig_vals.is_none() || orig_bytes > self.orig_vals_capacity {
             self.buf_orig_vals = Some(alloc_buffer(&self.device, orig_bytes));
             self.orig_vals_capacity = orig_bytes;
+        }
+    }
+
+    /// Lazily compile IS_64BIT=true PSOs on first 64-bit sort call.
+    fn ensure_64bit_psos(&mut self) {
+        if self.psos_64bit_compiled {
+            return;
+        }
+        // IS_64BIT=true PSOs for histogram, scatter, inner (key-only and key-value)
+        self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_msd_histogram",
+            &[(1, FnConstant::Bool(true))],
+        );
+        self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_msd_atomic_scatter",
+            &[(0, FnConstant::Bool(false)), (1, FnConstant::Bool(true))],
+        );
+        self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_msd_atomic_scatter",
+            &[(0, FnConstant::Bool(true)), (1, FnConstant::Bool(true))],
+        );
+        self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_inner_fused",
+            &[(0, FnConstant::Bool(false)), (1, FnConstant::Bool(true))],
+        );
+        self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_inner_fused",
+            &[(0, FnConstant::Bool(true)), (1, FnConstant::Bool(true))],
+        );
+        // Transform PSOs for i64/f64
+        for mode in 1u32..=2 {
+            self.pso_cache.get_or_create_specialized(
+                &self.library,
+                "sort_transform_64",
+                &[(2, FnConstant::U32(mode))],
+            );
+        }
+        self.psos_64bit_compiled = true;
+    }
+
+    /// Allocate internal data + scratch buffers for 64-bit sorts (8 bytes per key element).
+    fn ensure_buffers_64(&mut self, n: usize) {
+        let data_bytes = n * 8;
+
+        if self.buf_a.is_none() || data_bytes > self.data_buf_capacity_64 {
+            self.buf_a = Some(alloc_buffer(&self.device, data_bytes));
+            self.buf_b = Some(alloc_buffer(&self.device, data_bytes));
+            self.data_buf_capacity_64 = data_bytes;
+            // Also update 32-bit capacity (buffers are shared and now larger)
+            self.data_buf_capacity = data_bytes;
+        }
+
+        if self.buf_msd_hist.is_none() {
+            self.buf_msd_hist = Some(alloc_buffer(&self.device, 256 * 4));
+            self.buf_counters = Some(alloc_buffer(&self.device, 256 * 4));
+            self.buf_bucket_descs =
+                Some(alloc_buffer(&self.device, 256 * std::mem::size_of::<BucketDesc>()));
+        }
+    }
+
+    /// Allocate only scratch buffers for 64-bit sort_buffer (buf_b + metadata, no buf_a).
+    fn ensure_scratch_buffers_64(&mut self, n: usize) {
+        let data_bytes = n * 8;
+
+        if self.buf_b.is_none() || data_bytes > self.data_buf_capacity_64 {
+            self.buf_b = Some(alloc_buffer(&self.device, data_bytes));
+            if self.buf_a.is_some() {
+                self.buf_a = Some(alloc_buffer(&self.device, data_bytes));
+            }
+            self.data_buf_capacity_64 = data_bytes;
+            self.data_buf_capacity = data_bytes;
+        }
+
+        if self.buf_msd_hist.is_none() {
+            self.buf_msd_hist = Some(alloc_buffer(&self.device, 256 * 4));
+            self.buf_counters = Some(alloc_buffer(&self.device, 256 * 4));
+            self.buf_bucket_descs =
+                Some(alloc_buffer(&self.device, 256 * std::mem::size_of::<BucketDesc>()));
+        }
+    }
+
+    /// Encode the 64-bit 6-dispatch sort pipeline onto an existing encoder.
+    ///
+    /// Architecture: MSD histogram (byte 7) + MSD prep + MSD scatter (byte 7)
+    /// + 3 inner fused dispatches (bytes 4-6, bytes 1-3, byte 0).
+    /// Final output in buf_a (same as 32-bit).
+    fn encode_sort_pipeline_64(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        buf_a: &ProtocolObject<dyn MTLBuffer>,
+        buf_b: &ProtocolObject<dyn MTLBuffer>,
+        n: usize,
+        num_tiles: usize,
+    ) {
+        let params = SortParams {
+            element_count: n as u32,
+            num_tiles: num_tiles as u32,
+            shift: 56, // bits[56:63] for 64-bit MSD
+            pass: 0,
+        };
+        let tile_size_u32 = TILE_SIZE_64 as u32;
+
+        let tg_size = MTLSize {
+            width: THREADS_PER_TG,
+            height: 1,
+            depth: 1,
+        };
+        let hist_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+        let one_tg_grid = MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+        let fused_grid = MTLSize {
+            width: 256,
+            height: 1,
+            depth: 1,
+        };
+
+        // Dispatch 1: MSD histogram (IS_64BIT=true, shift=56)
+        let pso = self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_msd_histogram",
+            &[(1, FnConstant::Bool(true))],
+        );
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_msd_hist.as_ref().unwrap()), 0, 1);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&params as *const SortParams as *mut _).unwrap(),
+                std::mem::size_of::<SortParams>(),
+                2,
+            );
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+        // Dispatch 2: MSD prep (unchanged — operates on 256-bin histogram)
+        let pso = self.pso_cache.get_or_create(&self.library, "sort_msd_prep");
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(self.buf_msd_hist.as_ref().unwrap()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_counters.as_ref().unwrap()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_bucket_descs.as_ref().unwrap()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&tile_size_u32 as *const u32 as *mut _).unwrap(),
+                4,
+                3,
+            );
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+        // Dispatch 3: MSD scatter (IS_64BIT=true, buf_a → buf_b)
+        let pso = self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_msd_atomic_scatter",
+            &[(0, FnConstant::Bool(false)), (1, FnConstant::Bool(true))],
+        );
+        encoder.setComputePipelineState(pso);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(self.buf_counters.as_ref().unwrap()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::new(&params as *const SortParams as *mut _).unwrap(),
+                std::mem::size_of::<SortParams>(),
+                3,
+            );
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+        // Inner fused dispatches: 3 dispatches to sort remaining 7 bytes.
+        //
+        // Kernel convention: pass 0 (even) reads buffer(1), writes buffer(0).
+        // After odd number of passes → result in buffer(0).
+        // After even number of passes → result in buffer(1).
+        //
+        // After MSD scatter: data is in buf_b.
+        //
+        // Inner #1: bytes 4,5,6 (start_shift=32, pass_count=3)
+        //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 3 passes → result in buf_a.
+        // Inner #2: bytes 1,2,3 (start_shift=8, pass_count=3)
+        //   buffer(0)=buf_b, buffer(1)=buf_a. Pass 0 reads buf_a. 3 passes → result in buf_b.
+        // Inner #3: byte 0 (start_shift=0, pass_count=1)
+        //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 1 pass → result in buf_a.
+
+        // (start_shift, pass_count, buffer_0, buffer_1)
+        let inner_configs: [(u32, u32, &ProtocolObject<dyn MTLBuffer>, &ProtocolObject<dyn MTLBuffer>); 3] = [
+            (32, 3, buf_a, buf_b),   // #1: reads buf_b, result in buf_a
+            (8, 3, buf_b, buf_a),    // #2: reads buf_a, result in buf_b
+            (0, 1, buf_a, buf_b),    // #3: reads buf_b, result in buf_a
+        ];
+
+        let pso_inner = self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "sort_inner_fused",
+            &[(0, FnConstant::Bool(false)), (1, FnConstant::Bool(true))],
+        );
+
+        for &(start_shift, pass_count, buf_0, buf_1) in &inner_configs {
+            let inner_params = InnerParams {
+                start_shift,
+                pass_count,
+                batch_start: 0,
+            };
+            encoder.setComputePipelineState(pso_inner);
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(buf_0), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(buf_1), 0, 1);
+                encoder.setBuffer_offset_atIndex(
+                    Some(self.buf_bucket_descs.as_ref().unwrap()),
+                    0,
+                    2,
+                );
+                encoder.setBytes_length_atIndex(
+                    NonNull::new(&inner_params as *const InnerParams as *mut _).unwrap(),
+                    std::mem::size_of::<InnerParams>(),
+                    3,
+                );
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(fused_grid, tg_size);
         }
     }
 
@@ -1795,6 +2069,116 @@ impl GpuSorter {
 
         Ok(())
     }
+
+    /// Sort u64 slice in-place on GPU. Uses 64-bit 8-pass radix sort pipeline.
+    ///
+    /// Empty/single-element inputs return immediately. No transform needed for u64.
+    pub fn sort_u64(&mut self, data: &mut [u64]) -> Result<(), SortError> {
+        let n = data.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy input data to buf_a + zero the MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // 6-dispatch 64-bit sort pipeline (no transform for u64)
+        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, n, num_tiles);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy result back from buf_a (8 bytes per element)
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const u64,
+                data.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sort a [`SortBuffer<u64>`] in-place on GPU. **Zero memcpy**.
+    ///
+    /// Uses 64-bit 8-pass radix sort pipeline.
+    pub fn sort_u64_buffer(&mut self, buf: &SortBuffer<u64>) -> Result<(), SortError> {
+        let n = buf.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_scratch_buffers_64(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Zero the MSD histogram
+        unsafe {
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        // 6-dispatch 64-bit sort pipeline (no transform for u64)
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, n, num_tiles);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -2044,5 +2428,29 @@ mod tests {
         sorter.sort_pairs_u32(&mut keys, &mut vals).unwrap();
         assert_eq!(keys, vec![42]);
         assert_eq!(vals, vec![100]);
+    }
+
+    #[test]
+    fn test_sort_u64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![u64::MAX, 0u64, 1, u64::MAX - 1, 42];
+        sorter.sort_u64(&mut data).unwrap();
+        assert_eq!(data, vec![0, 1, 42, u64::MAX - 1, u64::MAX]);
+    }
+
+    #[test]
+    fn test_sort_u64_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data: Vec<u64> = vec![];
+        sorter.sort_u64(&mut data).unwrap();
+        assert_eq!(data, vec![]);
+    }
+
+    #[test]
+    fn test_sort_u64_single() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![42u64];
+        sorter.sort_u64(&mut data).unwrap();
+        assert_eq!(data, vec![42]);
     }
 }
