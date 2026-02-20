@@ -28,7 +28,7 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
   - _Requirements: FR-1, FR-2, FR-3, FR-4_
   - _Design: metal_helpers.rs Content_
 
-- [ ] 1.2 Update lib.rs imports and GpuSorter::new()
+- [x] 1.2 Update lib.rs imports and GpuSorter::new()
   - **Do**:
     1. In `forge-sort/src/lib.rs` line 4: delete `use forge_primitives::pso_cache::FnConstant;`
     2. In line 5: delete `use forge_primitives::{alloc_buffer, MetalContext, PsoCache};`

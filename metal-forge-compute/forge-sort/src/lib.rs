@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-use forge_primitives::pso_cache::FnConstant;
-use forge_primitives::{alloc_buffer, MetalContext, PsoCache};
+mod metal_helpers;
+use metal_helpers::{alloc_buffer, init_device_and_queue, FnConstant, PsoCache};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
@@ -557,14 +557,13 @@ fn encode_sort_pipeline(
 impl GpuSorter {
     /// Initialize Metal device, queue, and compile 4 sort kernel PSOs.
     pub fn new() -> Result<Self, SortError> {
-        let ctx = MetalContext::new();
+        let (device, queue) = init_device_and_queue();
 
         // Load our sort-specific metallib (embedded path from build.rs)
         let metallib_path = env!("SORT_METALLIB_PATH");
         let path_ns = NSString::from_str(metallib_path);
         #[allow(deprecated)]
-        let library = ctx
-            .device
+        let library = device
             .newLibraryWithFile_error(&path_ns)
             .map_err(|e| SortError::ShaderCompilation(format!("{:?}", e)))?;
 
@@ -618,8 +617,8 @@ impl GpuSorter {
         );
 
         Ok(Self {
-            device: ctx.device,
-            queue: ctx.queue,
+            device,
+            queue,
             library,
             pso_cache,
             buf_a: None,
