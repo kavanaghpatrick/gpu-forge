@@ -252,25 +252,23 @@ fn prop_gpu_positions_monotonic() {
             let gpu = eng.search(&pattern, &default_options());
             drop(eng);
 
-            // Results are sorted by (file_index, line_number, column)
+            // Results are sorted by (file_index, byte_offset)
             for i in 1..gpu.len() {
                 let prev = &gpu[i - 1];
                 let curr = &gpu[i];
 
-                let prev_key = (prev.file_index, prev.line_number, prev.column);
-                let curr_key = (curr.file_index, curr.line_number, curr.column);
+                let prev_key = (prev.file_index, prev.byte_offset);
+                let curr_key = (curr.file_index, curr.byte_offset);
 
                 prop_assert!(
                     curr_key >= prev_key,
-                    "Not sorted: match[{}]=({},{},{}) < match[{}]=({},{},{})",
+                    "Not sorted: match[{}]=({},{}) < match[{}]=({},{})",
                     i,
                     curr.file_index,
-                    curr.line_number,
-                    curr.column,
+                    curr.byte_offset,
                     i - 1,
                     prev.file_index,
-                    prev.line_number,
-                    prev.column,
+                    prev.byte_offset,
                 );
             }
             Ok(())
