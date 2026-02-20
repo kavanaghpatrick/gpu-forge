@@ -233,7 +233,7 @@ created: 2026-02-20
 - **Done when**: All tests pass
 - **Commit**: `chore(harness): pass quality checkpoint` (only if fixes needed)
 
-### Task 4.1: Expand post-edit-validator.sh with 6 new checks (Gap 4)
+### Task 4.1: Expand post-edit-validator.sh with 6 new checks (Gap 4) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/hooks/scripts/post-edit-validator.sh`
