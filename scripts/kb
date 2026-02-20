@@ -332,13 +332,21 @@ case "${1}" in
     fi
     issues=$((issues + suspicious))
 
-    # Check 5: Findings without source URLs
-    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_url IS NULL OR source_url='';")
+    # Check 5a: Web-source findings without URLs (ERROR)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE (source_url IS NULL OR source_url='') AND source_type NOT IN ('benchmark','empirical_test');")
     if [ "$count" -gt 0 ] 2>/dev/null; then
-      echo "WARNING: $count findings have no source URL"
+      echo "ERROR: $count web-source findings have no source URL"
       issues=$((issues + count))
     else
-      echo "OK: All findings have source URLs"
+      echo "OK: All web-source findings have source URLs"
+    fi
+
+    # Check 5b: Benchmark/empirical_test findings without local path (INFO)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE (source_url IS NULL OR source_url='') AND source_type IN ('benchmark','empirical_test');")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "INFO: $count benchmark/empirical_test findings have no source path (run: kb backfill-urls)"
+    else
+      echo "OK: All benchmark/empirical_test findings have local paths"
     fi
 
     # Check 6: Stale investigations (running for >1 hour)

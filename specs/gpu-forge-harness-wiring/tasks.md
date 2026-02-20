@@ -298,7 +298,7 @@ created: 2026-02-20
 - _Requirements: FR-9 (AC-4.2)_
 - _Design: Gap 3: URL Backfill, backfill-urls case_
 
-### Task 5.2: Update `kb verify` to distinguish web vs local missing URLs (Gap 3)
+### Task 5.2: Update `kb verify` to distinguish web vs local missing URLs (Gap 3) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/scripts/kb`, locate Check 5 in verify) (lines ~335-342)
