@@ -675,6 +675,146 @@ impl GpuFilter {
         })
     }
 
+    /// Filter a [`FilterBuffer`] using unordered atomic scatter (single dispatch).
+    ///
+    /// Uses the `filter_atomic_scatter` kernel with SIMD-aggregated atomics.
+    /// Output order is **non-deterministic** but the result set is identical to
+    /// [`filter`](Self::filter). Faster than ordered mode for aggregation queries
+    /// where output order does not matter.
+    pub fn filter_unordered<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        pred: &Predicate<T>,
+    ) -> Result<FilterResult<T>, FilterError> {
+        let n = buf.len();
+        if n == 0 {
+            return Ok(FilterResult {
+                count: 0,
+                values_buf: None,
+                indices_buf: None,
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+
+        let (lo_bits, hi_bits) = pred.to_bits();
+        let pred_type = pred.pred_type_id();
+        let data_type = T::DATA_TYPE_ID;
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        let buf_output = self.buf_output.as_ref().unwrap();
+        let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+        let buf_count = self.buf_count.as_ref().unwrap();
+
+        // Zero the atomic counter before dispatch
+        unsafe {
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let pso = self.pso_cache.get_or_create_specialized(
+            &self.library,
+            "filter_atomic_scatter",
+            &[
+                (0, FnConstant::U32(pred_type)),
+                (1, FnConstant::Bool(T::IS_64BIT)),
+                (2, FnConstant::Bool(false)),  // OUTPUT_IDX
+                (3, FnConstant::Bool(true)),   // OUTPUT_VALS
+                (4, FnConstant::U32(data_type)),
+            ],
+        );
+        enc.setComputePipelineState(pso);
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: lo_bits as u32,
+                lo_hi: (lo_bits >> 32) as u32,
+                hi_lo: hi_bits as u32,
+                hi_hi: (hi_bits >> 32) as u32,
+                _pad: [0, 0],
+            };
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_output), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_count), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                    std::mem::size_of::<FilterParams64>(),
+                    4,
+                );
+            }
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: lo_bits as u32,
+                hi_bits: hi_bits as u32,
+            };
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(buf_output), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_count), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                    std::mem::size_of::<FilterParams>(),
+                    4,
+                );
+            }
+        }
+
+        enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read count from atomic counter
+        let count = unsafe { *(buf_count.contents().as_ptr() as *const u32) } as usize;
+
+        Ok(FilterResult {
+            count,
+            values_buf: self.buf_output.clone(),
+            indices_buf: None,
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
+
     /// Filter a slice of `u32`, returning matching values as a `Vec<u32>`.
     ///
     /// Convenience method that copies data to GPU, filters, and copies results back.
@@ -1590,5 +1730,89 @@ mod tests {
                 data[idx as usize]
             );
         }
+    }
+
+    // --- Unordered atomic scatter tests ---
+
+    #[test]
+    fn test_filter_unordered_set_eq() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Gt(500_000u32);
+
+        // Get ordered result
+        let ordered = filter.filter_u32(&data, &pred).expect("ordered filter failed");
+
+        // Get unordered result via filter_unordered
+        let mut buf = filter.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+        let unordered_result = filter
+            .filter_unordered(&buf, &pred)
+            .expect("unordered filter failed");
+        let mut unordered = unordered_result.to_vec();
+
+        println!(
+            "test_filter_unordered_set_eq: ordered={}, unordered={}",
+            ordered.len(),
+            unordered.len()
+        );
+
+        // Sort unordered result for comparison
+        unordered.sort();
+        let mut ordered_sorted = ordered.clone();
+        ordered_sorted.sort();
+
+        assert_eq!(
+            unordered.len(),
+            ordered_sorted.len(),
+            "length mismatch: unordered={} vs ordered={}",
+            unordered.len(),
+            ordered_sorted.len()
+        );
+        assert_eq!(
+            unordered, ordered_sorted,
+            "sorted sets differ between ordered and unordered modes"
+        );
+    }
+
+    #[test]
+    fn test_filter_unordered_count() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Gt(500_000u32);
+
+        // Get ordered count
+        let ordered = filter.filter_u32(&data, &pred).expect("ordered filter failed");
+
+        // Get unordered count
+        let mut buf = filter.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+        let unordered_result = filter
+            .filter_unordered(&buf, &pred)
+            .expect("unordered filter failed");
+
+        println!(
+            "test_filter_unordered_count: ordered={}, unordered={}",
+            ordered.len(),
+            unordered_result.len()
+        );
+
+        assert_eq!(
+            unordered_result.len(),
+            ordered.len(),
+            "unordered count {} != ordered count {}",
+            unordered_result.len(),
+            ordered.len()
+        );
+
+        // Also verify against CPU reference
+        let cpu_count = data.iter().filter(|&&x| x > 500_000).count();
+        assert_eq!(
+            unordered_result.len(),
+            cpu_count,
+            "unordered count {} != CPU count {}",
+            unordered_result.len(),
+            cpu_count
+        );
     }
 }

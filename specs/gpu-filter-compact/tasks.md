@@ -199,7 +199,7 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 - _Requirements: FR-7, FR-8, AC-5.1 through AC-5.4_
 - _Design: FilterResult indices(), Kernel 3 OUTPUT_IDX constant_
 
-### Task 2.6: Unordered atomic scatter mode
+### Task 2.6: Unordered atomic scatter mode [x]
 
 - **Do**:
   1. Implement `pub fn filter_unordered<T>(&mut self, buf: &FilterBuffer<T>, pred: &Predicate<T>) -> Result<FilterResult<T>>`:
