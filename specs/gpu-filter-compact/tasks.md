@@ -64,7 +64,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 - _Requirements: FR-1, FR-2, FR-5, FR-9, FR-12_
 - _Design: Metal Shader Design (all 4 kernels), Function Constants_
 
-### Task 1.4: Implement FilterBuffer<T> and FilterResult<T>
+### Task 1.4: Implement FilterBuffer<T> and FilterResult<T> [x]
 
 - **Do**:
   1. In `src/lib.rs`, add `FilterBuffer<T: FilterKey>` struct: buffer (Retained MTLBuffer), len, capacity, PhantomData. Mirror SortBuffer<T> exactly.

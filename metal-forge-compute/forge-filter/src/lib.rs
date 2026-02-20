@@ -1,3 +1,9 @@
+use std::marker::PhantomData;
+
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_metal::MTLBuffer;
+
 mod metal_helpers;
 
 // --- FilterKey sealed trait ---
@@ -212,3 +218,144 @@ pub const FILTER_TILE_64: u32 = 2048;
 
 /// GPU filter+compact engine for Apple Silicon.
 pub struct GpuFilter;
+
+// --- FilterBuffer<T> ---
+
+/// A Metal buffer for GPU filter input with zero-copy access.
+///
+/// Created via [`GpuFilter::alloc_filter_buffer`]. The buffer uses `StorageModeShared`
+/// (unified memory), so CPU reads/writes go directly to the same physical pages the GPU uses.
+pub struct FilterBuffer<T: FilterKey> {
+    buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    len: usize,
+    capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T: FilterKey> FilterBuffer<T> {
+    /// Number of elements currently in this buffer.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Capacity in elements.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Get a slice to read data directly from GPU-visible memory.
+    pub fn as_slice(&self) -> &[T] {
+        unsafe {
+            std::slice::from_raw_parts(self.buffer.contents().as_ptr() as *const T, self.len)
+        }
+    }
+
+    /// Get a mutable slice to write data directly into GPU-visible memory.
+    /// Returns a slice over the full capacity — call `set_len()` after writing.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.buffer.contents().as_ptr() as *mut T,
+                self.capacity,
+            )
+        }
+    }
+
+    /// Set the number of valid elements. Must be <= capacity.
+    pub fn set_len(&mut self, len: usize) {
+        assert!(
+            len <= self.capacity,
+            "len {} exceeds capacity {}",
+            len,
+            self.capacity
+        );
+        self.len = len;
+    }
+
+    /// Copy data from a slice into the buffer. Sets len automatically.
+    pub fn copy_from_slice(&mut self, data: &[T]) {
+        assert!(
+            data.len() <= self.capacity,
+            "data len {} exceeds capacity {}",
+            data.len(),
+            self.capacity
+        );
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                self.buffer.contents().as_ptr() as *mut T,
+                data.len(),
+            );
+        }
+        self.len = data.len();
+    }
+
+    /// Access the underlying Metal buffer (for pipeline integration).
+    pub fn metal_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
+        &self.buffer
+    }
+}
+
+// --- FilterResult<T> ---
+
+/// Result of a GPU filter operation.
+///
+/// Contains the filtered values and optionally the original indices of matching elements.
+/// Buffers use `StorageModeShared` for zero-copy CPU access.
+pub struct FilterResult<T: FilterKey> {
+    count: usize,
+    values_buf: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    indices_buf: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T: FilterKey> FilterResult<T> {
+    /// Number of elements that matched the predicate.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether no elements matched.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Get a slice of the filtered values.
+    ///
+    /// Returns an empty slice if no values buffer is present (e.g., index-only mode).
+    pub fn as_slice(&self) -> &[T] {
+        match &self.values_buf {
+            Some(buf) => unsafe {
+                std::slice::from_raw_parts(buf.contents().as_ptr() as *const T, self.count)
+            },
+            None => &[],
+        }
+    }
+
+    /// Get a slice of the original indices of matching elements.
+    ///
+    /// Returns `None` if index output was not requested.
+    pub fn indices(&self) -> Option<&[u32]> {
+        self.indices_buf.as_ref().map(|buf| unsafe {
+            std::slice::from_raw_parts(buf.contents().as_ptr() as *const u32, self.count)
+        })
+    }
+
+    /// Copy filtered values to a new `Vec<T>`.
+    pub fn to_vec(&self) -> Vec<T> {
+        self.as_slice().to_vec()
+    }
+
+    /// Access the underlying Metal buffer for filtered values.
+    ///
+    /// Returns `None` if no values buffer is present (index-only mode).
+    pub fn metal_buffer(&self) -> Option<&ProtocolObject<dyn MTLBuffer>> {
+        self.values_buf.as_deref()
+    }
+}
