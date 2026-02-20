@@ -164,7 +164,7 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 - _Requirements: FR-2, AC-1.3, FR-17, AC-7.2_
 - _Design: FilterKey trait, Type Support_
 
-### Task 2.3: BETWEEN range predicate
+### Task 2.3: BETWEEN range predicate [x]
 
 - **Do**:
   1. Ensure Predicate::Between(lo, hi) maps to pred_type=6, to_bits returns (lo.to_bits(), hi.to_bits())

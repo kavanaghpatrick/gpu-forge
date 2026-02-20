@@ -1183,6 +1183,151 @@ mod tests {
         );
     }
 
+    // --- BETWEEN predicate tests ---
+
+    #[test]
+    fn test_filter_u32_between() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Between(250_000u32, 750_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .filter(|&&x| x >= 250_000 && x <= 750_000)
+            .copied()
+            .collect();
+
+        println!(
+            "test_filter_u32_between: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_filter_f32_between() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<f32> = (0..1_000_000u32).map(|i| i as f32 / 1_000_000.0).collect();
+        let pred = Predicate::Between(0.25f32, 0.75f32);
+
+        let result = filter.filter_f32(&data, &pred).expect("filter_f32 failed");
+        let cpu_ref: Vec<f32> = data
+            .iter()
+            .filter(|&&x| x >= 0.25 && x <= 0.75)
+            .copied()
+            .collect();
+
+        println!(
+            "test_filter_f32_between: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        // Spot-check first and last 100
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+        if result.len() > check_n {
+            assert_eq!(
+                &result[result.len() - check_n..],
+                &cpu_ref[cpu_ref.len() - check_n..],
+                "last {} elements mismatch",
+                check_n
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_between_inclusive() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        // Use small range so we can verify both endpoints are included
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let lo = 100_000u32;
+        let hi = 900_000u32;
+        let pred = Predicate::Between(lo, hi);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        // Verify lo endpoint is included
+        assert!(
+            result.contains(&lo),
+            "lo endpoint {} must be included",
+            lo
+        );
+        // Verify hi endpoint is included
+        assert!(
+            result.contains(&hi),
+            "hi endpoint {} must be included",
+            hi
+        );
+        // Verify value just below lo is excluded
+        assert!(
+            !result.contains(&(lo - 1)),
+            "value {} below lo must be excluded",
+            lo - 1
+        );
+        // Verify value just above hi is excluded
+        assert!(
+            !result.contains(&(hi + 1)),
+            "value {} above hi must be excluded",
+            hi + 1
+        );
+
+        let expected_count = (hi - lo + 1) as usize;
+        println!(
+            "test_filter_between_inclusive: GPU={}, expected={}",
+            result.len(),
+            expected_count
+        );
+        assert_eq!(result.len(), expected_count, "count mismatch");
+    }
+
+    #[test]
+    fn test_filter_between_eq() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let target = 500_000u32;
+
+        // Between(x, x) should match exactly 1 element, same as Eq(x)
+        let pred_between = Predicate::Between(target, target);
+        let pred_eq = Predicate::Eq(target);
+
+        let result_between = filter
+            .filter_u32(&data, &pred_between)
+            .expect("filter between failed");
+        let result_eq = filter
+            .filter_u32(&data, &pred_eq)
+            .expect("filter eq failed");
+
+        println!(
+            "test_filter_between_eq: Between={}, Eq={}",
+            result_between.len(),
+            result_eq.len()
+        );
+        assert_eq!(result_between.len(), 1, "Between(x,x) should match exactly 1");
+        assert_eq!(result_between, result_eq, "Between(x,x) must equal Eq(x)");
+    }
+
+    #[test]
+    fn test_filter_between_inverted() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        // Between(750_000, 250_000): val >= 750_000 && val <= 250_000 is always false
+        let pred = Predicate::Between(750_000u32, 250_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        println!("test_filter_between_inverted: GPU={}", result.len());
+        assert_eq!(result.len(), 0, "inverted Between should return empty");
+    }
+
     #[test]
     fn test_filter_f32_nan() {
         let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
