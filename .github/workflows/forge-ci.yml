@@ -1,0 +1,108 @@
+name: Forge CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'metal-forge-compute/**'
+      - '.github/workflows/forge-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'metal-forge-compute/**'
+      - '.github/workflows/forge-ci.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  MTL_SHADER_VALIDATION: 1
+
+defaults:
+  run:
+    working-directory: metal-forge-compute
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            metal-forge-compute/target
+          key: ${{ runner.os }}-forge-cargo-${{ hashFiles('metal-forge-compute/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-forge-cargo-
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Check
+        run: cargo check --workspace
+
+      - name: Test forge-primitives
+        run: cargo test -p forge-primitives
+
+      - name: Test forge-sort
+        run: cargo test -p forge-sort -- --test-threads=1
+
+  perf:
+    name: Perf Tests
+    runs-on: macos-14
+    needs: checks
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            metal-forge-compute/target
+          key: ${{ runner.os }}-forge-cargo-${{ hashFiles('metal-forge-compute/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-forge-cargo-
+
+      - name: Perf tests (release)
+        run: cargo test -p forge-sort --release --features perf-test -- --test-threads=1
+
+  build:
+    name: Release Build
+    runs-on: macos-14
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            metal-forge-compute/target
+          key: ${{ runner.os }}-forge-cargo-${{ hashFiles('metal-forge-compute/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-forge-cargo-
+
+      - name: Build release
+        run: cargo build --workspace --release
+
+      - name: Upload forge-bench
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-bench-macos-arm64
+          path: metal-forge-compute/target/release/forge-bench
+          if-no-files-found: warn
