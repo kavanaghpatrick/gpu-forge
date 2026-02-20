@@ -184,7 +184,7 @@ created: 2026-02-20
 
 ## Phase 3: Independent Gaps (6, 4, 3, 5, 2, 7)
 
-### Task 3.1: Create advise.md command (Gap 6)
+### Task 3.1: Create advise.md command (Gap 6) [x]
 
 - **Do**:
   1. Create `/Users/patrickkavanagh/gpu_kernel/commands/advise.md` with the exact content from design.md:
