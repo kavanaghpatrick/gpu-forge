@@ -197,7 +197,7 @@ created: 2026-02-20
 - _Requirements: FR-14 (AC-7.1, AC-7.2, AC-7.5)_
 - _Design: Gap 6: advise Command, commands/advise.md_
 
-### Task 3.2: Update commands.bats for 7 commands (Gap 6)
+### Task 3.2: Update commands.bats for 7 commands (Gap 6) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/tests/unit/commands.bats`

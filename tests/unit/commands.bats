@@ -9,28 +9,28 @@ get_frontmatter() {
   awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1{print}' "$1"
 }
 
-@test "all 6 command files exist" {
-  for cmd in ask investigate knowledge scaffold template review; do
+@test "all 7 command files exist" {
+  for cmd in ask advise investigate knowledge scaffold template review; do
     [ -f "${COMMANDS_DIR}/${cmd}.md" ]
   done
 }
 
 @test "all commands have YAML frontmatter" {
-  for cmd in ask investigate knowledge scaffold template review; do
+  for cmd in ask advise investigate knowledge scaffold template review; do
     run head -1 "${COMMANDS_DIR}/${cmd}.md"
     assert_output "---"
   done
 }
 
 @test "all commands have name field" {
-  for cmd in ask investigate knowledge scaffold template review; do
+  for cmd in ask advise investigate knowledge scaffold template review; do
     frontmatter=$(get_frontmatter "${COMMANDS_DIR}/${cmd}.md")
     echo "$frontmatter" | grep -q "^name:"
   done
 }
 
 @test "all commands have description field" {
-  for cmd in ask investigate knowledge scaffold template review; do
+  for cmd in ask advise investigate knowledge scaffold template review; do
     frontmatter=$(get_frontmatter "${COMMANDS_DIR}/${cmd}.md")
     echo "$frontmatter" | grep -q "^description:"
   done
@@ -51,6 +51,16 @@ get_frontmatter() {
   echo "$frontmatter" | grep -q "^agent: investigation-agent"
 }
 
+@test "advise command uses context: fork" {
+  frontmatter=$(get_frontmatter "${COMMANDS_DIR}/advise.md")
+  echo "$frontmatter" | grep -q "^context: fork"
+}
+
+@test "advise command uses agent: architecture-advisor" {
+  frontmatter=$(get_frontmatter "${COMMANDS_DIR}/advise.md")
+  echo "$frontmatter" | grep -q "^agent: architecture-advisor"
+}
+
 @test "knowledge command uses model: haiku" {
   frontmatter=$(get_frontmatter "${COMMANDS_DIR}/knowledge.md")
   echo "$frontmatter" | grep -q "^model: haiku"
@@ -62,7 +72,7 @@ get_frontmatter() {
 }
 
 @test "all commands reference ARGUMENTS or CLAUDE_PLUGIN_ROOT" {
-  for cmd in ask investigate knowledge scaffold template review; do
+  for cmd in ask advise investigate knowledge scaffold template review; do
     content=$(cat "${COMMANDS_DIR}/${cmd}.md")
     if ! echo "$content" | grep -q 'ARGUMENTS' && ! echo "$content" | grep -q 'CLAUDE_PLUGIN_ROOT'; then
       echo "FAIL: ${cmd}.md references neither ARGUMENTS nor CLAUDE_PLUGIN_ROOT"
