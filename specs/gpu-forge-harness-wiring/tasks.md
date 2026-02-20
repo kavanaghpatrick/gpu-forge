@@ -312,7 +312,7 @@ created: 2026-02-20
 - _Requirements: FR-10 (AC-4.3)_
 - _Design: Gap 3, verify) Check 5 replacement_
 
-### Task 5.3: Add local path convention to investigation-agent.md (Gap 3)
+### Task 5.3: Add local path convention to investigation-agent.md (Gap 3) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/agents/investigation-agent.md`

@@ -84,6 +84,9 @@ sqlite3 "${CLAUDE_PLUGIN_ROOT}/data/gpu_knowledge.db" "INSERT INTO findings (ski
 - Always include the source URL. If there is no URL, use the source description.
 - Escape single quotes in SQL by doubling them: `''`
 - Set source_type from: academic_paper, apple_docs, wwdc_session, github_repo, blog_post, reverse_engineering, benchmark, empirical_test, patent, forum_post, book, other
+- For `benchmark` or `empirical_test` findings from local experiments, set `source_url` to the
+  relative file path (e.g., `experiments/exp16_8bit.rs`, `metal-gpu-experiments/shaders/exp16_8bit.metal`).
+  This makes the finding traceable to its source code.
 - Use tags for cross-cutting concerns (e.g., "m4,m5,performance,memory")
 
 **Confidence-source cross-validation (enforced by DB triggers):**
