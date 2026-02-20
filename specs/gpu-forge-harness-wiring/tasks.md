@@ -407,7 +407,7 @@ created: 2026-02-20
 - **Done when**: All unit tests pass, verify shows all 7 checks
 - **Commit**: `chore(harness): pass quality checkpoint` (only if fixes needed)
 
-### Task 8.1: Wire scaffold.md to JSON configs (Gap 7)
+### Task 8.1: Wire scaffold.md to JSON configs (Gap 7) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/commands/scaffold.md`
