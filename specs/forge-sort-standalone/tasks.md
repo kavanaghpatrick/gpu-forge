@@ -81,7 +81,7 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
   - **Done when**: Clippy clean, all tests pass, workspace intact, docs build
   - **Commit**: `chore(forge-sort): pass local CI` (only if fixes needed)
 
-- [ ] 2.2 Create PR and verify CI
+- [x] 2.2 Create PR and verify CI
   - **Do**:
     1. Verify on feature branch: `git branch --show-current`
     2. If on default branch, STOP and alert user
