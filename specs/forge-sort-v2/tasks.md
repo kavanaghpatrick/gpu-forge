@@ -45,7 +45,7 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: FR-14, AC-6.1, AC-6.2, AC-6.3, AC-6.4, AC-6.5, AC-6.6_
   - _Design: SortKey Trait, SortBuffer\<T\>_
 
-- [ ] 1.3 Update existing tests for SortBuffer\<u32\> annotation
+- [x] 1.3 Update existing tests for SortBuffer\<u32\> annotation
   - **Do**:
     1. Update `tests/correctness.rs`: change `alloc_sort_buffer(n)` calls to `alloc_sort_buffer::<u32>(n)` if signature changed
     2. If `sort_buffer` now requires `&SortBuffer<u32>`, no test changes needed (type inference)
