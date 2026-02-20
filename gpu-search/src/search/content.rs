@@ -163,6 +163,7 @@ pub struct ContentSearchEngine {
     current_chunk_count: usize,
     total_data_bytes: usize,
     file_count: usize,
+
 }
 
 impl ContentSearchEngine {
@@ -746,13 +747,39 @@ impl ContentSearchEngine {
             }
         }
 
-        // Sort by file index, then line number
-        results.sort_by(|a, b| {
-            a.file_index
-                .cmp(&b.file_index)
-                .then(a.line_number.cmp(&b.line_number))
-                .then(a.column.cmp(&b.column))
-        });
+        // Sort by file index, then byte offset (authoritative position).
+        // Use GPU argsort for n > 64, CPU fallback otherwise.
+        let mut gpu_sorted = false;
+
+        if results.len() > 64 {
+            if let Ok(mut sorter) = forge_sort::GpuSorter::new() {
+                let keys: Vec<u64> = results
+                    .iter()
+                    .map(|r| ((r.file_index as u64) << 32) | (r.byte_offset as u64))
+                    .collect();
+                match sorter.argsort_u64(&keys) {
+                    Ok(indices) => {
+                        let sorted: Vec<ContentMatch> = indices
+                            .iter()
+                            .map(|&i| results[i as usize].clone())
+                            .collect();
+                        results = sorted;
+                        gpu_sorted = true;
+                    }
+                    Err(e) => {
+                        eprintln!("[gpu-search] argsort_u64 failed: {e}, falling back to CPU sort");
+                    }
+                }
+            }
+        }
+
+        if !gpu_sorted {
+            results.sort_by(|a, b| {
+                a.file_index
+                    .cmp(&b.file_index)
+                    .then(a.byte_offset.cmp(&b.byte_offset))
+            });
+        }
 
         results
     }
