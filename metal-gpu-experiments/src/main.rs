@@ -16,6 +16,15 @@ mod exp14_multi_dispatch;
 mod exp15_onesweep;
 mod exp16_8bit;
 mod exp17_hybrid;
+mod exp18_monster;
+mod exp19_wlms;
+mod exp20_fused_hybrid;
+mod exp21_presort;
+mod exp22_local_sort;
+mod exp23_slc_sort;
+mod exp24_batched_sort;
+mod exp25_fence_free;
+mod exp26_3pass;
 
 use objc2_metal::MTLDevice;
 
@@ -57,8 +66,32 @@ fn main() {
     // // Experiment 16: 8-bit radix sort + 3-pass variant
     // exp16_8bit::run(&ctx);
 
-    // Experiment 17: MSD+LSD hybrid radix sort
+    // Experiment 17: MSD+LSD hybrid — targeting 5000+ Mk/s
     exp17_hybrid::run(&ctx);
+
+    // Experiment 18: Monster 3-pass radix sort — 1589 Mkeys/s
+    // exp18_monster::run(&ctx);
+
+    // Experiment 19: WLMS 3-pass radix sort (Plan A) — dead at 1048 Mkeys/s
+    // exp19_wlms::run(&ctx);
+
+    // Experiment 20: Fused hybrid (inner_partition replaces histogram+scan_scatter)
+    // exp20_fused_hybrid::run(&ctx);
+
+    // Experiment 21: Pre-sort scatter (Stehle-Jacobsen) — DEAD (4% slower)
+    // exp21_presort::run(&ctx);
+
+    // Experiment 22: Work-queue local sort (KB #3460) — dead at 1354 Mkeys/s
+    // exp22_local_sort::run(&ctx);
+
+    // Experiment 23: SLC-speed per-bucket global LSD sort — 2410 Mk/s (DRAM speed)
+    // exp23_slc_sort::run(&ctx);
+
+    // Experiment 24: Batched inner passes for SLC residency — DEAD (SLC scatter ≠ faster)
+    // exp24_batched_sort::run(&ctx);
+
+    // Experiment 25: Fence-free radix sort (precomputed tile prefix) — 2377 Mkeys/s
+    // exp25_fence_free::run(&ctx);
 
     println!("\n{}", "=".repeat(60));
     println!("All experiments complete.");

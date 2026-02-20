@@ -42,10 +42,7 @@ impl MetalContext {
         let metallib_path = Self::find_metallib()?;
         let path_ns = NSString::from_str(&metallib_path);
         #[allow(deprecated)]
-        match device.newLibraryWithFile_error(&path_ns) {
-            Ok(lib) => Some(lib),
-            Err(_) => None,
-        }
+        device.newLibraryWithFile_error(&path_ns).ok()
     }
 
     /// Find the shaders.metallib in the build output directory.
