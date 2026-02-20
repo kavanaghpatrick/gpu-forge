@@ -368,7 +368,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: AC-3.1 through AC-3.5, AC-4.1 through AC-4.5_
   - _Design: Test Strategy_
 
-- [ ] V4 [VERIFY] Quality checkpoint: full test suite after Phase 2
+- [x] V4 [VERIFY] Quality checkpoint: full test suite after Phase 2
   - **Do**: Run all tests to verify argsort/KV + existing paths all work
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | grep -E "test result|FAILED"`
   - **Done when**: All tests pass (25 existing + i32/f32 + argsort + sort_pairs)
@@ -378,7 +378,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
 
 Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatches, u64/i64/f64.
 
-- [ ] 3.1 Add IS_64BIT branches to sort kernels
+- [x] 3.1 Add IS_64BIT branches to sort kernels
   - **Do**:
     1. In `sort_msd_histogram`: add `if (is_64bit)` branch:
        - Use `device const ulong*` cast for key reads

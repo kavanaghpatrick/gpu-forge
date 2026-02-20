@@ -290,7 +290,7 @@ fn dispatch_sort(
     })?;
 
     // Dispatch 1: MSD histogram
-    let pso = pso_cache.get_or_create(library, "sort_msd_histogram");
+    let pso = pso_cache.get_or_create_specialized(library, "sort_msd_histogram", &[(1, FnConstant::Bool(false))]);
     enc.setComputePipelineState(pso);
     unsafe {
         enc.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
@@ -448,7 +448,7 @@ fn encode_sort_pipeline(
     };
 
     // Dispatch 1: MSD histogram
-    let pso = pso_cache.get_or_create(library, "sort_msd_histogram");
+    let pso = pso_cache.get_or_create_specialized(library, "sort_msd_histogram", &[(1, FnConstant::Bool(false))]);
     encoder.setComputePipelineState(pso);
     unsafe {
         encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
@@ -528,10 +528,15 @@ impl GpuSorter {
 
         let mut pso_cache = PsoCache::new();
 
-        // Pre-compile sort PSOs (histogram + prep use no function constants)
-        for name in &["sort_msd_histogram", "sort_msd_prep"] {
-            pso_cache.get_or_create(&library, name);
-        }
+        // Pre-compile sort PSOs
+        // sort_msd_histogram needs IS_64BIT=false specialization (function constant 1)
+        pso_cache.get_or_create_specialized(
+            &library,
+            "sort_msd_histogram",
+            &[(1, FnConstant::Bool(false))],
+        );
+        // sort_msd_prep uses no function constants
+        pso_cache.get_or_create(&library, "sort_msd_prep");
         // scatter + inner fused require HAS_VALUES specialization (default false)
         pso_cache.get_or_create_specialized(
             &library,
@@ -1116,8 +1121,8 @@ impl GpuSorter {
             depth: 1,
         };
 
-        // Dispatch 1: MSD histogram (key-only, no change)
-        let pso = self.pso_cache.get_or_create(&self.library, "sort_msd_histogram");
+        // Dispatch 1: MSD histogram (key-only, IS_64BIT=false)
+        let pso = self.pso_cache.get_or_create_specialized(&self.library, "sort_msd_histogram", &[(1, FnConstant::Bool(false))]);
         encoder.setComputePipelineState(pso);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
