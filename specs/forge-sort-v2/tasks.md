@@ -587,7 +587,7 @@ Focus: Comprehensive test coverage, regression tests, performance validation.
   - _Requirements: NFR-1 through NFR-11_
   - _Design: Performance Targets_
 
-- [ ] 4.3 Bump version to 0.2.0
+- [x] 4.3 Bump version to 0.2.0
   - **Do**:
     1. Update `forge-sort/Cargo.toml` version from "0.1.0" to "0.2.0"
     2. Verify all tests still pass (version change is just metadata)
