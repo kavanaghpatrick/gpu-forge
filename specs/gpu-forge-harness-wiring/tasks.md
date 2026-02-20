@@ -329,7 +329,7 @@ created: 2026-02-20
 - _Requirements: FR-8 (AC-4.1)_
 - _Design: Gap 3, investigation-agent.md local path convention_
 
-### Task 5.4: [VERIFY] Quality checkpoint after Gap 3
+### Task 5.4: [VERIFY] Quality checkpoint after Gap 3 [x]
 
 - **Do**: Run kb-cli unit tests and verify backfill-urls works
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/kb-cli.bats && GPU_FORGE_DB=/Users/patrickkavanagh/gpu_kernel/data/gpu_knowledge.db /Users/patrickkavanagh/gpu_kernel/scripts/kb backfill-urls | head -3`
