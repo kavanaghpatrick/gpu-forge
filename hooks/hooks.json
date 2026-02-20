@@ -22,6 +22,18 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "investigation-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/investigation-cleanup.sh",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

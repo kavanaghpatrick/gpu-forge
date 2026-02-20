@@ -131,7 +131,7 @@ created: 2026-02-20
 - _Requirements: FR-5 (AC-2.2, AC-2.3, AC-2.4)_
 - _Design: Gap 1: SubagentStop Hook, investigation-cleanup.sh_
 
-### Task 2.2: Add SubagentStop entry to hooks.json
+### Task 2.2: Add SubagentStop entry to hooks.json [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/hooks/hooks.json`
