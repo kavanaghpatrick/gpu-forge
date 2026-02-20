@@ -3448,4 +3448,79 @@ mod tests {
         assert_eq!(line_content, "Hello World");
         assert_eq!(match_col, 0);
     }
+
+    #[test]
+    fn test_resolve_benchmark() {
+        // Benchmark: resolve_match (per-call fs::read) vs resolve_from_cache
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 10 files with known patterns
+        let mut files = Vec::new();
+        for i in 0..10 {
+            let file = dir.path().join(format!("file_{}.txt", i));
+            let mut content = String::new();
+            for line in 0..100 {
+                if line % 10 == 0 {
+                    content.push_str(&format!("line {} has pattern_match in file {}\n", line, i));
+                } else {
+                    content.push_str(&format!("filler line {} in file {} with no match\n", line, i));
+                }
+            }
+            std::fs::write(&file, &content).unwrap();
+            files.push(file);
+        }
+
+        // Simulate 100 matches: 10 per file (like real gpu-search batch)
+        let pattern = "pattern_match";
+        let mut offsets = Vec::new();
+        for file in &files {
+            let content = std::fs::read(file).unwrap();
+            let text = String::from_utf8_lossy(&content);
+            let mut pos = 0;
+            while let Some(idx) = text[pos..].find(pattern) {
+                offsets.push((file.clone(), pos + idx));
+                pos += idx + pattern.len();
+            }
+        }
+        assert!(!offsets.is_empty());
+        let total_matches = offsets.len();
+
+        // --- Benchmark: per-match resolve_match ---
+        let start = std::time::Instant::now();
+        let mut old_count = 0;
+        for (path, offset) in &offsets {
+            if resolve_match(path, *offset, pattern, true).is_some() {
+                old_count += 1;
+            }
+        }
+        let old_time = start.elapsed();
+
+        // --- Benchmark: FileCache resolve_from_cache ---
+        let start = std::time::Instant::now();
+        let mut new_count = 0;
+        let mut cache: Option<FileCache> = None;
+        for (path, offset) in &offsets {
+            let need_refresh = cache.as_ref().map(|c| c.path != *path).unwrap_or(true);
+            if need_refresh {
+                cache = FileCache::load(path, pattern, true);
+            }
+            if let Some(c) = &cache {
+                if c.contains_pattern {
+                    if resolve_from_cache(c, *offset, pattern, true).is_some() {
+                        new_count += 1;
+                    }
+                }
+            }
+        }
+        let new_time = start.elapsed();
+
+        assert_eq!(old_count, new_count, "Both paths should find same matches");
+
+        let speedup = old_time.as_secs_f64() / new_time.as_secs_f64();
+        println!("\n=== RESOLVE BENCHMARK ({} matches across {} files) ===", total_matches, files.len());
+        println!("  Old (per-match fs::read): {:?}", old_time);
+        println!("  New (FileCache):          {:?}", new_time);
+        println!("  Speedup:                  {:.1}x", speedup);
+        println!("  Matches resolved:         {}", new_count);
+    }
 }
