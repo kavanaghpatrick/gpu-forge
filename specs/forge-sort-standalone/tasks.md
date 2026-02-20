@@ -91,7 +91,7 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
   - **Done when**: PR created, CI passes
   - **If CI fails**: fix locally, push, re-verify
 
-- [ ] 2.3 [VERIFY] AC checklist
+- [x] 2.3 [VERIFY] AC checklist
   - **Do**: Programmatically verify each acceptance criterion:
     1. AC-1.1: `grep -c 'forge-primitives' metal-forge-compute/forge-sort/Cargo.toml` = 0
     2. AC-1.2: `cargo build -p forge-sort` exits 0
@@ -109,13 +109,14 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
 
 ## Phase 3: PR Lifecycle
 
-- [ ] 3.1 Address review feedback and maintain CI
+- [x] 3.1 Address review feedback and maintain CI
   - **Do**:
     1. Monitor PR for review comments
     2. Address any feedback with fixup commits
     3. Re-verify CI after each push
   - **Verify**: `gh pr checks` — all green after each push
   - **Done when**: PR approved and merged
+  - **NOTE**: N/A — no standalone PR. Changes committed on feat/gpu-search-sort-resolve (larger feature branch)
 
 ## Notes
 
