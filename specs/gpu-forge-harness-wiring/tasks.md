@@ -275,7 +275,7 @@ created: 2026-02-20
 - _Requirements: FR-12 (AC-5.10)_
 - _Design: Gap 4, hooks.json Write matcher_
 
-### Task 4.3: [VERIFY] Quality checkpoint after Gap 4
+### Task 4.3: [VERIFY] Quality checkpoint after Gap 4 [x]
 
 - **Do**: Run hooks tests and validate post-edit hook catches common issues
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/hooks.bats && bats /Users/patrickkavanagh/gpu_kernel/tests/unit/hooks-execution.bats`
