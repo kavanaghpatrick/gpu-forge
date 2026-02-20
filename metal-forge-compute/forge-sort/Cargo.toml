@@ -5,7 +5,6 @@ edition = "2021"
 description = "GPU radix sort for Apple Silicon (Metal 3.2)"
 
 [dependencies]
-forge-primitives = { path = "../forge-primitives" }
 objc2 = "0.6"
 objc2-metal = "0.3"
 objc2-foundation = "0.3"

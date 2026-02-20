@@ -47,7 +47,7 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
   - _Requirements: FR-5, FR-7_
   - _Design: lib.rs Changes_
 
-- [ ] 1.3 Remove forge-primitives dependency from Cargo.toml
+- [x] 1.3 Remove forge-primitives dependency from Cargo.toml
   - **Do**:
     1. Delete line 8 from `forge-sort/Cargo.toml`: `forge-primitives = { path = "../forge-primitives" }`
   - **Files**: `metal-forge-compute/forge-sort/Cargo.toml` (MODIFY)
