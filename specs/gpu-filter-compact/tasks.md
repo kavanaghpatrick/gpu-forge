@@ -125,7 +125,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 - _Requirements: AC-1.1, AC-1.4, FR-5_
 - _Design: Data Flow_
 
-### Task 1.7: [VERIFY] Quality checkpoint: build + test + clippy
+### Task 1.7: [VERIFY] Quality checkpoint: build + test + clippy [x]
 
 - **Do**: Run quality commands, fix any issues
 - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build -p forge-filter && cargo test -p forge-filter && cargo clippy -p forge-filter -- -D warnings`
@@ -136,7 +136,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 
 Focus: Complete the API — all 6 types, all predicates, index output, unordered mode, convenience methods.
 
-### Task 2.1: Add all 6 comparison operators for u32
+### Task 2.1: Add all 6 comparison operators for u32 [x]
 
 - **Do**:
   1. Implement `filter_u32` convenience method if not already done (should exist from 1.5)

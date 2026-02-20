@@ -837,4 +837,98 @@ mod tests {
         println!("test_filter_u32_all_match: GPU={}", result.len());
         assert_eq!(result.len(), 999_999, "expected 999_999 matches");
     }
+
+    #[test]
+    fn test_filter_u32_lt() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Lt(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x < 500_000).copied().collect();
+
+        println!(
+            "test_filter_u32_lt: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_filter_u32_ge() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Ge(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x >= 500_000).copied().collect();
+
+        println!(
+            "test_filter_u32_ge: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_filter_u32_le() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Le(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x <= 500_000).copied().collect();
+
+        println!(
+            "test_filter_u32_le: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_filter_u32_eq() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        // Exactly one match: the value 500_000
+        let pred = Predicate::Eq(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x == 500_000).copied().collect();
+
+        println!(
+            "test_filter_u32_eq: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result.len(), 1, "expected exactly 1 match");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_filter_u32_ne() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        // All except 500_000 → 999_999 matches
+        let pred = Predicate::Ne(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x != 500_000).copied().collect();
+
+        println!(
+            "test_filter_u32_ne: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result.len(), 999_999, "expected 999_999 matches");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
 }
