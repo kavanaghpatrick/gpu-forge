@@ -23,6 +23,11 @@ load ../test_helper/common-setup
   assert_success
 }
 
+@test "SubagentStop event exists" {
+  run jq -e '.hooks.SubagentStop' "${PLUGIN_ROOT}/hooks/hooks.json"
+  assert_success
+}
+
 @test "all hook scripts are executable" {
   for script in "${PLUGIN_ROOT}"/hooks/scripts/*.sh; do
     [ -x "$script" ] || fail "Not executable: $script"

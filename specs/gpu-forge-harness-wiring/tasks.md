@@ -157,7 +157,7 @@ created: 2026-02-20
 - _Requirements: FR-4 (AC-2.1)_
 - _Design: Gap 1: SubagentStop Hook, hooks.json_
 
-### Task 2.3: Add SubagentStop test to hooks.bats
+### Task 2.3: Add SubagentStop test to hooks.bats [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/tests/unit/hooks.bats`
