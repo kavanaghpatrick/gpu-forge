@@ -86,7 +86,7 @@ created: 2026-02-20
 - _Requirements: FR-1, FR-2, FR-3 (AC-1.1 through AC-1.5)_
 - _Design: Gap 8: kb cleanup Subcommand_
 
-### Task 1.2: Add stale investigation check to `kb verify`
+### Task 1.2: Add stale investigation check to `kb verify` [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/scripts/kb`, locate the verify) case

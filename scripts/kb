@@ -341,6 +341,15 @@ case "${1}" in
       echo "OK: All findings have source URLs"
     fi
 
+    # Check 6: Stale investigations (running for >1 hour)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM investigations WHERE status='running' AND started_at < datetime('now', '-1 hours');")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $count investigations running for >1 hour (may be orphaned). Run: kb cleanup --dry-run"
+      issues=$((issues + count))
+    else
+      echo "OK: No stale investigations"
+    fi
+
     echo ""
     if [ "$issues" -gt 0 ]; then
       echo "TOTAL: $issues issue(s) found"
