@@ -70,7 +70,7 @@ created: 2026-02-20
 
 ## Phase 2: Core Infrastructure (Gap 8 + Gap 1)
 
-### Task 1.1: Add `kb cleanup` subcommand
+### Task 1.1: Add `kb cleanup` subcommand [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/scripts/kb`

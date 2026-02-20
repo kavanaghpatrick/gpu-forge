@@ -430,6 +430,52 @@ case "${1}" in
     fi
     ;;
 
+  cleanup)
+    # kb cleanup [--dry-run] [--hours N]
+    dry_run=0
+    hours=1
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dry-run) dry_run=1 ;;
+        --hours) shift; hours="$1" ;;
+      esac
+      shift
+    done
+
+    if [ "$dry_run" -eq 1 ]; then
+      echo "=== Dry Run: Stale Investigations ==="
+      run_sql -header -column "$DB" \
+        "SELECT id, topic, status, started_at,
+                ROUND((julianday('now') - julianday(started_at)) * 24, 1) as hours_running
+         FROM investigations
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours')
+         ORDER BY started_at;"
+      count=$(run_sql "$DB" \
+        "SELECT COUNT(*) FROM investigations
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours');")
+      echo ""
+      echo "Would close: ${count} investigation(s)"
+    else
+      count=$(run_sql "$DB" \
+        "SELECT COUNT(*) FROM investigations
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours');")
+      run_sql "$DB" \
+        "UPDATE investigations
+         SET status='failed',
+             completed_at=datetime('now'),
+             summary='Auto-closed: agent did not complete'
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours');"
+      if [ $? -eq 0 ]; then
+        echo "Closed ${count} stale investigation(s)"
+      fi
+    fi
+    ;;
+
   *)
     echo "GPU Knowledge Base CLI"
     echo ""
@@ -452,6 +498,7 @@ case "${1}" in
     echo "  verify                   Run quality checks on the entire knowledge base"
     echo "  dedup                    Detect duplicate citations and findings"
     echo "  fix-confidence           Downgrade inflated confidence levels"
+    echo "  cleanup [--dry-run] [--hours N]  Close stale investigations (default: >1h)"
     echo ""
     echo "Investigation tracking:"
     echo "  log-start <skill> <topic> [issue#]  Start investigation session"
