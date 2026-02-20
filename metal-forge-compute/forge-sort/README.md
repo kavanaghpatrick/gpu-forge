@@ -41,14 +41,14 @@ GPU wins above ~200K elements. Sweet spot is 4M-16M where data fits in the Syste
 
 | Type | sort (w/ memcpy) | sort_buffer (zero-copy) | argsort | sort_pairs |
 |------|----------------:|------------------------:|--------:|-----------:|
-| **u32** | **2,790 Mk/s** | **4,077 Mk/s** | 1,181 Mk/s | 881 Mk/s |
-| **i32** | 2,184 Mk/s | - | - | - |
-| **f32** | 2,198 Mk/s | - | 1,127 Mk/s | 807 Mk/s |
-| **u64** | 905 Mk/s | - | - | 455 Mk/s |
-| **i64** | 815 Mk/s | - | - | - |
-| **f64** | 825 Mk/s | - | 514 Mk/s | - |
+| **u32** | **2,802 Mk/s** | **4,131 Mk/s** | 1,147 Mk/s | 882 Mk/s |
+| **i32** | 2,208 Mk/s | 3,255 Mk/s | 1,101 Mk/s | 804 Mk/s |
+| **f32** | 2,188 Mk/s | 3,286 Mk/s | 1,118 Mk/s | 800 Mk/s |
+| **u64** | 918 Mk/s | 1,174 Mk/s | 536 Mk/s | 450 Mk/s |
+| **i64** | 811 Mk/s | 1,034 Mk/s | 490 Mk/s | 424 Mk/s |
+| **f64** | 813 Mk/s | 1,025 Mk/s | 503 Mk/s | - |
 
-32-bit types sort at ~2,200-2,800 Mk/s. 64-bit types sort at ~800-900 Mk/s (2x data, ~3x slower due to halved tile size + extra passes). Float types match integer performance when data has uniform bit distribution.
+32-bit types sort at ~2,200-2,800 Mk/s. 64-bit types sort at ~800-900 Mk/s (2x data, ~3x slower due to halved tile size + extra passes). Float types match integer performance with uniform bit distribution. Narrow-range floats (e.g. all values in [-1000, 1000]) are slower due to MSD bucket imbalance.
 
 ### vs other implementations
 

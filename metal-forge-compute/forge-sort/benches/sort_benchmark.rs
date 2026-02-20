@@ -121,22 +121,29 @@ fn bench_pairs<K: Clone, V: Clone, F: FnMut(&mut [K], &mut [V])>(
     (percentile(&times, 50.0), percentile(&times, 5.0), percentile(&times, 95.0))
 }
 
-fn bench_gpu_sort_zerocopy(sorter: &mut GpuSorter, data: &[u32]) -> (f64, f64, f64) {
-    let n = data.len();
-    let mut buf = sorter.alloc_sort_buffer(n);
-    let mut times = Vec::new();
-    for i in 0..(WARMUP + RUNS) {
-        buf.copy_from_slice(data);
-        let start = Instant::now();
-        sorter.sort_buffer(&buf).unwrap();
-        let ms = start.elapsed().as_secs_f64() * 1000.0;
-        if i >= WARMUP {
-            times.push(ms);
+/// Benchmark zero-copy sort_buffer. Allocates buffer, copies data each run,
+/// times only the sort call.
+macro_rules! bench_zerocopy {
+    ($sorter:expr, $data:expr, $sort_method:ident) => {{
+        let n = $data.len();
+        let mut buf = $sorter.alloc_sort_buffer(n);
+        let mut times = Vec::new();
+        for i in 0..(WARMUP + RUNS) {
+            buf.copy_from_slice($data);
+            let start = Instant::now();
+            $sorter.$sort_method(&buf).unwrap();
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            if i >= WARMUP {
+                times.push(ms);
+            }
         }
-        assert!(buf.as_slice().first() <= buf.as_slice().last());
-    }
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    (percentile(&times, 50.0), percentile(&times, 5.0), percentile(&times, 95.0))
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        (percentile(&times, 50.0), percentile(&times, 5.0), percentile(&times, 95.0))
+    }};
+}
+
+fn mk(n: usize, ms: f64) -> f64 {
+    n as f64 / ms / 1e3
 }
 
 fn main() {
@@ -170,9 +177,9 @@ fn main() {
         let (par_p50, _, _) = bench_typed(&data, |d| d.par_sort_unstable());
         let (gpu_p50, _, _) = bench_typed(&data, |d| sorter.sort_u32(d).unwrap());
 
-        let std_mk = n as f64 / std_p50 / 1e3;
-        let par_mk = n as f64 / par_p50 / 1e3;
-        let gpu_mk = n as f64 / gpu_p50 / 1e3;
+        let std_mk = mk(n, std_p50);
+        let par_mk = mk(n, par_p50);
+        let gpu_mk = mk(n, gpu_p50);
 
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>5.1}x {:>5.1}x",
@@ -201,9 +208,9 @@ fn main() {
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
             size_str(n),
-            u32_p50, n as f64 / u32_p50 / 1e3,
-            i32_p50, n as f64 / i32_p50 / 1e3,
-            f32_p50, n as f64 / f32_p50 / 1e3,
+            u32_p50, mk(n, u32_p50),
+            i32_p50, mk(n, i32_p50),
+            f32_p50, mk(n, f32_p50),
         );
     }
 
@@ -227,9 +234,9 @@ fn main() {
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
             size_str(n),
-            u64_p50, n as f64 / u64_p50 / 1e3,
-            i64_p50, n as f64 / i64_p50 / 1e3,
-            f64_p50, n as f64 / f64_p50 / 1e3,
+            u64_p50, mk(n, u64_p50),
+            i64_p50, mk(n, i64_p50),
+            f64_p50, mk(n, f64_p50),
         );
     }
 
@@ -248,8 +255,8 @@ fn main() {
         let (u32_p50, _, _) = bench_typed(&data_u32, |d| sorter.sort_u32(d).unwrap());
         let (u64_p50, _, _) = bench_typed(&data_u64, |d| sorter.sort_u64(d).unwrap());
 
-        let u32_mk = n as f64 / u32_p50 / 1e3;
-        let u64_mk = n as f64 / u64_p50 / 1e3;
+        let u32_mk = mk(n, u32_p50);
+        let u64_mk = mk(n, u64_p50);
 
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>5.2}x",
@@ -258,77 +265,148 @@ fn main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Section 5: Argsort
+    // Section 5: Argsort (all 6 types)
     // ═══════════════════════════════════════════════════════════════════════
     println!("\n  ═══ argsort (returns index permutation) ═══\n");
     println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>12} {:>9}",
-        "Size", "argsort_u32", "Mk/s", "argsort_f32", "Mk/s", "argsort_f64", "Mk/s");
+        "Size", "argsort_u32", "Mk/s", "argsort_i32", "Mk/s", "argsort_f32", "Mk/s");
     println!("  ──────┼────────────────────────┼────────────────────────┼────────────────────────");
 
     for &n in sizes_32 {
         let data_u32 = gen_random_u32(n);
+        let data_i32 = gen_random_i32(n);
         let data_f32 = gen_random_f32(n);
-        let data_f64 = gen_random_f64(n);
 
         let (u32_p50, _, _) = bench_fn(|| { let _ = sorter.argsort_u32(&data_u32).unwrap(); });
+        let (i32_p50, _, _) = bench_fn(|| { let _ = sorter.argsort_i32(&data_i32).unwrap(); });
         let (f32_p50, _, _) = bench_fn(|| { let _ = sorter.argsort_f32(&data_f32).unwrap(); });
+
+        println!(
+            "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
+            size_str(n),
+            u32_p50, mk(n, u32_p50),
+            i32_p50, mk(n, i32_p50),
+            f32_p50, mk(n, f32_p50),
+        );
+    }
+
+    println!();
+    println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>12} {:>9}",
+        "Size", "argsort_u64", "Mk/s", "argsort_i64", "Mk/s", "argsort_f64", "Mk/s");
+    println!("  ──────┼────────────────────────┼────────────────────────┼────────────────────────");
+
+    for &n in sizes_64 {
+        let data_u64 = gen_random_u64(n);
+        let data_i64 = gen_random_i64(n);
+        let data_f64 = gen_random_f64(n);
+
+        let (u64_p50, _, _) = bench_fn(|| { let _ = sorter.argsort_u64(&data_u64).unwrap(); });
+        let (i64_p50, _, _) = bench_fn(|| { let _ = sorter.argsort_i64(&data_i64).unwrap(); });
         let (f64_p50, _, _) = bench_fn(|| { let _ = sorter.argsort_f64(&data_f64).unwrap(); });
 
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
             size_str(n),
-            u32_p50, n as f64 / u32_p50 / 1e3,
-            f32_p50, n as f64 / f32_p50 / 1e3,
-            f64_p50, n as f64 / f64_p50 / 1e3,
+            u64_p50, mk(n, u64_p50),
+            i64_p50, mk(n, i64_p50),
+            f64_p50, mk(n, f64_p50),
         );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Section 6: sort_pairs
+    // Section 6: sort_pairs (all 5 key types)
     // ═══════════════════════════════════════════════════════════════════════
-    println!("\n  ═══ sort_pairs (co-sort values by key order) ═══\n");
+    println!("\n  ═══ sort_pairs (co-sort u32 values by key order) ═══\n");
     println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>12} {:>9}",
-        "Size", "pairs_u32", "Mk/s", "pairs_f32", "Mk/s", "pairs_u64", "Mk/s");
+        "Size", "pairs_u32", "Mk/s", "pairs_i32", "Mk/s", "pairs_f32", "Mk/s");
     println!("  ──────┼────────────────────────┼────────────────────────┼────────────────────────");
 
     for &n in sizes_32 {
-        let keys_u32 = gen_random_u32(n);
         let vals = gen_random_u32(n);
+        let keys_u32 = gen_random_u32(n);
+        let keys_i32 = gen_random_i32(n);
         let keys_f32 = gen_random_f32(n);
-        let keys_u64 = gen_random_u64(n);
 
         let (u32_p50, _, _) = bench_pairs(&keys_u32, &vals, |k, v| sorter.sort_pairs_u32(k, v).unwrap());
+        let (i32_p50, _, _) = bench_pairs(&keys_i32, &vals, |k, v| sorter.sort_pairs_i32(k, v).unwrap());
         let (f32_p50, _, _) = bench_pairs(&keys_f32, &vals, |k, v| sorter.sort_pairs_f32(k, v).unwrap());
-        let (u64_p50, _, _) = bench_pairs(&keys_u64, &vals, |k, v| sorter.sort_pairs_u64(k, v).unwrap());
 
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
             size_str(n),
-            u32_p50, n as f64 / u32_p50 / 1e3,
-            f32_p50, n as f64 / f32_p50 / 1e3,
-            u64_p50, n as f64 / u64_p50 / 1e3,
+            u32_p50, mk(n, u32_p50),
+            i32_p50, mk(n, i32_p50),
+            f32_p50, mk(n, f32_p50),
+        );
+    }
+
+    println!();
+    println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9}",
+        "Size", "pairs_u64", "Mk/s", "pairs_i64", "Mk/s");
+    println!("  ──────┼────────────────────────┼────────────────────────");
+
+    for &n in sizes_64 {
+        let vals = gen_random_u32(n);
+        let keys_u64 = gen_random_u64(n);
+        let keys_i64 = gen_random_i64(n);
+
+        let (u64_p50, _, _) = bench_pairs(&keys_u64, &vals, |k, v| sorter.sort_pairs_u64(k, v).unwrap());
+        let (i64_p50, _, _) = bench_pairs(&keys_i64, &vals, |k, v| sorter.sort_pairs_i64(k, v).unwrap());
+
+        println!(
+            "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
+            size_str(n),
+            u64_p50, mk(n, u64_p50),
+            i64_p50, mk(n, i64_p50),
         );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Section 7: Zero-copy u32 (original benchmark)
+    // Section 7: Zero-copy sort_buffer (all 6 types)
     // ═══════════════════════════════════════════════════════════════════════
-    println!("\n  ═══ Zero-Copy u32 (sort_buffer, no memcpy) ═══\n");
-    println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>7}",
-        "Size", "sort_u32", "Mk/s", "sort_buffer", "Mk/s", "speedup");
-    println!("  ──────┼────────────────────────┼────────────────────────┼────────");
+    println!("\n  ═══ Zero-Copy sort_buffer (no memcpy, all types) ═══\n");
+    println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>12} {:>9}",
+        "Size", "buf_u32", "Mk/s", "buf_i32", "Mk/s", "buf_f32", "Mk/s");
+    println!("  ──────┼────────────────────────┼────────────────────────┼────────────────────────");
 
     for &n in sizes_32 {
-        let data = gen_random_u32(n);
-        let (gpu_p50, _, _) = bench_typed(&data, |d| sorter.sort_u32(d).unwrap());
-        let (zc_p50, _, _) = bench_gpu_sort_zerocopy(&mut sorter, &data);
+        let data_u32 = gen_random_u32(n);
+        let data_i32 = gen_random_i32(n);
+        let data_f32 = gen_random_f32(n);
 
-        let gpu_mk = n as f64 / gpu_p50 / 1e3;
-        let zc_mk = n as f64 / zc_p50 / 1e3;
+        let (u32_p50, _, _) = bench_zerocopy!(sorter, &data_u32, sort_buffer);
+        let (i32_p50, _, _) = bench_zerocopy!(sorter, &data_i32, sort_i32_buffer);
+        let (f32_p50, _, _) = bench_zerocopy!(sorter, &data_f32, sort_f32_buffer);
 
         println!(
-            "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>5.2}x",
-            size_str(n), gpu_p50, gpu_mk, zc_p50, zc_mk, zc_mk / gpu_mk
+            "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
+            size_str(n),
+            u32_p50, mk(n, u32_p50),
+            i32_p50, mk(n, i32_p50),
+            f32_p50, mk(n, f32_p50),
+        );
+    }
+
+    println!();
+    println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>12} {:>9}",
+        "Size", "buf_u64", "Mk/s", "buf_i64", "Mk/s", "buf_f64", "Mk/s");
+    println!("  ──────┼────────────────────────┼────────────────────────┼────────────────────────");
+
+    for &n in sizes_64 {
+        let data_u64 = gen_random_u64(n);
+        let data_i64 = gen_random_i64(n);
+        let data_f64 = gen_random_f64(n);
+
+        let (u64_p50, _, _) = bench_zerocopy!(sorter, &data_u64, sort_u64_buffer);
+        let (i64_p50, _, _) = bench_zerocopy!(sorter, &data_i64, sort_i64_buffer);
+        let (f64_p50, _, _) = bench_zerocopy!(sorter, &data_f64, sort_f64_buffer);
+
+        println!(
+            "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0}",
+            size_str(n),
+            u64_p50, mk(n, u64_p50),
+            i64_p50, mk(n, i64_p50),
+            f64_p50, mk(n, f64_p50),
         );
     }
 
