@@ -485,6 +485,26 @@ case "${1}" in
     fi
     ;;
 
+  backfill-urls)
+    # kb backfill-urls — list findings with missing source_url grouped by source_type
+    echo "=== Findings Missing Source URLs ==="
+    echo ""
+    run_sql -header -column "$DB" \
+      "SELECT source_type, COUNT(*) as count
+       FROM findings
+       WHERE source_url IS NULL OR source_url=''
+       GROUP BY source_type
+       ORDER BY count DESC;"
+    echo ""
+    echo "--- Details ---"
+    run_sql -header -column "$DB" \
+      "SELECT f.id, s.name as skill, f.topic, f.source_type, substr(f.claim,1,60) as claim
+       FROM findings f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE f.source_url IS NULL OR f.source_url=''
+       ORDER BY f.source_type, f.id;"
+    ;;
+
   *)
     echo "GPU Knowledge Base CLI"
     echo ""
@@ -508,6 +528,7 @@ case "${1}" in
     echo "  dedup                    Detect duplicate citations and findings"
     echo "  fix-confidence           Downgrade inflated confidence levels"
     echo "  cleanup [--dry-run] [--hours N]  Close stale investigations (default: >1h)"
+    echo "  backfill-urls                List findings missing source URLs"
     echo ""
     echo "Investigation tracking:"
     echo "  log-start <skill> <topic> [issue#]  Start investigation session"

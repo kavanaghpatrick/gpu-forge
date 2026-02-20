@@ -282,7 +282,7 @@ created: 2026-02-20
 - **Done when**: All hooks tests pass, hook exits 0 on test .metal files
 - **Commit**: `chore(harness): pass quality checkpoint` (only if fixes needed)
 
-### Task 5.1: Add `kb backfill-urls` subcommand (Gap 3)
+### Task 5.1: Add `kb backfill-urls` subcommand (Gap 3) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/scripts/kb`
