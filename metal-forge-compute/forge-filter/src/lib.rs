@@ -751,3 +751,90 @@ impl<T: FilterKey> FilterResult<T> {
         self.values_buf.as_deref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_u32_gt_basic() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Gt(500_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 500_000).copied().collect();
+
+        println!(
+            "test_filter_u32_gt_basic: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    #[test]
+    fn test_filter_u32_gt_16m() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..16_000_000u32).collect();
+        let pred = Predicate::Gt(8_000_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 8_000_000).copied().collect();
+
+        println!(
+            "test_filter_u32_gt_16m: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch at 16M");
+
+        // Spot-check first 100 + last 100 elements (don't compare all for speed)
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+        if result.len() > check_n {
+            assert_eq!(
+                &result[result.len() - check_n..],
+                &cpu_ref[cpu_ref.len() - check_n..],
+                "last {} elements mismatch",
+                check_n
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_u32_empty_result() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        // Max value is 999_999, so Gt(2_000_000) matches nothing
+        let pred = Predicate::Gt(2_000_000u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        println!("test_filter_u32_empty_result: GPU={}", result.len());
+        assert_eq!(result.len(), 0, "expected empty result");
+    }
+
+    #[test]
+    fn test_filter_u32_all_match() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        // Gt(0) matches all except 0 itself → 999_999 matches
+        let pred = Predicate::Gt(0u32);
+
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 failed");
+
+        println!("test_filter_u32_all_match: GPU={}", result.len());
+        assert_eq!(result.len(), 999_999, "expected 999_999 matches");
+    }
+}

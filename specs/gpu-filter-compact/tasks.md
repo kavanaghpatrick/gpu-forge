@@ -110,7 +110,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 - _Requirements: FR-1, FR-5, FR-10, FR-11, FR-12, AC-1.1, AC-7.1_
 - _Design: GpuFilter, Data Flow, PSO Specialization Matrix_
 
-### Task 1.6: POC smoke test — filter u32 > threshold
+### Task 1.6: POC smoke test — filter u32 > threshold [x]
 
 - **Do**:
   1. Add `#[cfg(test)] mod tests` in `src/lib.rs`
