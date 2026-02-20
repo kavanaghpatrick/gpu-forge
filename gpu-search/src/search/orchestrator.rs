@@ -1988,8 +1988,6 @@ fn walk_and_filter(
 // Helper: resolve GPU match to line-level content match
 // ============================================================================
 
-/// Resolve a GPU byte offset to line number, line content, and context.
-///
 // ============================================================================
 // FileCache: single-file content cache for the resolve loop
 // ============================================================================

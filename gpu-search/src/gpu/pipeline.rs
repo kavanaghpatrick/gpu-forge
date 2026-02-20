@@ -16,6 +16,7 @@ use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLLibrary};
 pub const SEARCH_KERNELS: &[&str] = &[
     "content_search_kernel",
     "turbo_search_kernel",
+    "content_search_zerocopy_kernel",
     "batch_search_kernel",
     "path_filter_kernel",
 ];
@@ -154,8 +155,8 @@ mod tests {
 
         let cache = PsoCache::new(&device);
 
-        // All 4 kernels should be cached
-        assert_eq!(cache.len(), 4, "Expected 4 cached PSOs");
+        // All 5 kernels should be cached
+        assert_eq!(cache.len(), 5, "Expected 5 cached PSOs");
         assert!(!cache.is_empty());
 
         // Each kernel should be retrievable
