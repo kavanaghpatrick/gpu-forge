@@ -479,7 +479,38 @@ kernel void sort_inner_fused(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Kernel 5: 32-bit Key Transform — pre/post sort bit manipulation
+// Kernel 5: Index Initializer — fill indices[i] = i for argsort
+//
+// Simple 1D dispatch: 1 thread per element.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void sort_init_indices(
+    device uint*   indices [[buffer(0)]],
+    constant uint& count   [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) indices[gid] = gid;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel 6: Gather Values — rearrange values by sorted index permutation
+//
+// gathered_vals[i] = original_vals[sorted_indices[i]]
+// Simple 1D dispatch: 1 thread per element.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void sort_gather_values(
+    device const uint* sorted_indices [[buffer(0)]],
+    device const uint* original_vals  [[buffer(1)]],
+    device uint*       gathered_vals  [[buffer(2)]],
+    constant uint&     count          [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) gathered_vals[gid] = original_vals[sorted_indices[gid]];
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel 7: 32-bit Key Transform — pre/post sort bit manipulation
 //
 // mode 0: XOR 0x80000000 (i32 sign flip, self-inverse)
 // mode 1: FloatFlip forward (map float order → unsigned order)

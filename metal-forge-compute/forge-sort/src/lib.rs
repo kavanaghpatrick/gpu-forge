@@ -546,6 +546,11 @@ impl GpuSorter {
             );
         }
 
+        // Pre-compile argsort helper PSOs (no function constants needed)
+        for name in &["sort_init_indices", "sort_gather_values"] {
+            pso_cache.get_or_create(&library, name);
+        }
+
         Ok(Self {
             device: ctx.device,
             queue: ctx.queue,
