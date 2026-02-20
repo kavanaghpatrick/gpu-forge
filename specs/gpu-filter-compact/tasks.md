@@ -27,7 +27,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 - _Requirements: NFR-8, NFR-9_
 - _Design: Crate Structure, Build System_
 
-### Task 1.2: Implement FilterKey trait, Predicate enum, FilterParams, FilterError
+### Task 1.2: Implement FilterKey trait, Predicate enum, FilterParams, FilterError [x]
 
 - **Do**:
   1. In `src/lib.rs`, add sealed `FilterKey` trait with `KEY_SIZE`, `IS_64BIT`, `to_bits()` — implement for u32, i32, f32, u64, i64, f64 (exact code in design.md Rust API section)
