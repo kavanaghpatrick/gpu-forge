@@ -49,7 +49,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-1, AC-1.3_
   - _Design: Section 1 — filter_bitmap_scatter_
 
-- [ ] 1.3 Wire bitmap pipeline into Rust dispatch path
+- [x] 1.3 Wire bitmap pipeline into Rust dispatch path
   - **Do**:
     1. Add `buf_bitmap: Option<Retained<...>>` scratch buffer to GpuFilter struct
     2. In `ensure_scratch_buffers`, allocate bitmap buffer: `ceil(n / 32) * 4` bytes (one u32 per 32 elements)

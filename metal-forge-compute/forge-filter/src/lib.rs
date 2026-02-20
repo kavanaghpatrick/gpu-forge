@@ -400,6 +400,8 @@ pub struct GpuFilter {
     buf_output_idx: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     buf_count: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     buf_block_totals: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Bitmap buffer for bitmap-cached ordered pipeline: one u32 per 32 elements.
+    buf_bitmap: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     scratch_capacity: usize, // in elements
 }
 
@@ -461,6 +463,7 @@ impl GpuFilter {
             buf_output_idx: None,
             buf_count: None,
             buf_block_totals: None,
+            buf_bitmap: None,
             scratch_capacity: 0,
         })
     }
@@ -512,6 +515,17 @@ impl GpuFilter {
             let num_blocks = (num_tiles + Self::SCAN_BLOCK_SIZE - 1) / Self::SCAN_BLOCK_SIZE;
             self.buf_block_totals = Some(alloc_buffer(&self.device, num_blocks * 4));
         }
+        // bitmap: one u32 per 32 elements (packed bits for bitmap-cached pipeline).
+        // Must be sized for full tiles (num_tiles * tile_size / 32) since the kernel
+        // writes bitmap words for every simdgroup slot in each tile, even for
+        // out-of-bounds elements (those bits are zero).
+        // Use max of both tile sizes to cover both 32-bit and 64-bit dispatch.
+        let num_tiles_32 = (n + FILTER_TILE_32 as usize - 1) / FILTER_TILE_32 as usize;
+        let num_tiles_64 = (n + FILTER_TILE_64 as usize - 1) / FILTER_TILE_64 as usize;
+        let bitmap_words_32 = num_tiles_32 * (FILTER_TILE_32 as usize / 32);
+        let bitmap_words_64 = num_tiles_64 * (FILTER_TILE_64 as usize / 32);
+        let bitmap_words = std::cmp::max(bitmap_words_32, bitmap_words_64);
+        self.buf_bitmap = Some(alloc_buffer(&self.device, bitmap_words * 4));
 
         self.scratch_capacity = n;
     }
@@ -633,6 +647,8 @@ impl GpuFilter {
     /// Internal: encode and execute the 3-dispatch filter pipeline.
     ///
     /// Returns the number of matching elements.
+    /// Kept as fallback — ordered mode now uses `dispatch_filter_bitmap`.
+    #[allow(dead_code)]
     fn dispatch_filter<T: FilterKey>(
         &mut self,
         input_buf: &ProtocolObject<dyn MTLBuffer>,
@@ -836,6 +852,229 @@ impl GpuFilter {
         Ok(count)
     }
 
+    /// Internal: encode and execute the 3-dispatch bitmap-cached filter pipeline.
+    ///
+    /// Uses bitmap caching to avoid predicate re-evaluation in the scatter pass:
+    /// 1. `filter_bitmap_scan` — evaluate predicate + write bitmap + tile counts
+    /// 2. `filter_scan_partials` — single-TG exclusive scan of tile counts (reused)
+    /// 3. `filter_bitmap_scatter` — read bitmap + scatter matching elements
+    ///
+    /// Returns the number of matching elements.
+    fn dispatch_filter_bitmap<T: FilterKey>(
+        &mut self,
+        input_buf: &ProtocolObject<dyn MTLBuffer>,
+        n: usize,
+        pred: &Predicate<T>,
+        output_vals: bool,
+        output_idx: bool,
+    ) -> Result<usize, FilterError> {
+        if n == 0 {
+            return Ok(0);
+        }
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+
+        let (lo_bits, hi_bits) = pred.to_bits();
+        let pred_type = pred.pred_type_id();
+        let data_type = T::DATA_TYPE_ID;
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        // Zero count buffer
+        unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: lo_bits as u32,
+                lo_hi: (lo_bits >> 32) as u32,
+                hi_lo: hi_bits as u32,
+                hi_hi: (hi_bits >> 32) as u32,
+                _pad: [0, 0],
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            // buffer(0)=src, buffer(1)=bitmap, buffer(2)=partials, buffer(3)=validity, buffer(4)=params
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(true)), // IS_64BIT
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 2);
+                    // buffer(3) = validity — not used yet, bind bitmap as placeholder
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+
+            // Dispatch 2: scan partials (reused)
+            self.encode_scan_partials(&enc, num_tiles);
+
+            // Dispatch 3: filter_bitmap_scatter
+            // buffer(0)=src, buffer(1)=bitmap, buffer(2)=out_vals, buffer(3)=out_idx, buffer(4)=partials, buffer(5)=params
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scatter",
+                    &[
+                        (1, FnConstant::Bool(true)), // IS_64BIT
+                        (2, FnConstant::Bool(output_idx)),
+                        (3, FnConstant::Bool(output_vals)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 4);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        5,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: lo_bits as u32,
+                hi_bits: hi_bits as u32,
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            // buffer(0)=src, buffer(1)=bitmap, buffer(2)=partials, buffer(3)=validity, buffer(4)=params
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(false)), // IS_64BIT
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 2);
+                    // buffer(3) = validity — not used yet, bind bitmap as placeholder
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+
+            // Dispatch 2: scan partials (reused)
+            self.encode_scan_partials(&enc, num_tiles);
+
+            // Dispatch 3: filter_bitmap_scatter
+            // buffer(0)=src, buffer(1)=bitmap, buffer(2)=out_vals, buffer(3)=out_idx, buffer(4)=partials, buffer(5)=params
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scatter",
+                    &[
+                        (1, FnConstant::Bool(false)), // IS_64BIT
+                        (2, FnConstant::Bool(output_idx)),
+                        (3, FnConstant::Bool(output_vals)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 4);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        5,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read count from count_buf[0]
+        let buf_count = self.buf_count.as_ref().unwrap();
+        let count = unsafe { *(buf_count.contents().as_ptr() as *const u32) } as usize;
+        Ok(count)
+    }
+
     /// Filter a [`FilterBuffer`], returning matching values.
     ///
     /// Executes the 3-dispatch ordered pipeline. Output preserves input order.
@@ -874,7 +1113,9 @@ impl GpuFilter {
         let simplified = pred.clone().simplify();
         if simplified.is_simple() {
             self.ensure_scratch_buffers(n, T::KEY_SIZE);
-            let count = self.dispatch_filter(&buf.buffer, n, &simplified, true, false)?;
+            // Use bitmap-cached pipeline for ordered mode (avoids predicate re-eval in scatter)
+            let count =
+                self.dispatch_filter_bitmap(&buf.buffer, n, &simplified, true, false)?;
             return Ok(FilterResult {
                 count,
                 values_buf: self.buf_output.clone(),
@@ -951,6 +1192,8 @@ impl GpuFilter {
         // Subsequent passes: filter from the previous output.
         // We need a temp buffer to hold intermediate results since dispatch_filter
         // reads from input and writes to buf_output.
+        // Note: cascade uses dispatch_filter (non-bitmap) since each pass already
+        // re-reads all data; bitmap caching has no benefit for multi-pass AND.
         let temp_buf = alloc_buffer(&self.device, n * T::KEY_SIZE);
         let mut current_count = count;
 
@@ -999,7 +1242,7 @@ impl GpuFilter {
         }
 
         self.ensure_scratch_buffers(n, T::KEY_SIZE);
-        let count = self.dispatch_filter(&buf.buffer, n, pred, false, true)?;
+        let count = self.dispatch_filter_bitmap(&buf.buffer, n, pred, false, true)?;
 
         Ok(FilterResult {
             count,
@@ -1030,7 +1273,7 @@ impl GpuFilter {
         }
 
         self.ensure_scratch_buffers(n, T::KEY_SIZE);
-        let count = self.dispatch_filter(&buf.buffer, n, pred, true, true)?;
+        let count = self.dispatch_filter_bitmap(&buf.buffer, n, pred, true, true)?;
 
         Ok(FilterResult {
             count,
