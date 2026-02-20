@@ -400,7 +400,7 @@ created: 2026-02-20
 - _Requirements: FR-7 (AC-3.3)_
 - _Design: Gap 2, verify Check 7_
 
-### Task 7.3: [VERIFY] Quality checkpoint after Gap 5 + Gap 2
+### Task 7.3: [VERIFY] Quality checkpoint after Gap 5 + Gap 2 [x]
 
 - **Do**: Run full unit test suite plus verify command
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/ && /Users/patrickkavanagh/gpu_kernel/scripts/kb verify 2>&1 | tail -5`
