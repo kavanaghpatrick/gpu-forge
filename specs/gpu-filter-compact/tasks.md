@@ -279,7 +279,7 @@ Focus: Comprehensive correctness tests, property-based tests, edge cases.
 - _Requirements: FR-17, AC-1.4, AC-4.3_
 - _Design: Edge Cases_
 
-### Task 3.3: Large input tests (16M, 64M)
+### Task 3.3: Large input tests (16M, 64M) [x]
 
 - **Do**:
   1. `test_filter_u32_16m`: 16M random u32, Gt(threshold at 50%), verify count matches CPU reference, spot-check first/last 1000 elements

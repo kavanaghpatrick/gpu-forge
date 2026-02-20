@@ -320,6 +320,37 @@ kernel void filter_scan_partials(
 }
 
 // =================================================================
+// Kernel 2b: filter_add_block_offsets
+//
+// For hierarchical scan: adds a block-level prefix offset to each
+// partial within a block. Each threadgroup handles one block of
+// up to SCAN_BLOCK_SIZE (4096) partials.
+//
+// Dispatch: num_blocks threadgroups x 256 threads
+// =================================================================
+
+#define SCAN_BLOCK_SIZE 4096u  // FILTER_THREADS * SCAN_ELEMS_PER_THREAD
+
+kernel void filter_add_block_offsets(
+    device uint*        partials       [[buffer(0)]],
+    device const uint*  block_offsets  [[buffer(1)]],
+    constant uint&      total_parts    [[buffer(2)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint tg_idx    [[threadgroup_position_in_grid]]
+)
+{
+    uint block_base = tg_idx * SCAN_BLOCK_SIZE;
+    uint offset = block_offsets[tg_idx];
+
+    for (uint i = 0u; i < SCAN_ELEMS_PER_THREAD; i++) {
+        uint idx = block_base + lid * SCAN_ELEMS_PER_THREAD + i;
+        if (idx < total_parts) {
+            partials[idx] += offset;
+        }
+    }
+}
+
+// =================================================================
 // Kernel 3: filter_scatter
 //
 // Re-evaluate predicate, recompute local scan, read global prefix

@@ -352,6 +352,7 @@ pub struct GpuFilter {
     buf_output: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     buf_output_idx: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     buf_count: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    buf_block_totals: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     scratch_capacity: usize, // in elements
 }
 
@@ -412,6 +413,7 @@ impl GpuFilter {
             buf_output: None,
             buf_output_idx: None,
             buf_count: None,
+            buf_block_totals: None,
             scratch_capacity: 0,
         })
     }
@@ -428,6 +430,10 @@ impl GpuFilter {
             _marker: PhantomData,
         }
     }
+
+    /// Maximum number of partials handled by a single scan_partials dispatch.
+    /// 256 threads x 16 elements/thread = 4096.
+    const SCAN_BLOCK_SIZE: usize = 4096;
 
     /// Ensure scratch buffers are large enough for `n` elements of size `elem_size`.
     /// Grow-only: never shrinks. Reused across calls.
@@ -453,8 +459,128 @@ impl GpuFilter {
         if self.buf_count.is_none() {
             self.buf_count = Some(alloc_buffer(&self.device, 4));
         }
+        // block_totals: one u32 per block for hierarchical scan
+        // max blocks = ceil(num_tiles / 4096), always small
+        if num_tiles > Self::SCAN_BLOCK_SIZE {
+            let num_blocks = (num_tiles + Self::SCAN_BLOCK_SIZE - 1) / Self::SCAN_BLOCK_SIZE;
+            self.buf_block_totals = Some(alloc_buffer(&self.device, num_blocks * 4));
+        }
 
         self.scratch_capacity = n;
+    }
+
+    /// Internal: encode the scan of partials into the compute encoder.
+    ///
+    /// For num_tiles <= 4096: single scan_partials dispatch.
+    /// For num_tiles > 4096: hierarchical scan (block scans + block prefix scan + fixup).
+    /// After this method returns, partials[] contains global exclusive prefix sums
+    /// and count_out[0] contains the grand total.
+    fn encode_scan_partials(
+        &mut self,
+        enc: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        num_tiles: usize,
+    ) {
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let one_tg_grid = MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+
+        let buf_partials = self.buf_partials.as_ref().unwrap();
+        let buf_count = self.buf_count.as_ref().unwrap();
+
+        if num_tiles <= Self::SCAN_BLOCK_SIZE {
+            // Simple single-dispatch scan
+            let num_tiles_u32 = num_tiles as u32;
+            let pso = self
+                .pso_cache
+                .get_or_create(&self.library, "filter_scan_partials");
+            enc.setComputePipelineState(pso);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 0);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&num_tiles_u32 as *const u32 as *mut _).unwrap(),
+                    4,
+                    1,
+                );
+                enc.setBuffer_offset_atIndex(Some(buf_count), 0, 2);
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+        } else {
+            // Hierarchical scan: split partials into blocks of SCAN_BLOCK_SIZE
+            let num_blocks = (num_tiles + Self::SCAN_BLOCK_SIZE - 1) / Self::SCAN_BLOCK_SIZE;
+            let buf_block_totals = self.buf_block_totals.as_ref().unwrap();
+
+            let pso_scan = self
+                .pso_cache
+                .get_or_create(&self.library, "filter_scan_partials");
+
+            // Step 1: Scan each block independently, writing block total to block_totals[b]
+            for b in 0..num_blocks {
+                let block_start = b * Self::SCAN_BLOCK_SIZE;
+                let block_count =
+                    std::cmp::min(Self::SCAN_BLOCK_SIZE, num_tiles - block_start) as u32;
+                let byte_offset = block_start * 4; // each partial is u32 = 4 bytes
+
+                enc.setComputePipelineState(pso_scan);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), byte_offset, 0);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&block_count as *const u32 as *mut _).unwrap(),
+                        4,
+                        1,
+                    );
+                    // Write this block's total to block_totals[b]
+                    enc.setBuffer_offset_atIndex(Some(buf_block_totals), b * 4, 2);
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+            }
+
+            // Step 2: Scan the block totals (always fits in single dispatch)
+            let num_blocks_u32 = num_blocks as u32;
+            enc.setComputePipelineState(pso_scan);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf_block_totals), 0, 0);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&num_blocks_u32 as *const u32 as *mut _).unwrap(),
+                    4,
+                    1,
+                );
+                enc.setBuffer_offset_atIndex(Some(buf_count), 0, 2);
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+            // Step 3: Add block prefixes to each block's partials (skip block 0, its offset is 0)
+            // We use the filter_add_block_offsets kernel for blocks 1..num_blocks
+            if num_blocks > 1 {
+                let pso_fixup = self
+                    .pso_cache
+                    .get_or_create(&self.library, "filter_add_block_offsets");
+                let total_parts_u32 = num_tiles as u32;
+                enc.setComputePipelineState(pso_fixup);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_block_totals), 0, 1);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&total_parts_u32 as *const u32 as *mut _).unwrap(),
+                        4,
+                        2,
+                    );
+                }
+                // Dispatch num_blocks TGs (one per block, each handles SCAN_BLOCK_SIZE partials)
+                let fixup_grid = MTLSize {
+                    width: num_blocks,
+                    height: 1,
+                    depth: 1,
+                };
+                enc.dispatchThreadgroups_threadsPerThreadgroup(fixup_grid, tg_size);
+            }
+        }
     }
 
     /// Internal: encode and execute the 3-dispatch filter pipeline.
@@ -493,19 +619,10 @@ impl GpuFilter {
             height: 1,
             depth: 1,
         };
-        let one_tg_grid = MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        };
-
-        let buf_partials = self.buf_partials.as_ref().unwrap();
-        let buf_output = self.buf_output.as_ref().unwrap();
-        let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
-        let buf_count = self.buf_count.as_ref().unwrap();
 
         // Zero count buffer
         unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
             std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
         }
 
@@ -530,69 +647,63 @@ impl GpuFilter {
             };
 
             // Dispatch 1: filter_predicate_scan
-            let pso = self.pso_cache.get_or_create_specialized(
-                &self.library,
-                "filter_predicate_scan",
-                &[
-                    (0, FnConstant::U32(pred_type)),
-                    (1, FnConstant::Bool(true)),
-                    (4, FnConstant::U32(data_type)),
-                ],
-            );
-            enc.setComputePipelineState(pso);
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
-                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 1);
-                enc.setBytes_length_atIndex(
-                    NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
-                    std::mem::size_of::<FilterParams64>(),
-                    2,
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_predicate_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(true)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
                 );
+                enc.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 1);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        2,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
             }
-            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
 
-            // Dispatch 2: filter_scan_partials
-            let num_tiles_u32 = num_tiles as u32;
-            let pso = self
-                .pso_cache
-                .get_or_create(&self.library, "filter_scan_partials");
-            enc.setComputePipelineState(pso);
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 0);
-                enc.setBytes_length_atIndex(
-                    NonNull::new(&num_tiles_u32 as *const u32 as *mut _).unwrap(),
-                    4,
-                    1,
-                );
-                enc.setBuffer_offset_atIndex(Some(buf_count), 0, 2);
-            }
-            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+            // Dispatch 2: scan partials (simple or hierarchical depending on num_tiles)
+            self.encode_scan_partials(&enc, num_tiles);
 
             // Dispatch 3: filter_scatter
-            let pso = self.pso_cache.get_or_create_specialized(
-                &self.library,
-                "filter_scatter",
-                &[
-                    (0, FnConstant::U32(pred_type)),
-                    (1, FnConstant::Bool(true)),
-                    (2, FnConstant::Bool(output_idx)),
-                    (3, FnConstant::Bool(output_vals)),
-                    (4, FnConstant::U32(data_type)),
-                ],
-            );
-            enc.setComputePipelineState(pso);
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
-                enc.setBuffer_offset_atIndex(Some(buf_output), 0, 1);
-                enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 2);
-                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 3);
-                enc.setBytes_length_atIndex(
-                    NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
-                    std::mem::size_of::<FilterParams64>(),
-                    4,
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_scatter",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(true)),
+                        (2, FnConstant::Bool(output_idx)),
+                        (3, FnConstant::Bool(output_vals)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
                 );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_output), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
             }
-            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
         } else {
             let params = FilterParams {
                 element_count: n as u32,
@@ -602,69 +713,63 @@ impl GpuFilter {
             };
 
             // Dispatch 1: filter_predicate_scan
-            let pso = self.pso_cache.get_or_create_specialized(
-                &self.library,
-                "filter_predicate_scan",
-                &[
-                    (0, FnConstant::U32(pred_type)),
-                    (1, FnConstant::Bool(false)),
-                    (4, FnConstant::U32(data_type)),
-                ],
-            );
-            enc.setComputePipelineState(pso);
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
-                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 1);
-                enc.setBytes_length_atIndex(
-                    NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
-                    std::mem::size_of::<FilterParams>(),
-                    2,
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_predicate_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(false)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
                 );
+                enc.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 1);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        2,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
             }
-            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
 
-            // Dispatch 2: filter_scan_partials
-            let num_tiles_u32 = num_tiles as u32;
-            let pso = self
-                .pso_cache
-                .get_or_create(&self.library, "filter_scan_partials");
-            enc.setComputePipelineState(pso);
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 0);
-                enc.setBytes_length_atIndex(
-                    NonNull::new(&num_tiles_u32 as *const u32 as *mut _).unwrap(),
-                    4,
-                    1,
-                );
-                enc.setBuffer_offset_atIndex(Some(buf_count), 0, 2);
-            }
-            enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+            // Dispatch 2: scan partials (simple or hierarchical depending on num_tiles)
+            self.encode_scan_partials(&enc, num_tiles);
 
             // Dispatch 3: filter_scatter
-            let pso = self.pso_cache.get_or_create_specialized(
-                &self.library,
-                "filter_scatter",
-                &[
-                    (0, FnConstant::U32(pred_type)),
-                    (1, FnConstant::Bool(false)),
-                    (2, FnConstant::Bool(output_idx)),
-                    (3, FnConstant::Bool(output_vals)),
-                    (4, FnConstant::U32(data_type)),
-                ],
-            );
-            enc.setComputePipelineState(pso);
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
-                enc.setBuffer_offset_atIndex(Some(buf_output), 0, 1);
-                enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 2);
-                enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 3);
-                enc.setBytes_length_atIndex(
-                    NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
-                    std::mem::size_of::<FilterParams>(),
-                    4,
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_scatter",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(false)),
+                        (2, FnConstant::Bool(output_idx)),
+                        (3, FnConstant::Bool(output_vals)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
                 );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_output), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
             }
-            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
         }
 
         enc.endEncoding();
@@ -679,6 +784,7 @@ impl GpuFilter {
         }
 
         // Read count from count_buf[0]
+        let buf_count = self.buf_count.as_ref().unwrap();
         let count = unsafe { *(buf_count.contents().as_ptr() as *const u32) } as usize;
         Ok(count)
     }
@@ -2641,5 +2747,149 @@ mod tests {
         // Verify result to_vec also works
         let vec_result = result.to_vec();
         assert_eq!(vec_result, cpu_ref, "to_vec mismatch");
+    }
+
+    // ===================================================================
+    // Large input tests (Task 3.3)
+    // ===================================================================
+    //
+    // Tests at 16M and 64M elements with timing info.
+    // 64M u32 (15625 tiles) and 16M u64 (7813 tiles) validate hierarchical scan.
+
+    use std::time::Instant;
+
+    #[test]
+    fn test_filter_u32_16m() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 16_000_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(123);
+        let data: Vec<u32> = (0..n).map(|_| rng.gen::<u32>()).collect();
+
+        // ~50% selectivity: threshold at median
+        let mut sorted = data.clone();
+        sorted.sort();
+        let threshold = sorted[n / 2];
+
+        let pred = Predicate::Gt(threshold);
+
+        let t0 = Instant::now();
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 16M failed");
+        let gpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let t1 = Instant::now();
+        let cpu_count = data.iter().filter(|&&x| x > threshold).count();
+        let cpu_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+        println!(
+            "test_filter_u32_16m: GPU count={}, CPU count={}, GPU={:.2}ms, CPU={:.2}ms",
+            result.len(), cpu_count, gpu_ms, cpu_ms
+        );
+
+        assert_eq!(result.len(), cpu_count, "u32 16M count mismatch");
+
+        // Spot-check first and last 1000 elements
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > threshold).copied().collect();
+        let check_n = 1000.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "u32 16M first {} elements mismatch",
+            check_n
+        );
+        if result.len() > check_n {
+            assert_eq!(
+                &result[result.len() - check_n..],
+                &cpu_ref[cpu_ref.len() - check_n..],
+                "u32 16M last {} elements mismatch",
+                check_n
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_u32_64m() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 64_000_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(456);
+        let data: Vec<u32> = (0..n).map(|_| rng.gen::<u32>()).collect();
+
+        // ~50% selectivity: use u32::MAX / 2 as approximate median for random data
+        let threshold = u32::MAX / 2;
+        let pred = Predicate::Gt(threshold);
+
+        let t0 = Instant::now();
+        let result = filter.filter_u32(&data, &pred).expect("filter_u32 64M failed");
+        let gpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let t1 = Instant::now();
+        let cpu_count = data.iter().filter(|&&x| x > threshold).count();
+        let cpu_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+        println!(
+            "test_filter_u32_64m: GPU count={}, CPU count={}, GPU={:.2}ms, CPU={:.2}ms",
+            result.len(), cpu_count, gpu_ms, cpu_ms
+        );
+        println!(
+            "  num_tiles={}, hierarchical scan required (>4096 tiles)",
+            (n + 4095) / 4096
+        );
+
+        assert_eq!(result.len(), cpu_count, "u32 64M count mismatch");
+    }
+
+    #[test]
+    fn test_filter_f32_16m() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 16_000_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(789);
+        let data: Vec<f32> = (0..n).map(|_| rng.gen::<f32>()).collect();
+
+        let pred = Predicate::Lt(0.5f32);
+
+        let t0 = Instant::now();
+        let result = filter.filter_f32(&data, &pred).expect("filter_f32 16M failed");
+        let gpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let t1 = Instant::now();
+        let cpu_count = data.iter().filter(|&&x| x < 0.5).count();
+        let cpu_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+        println!(
+            "test_filter_f32_16m: GPU count={}, CPU count={}, GPU={:.2}ms, CPU={:.2}ms",
+            result.len(), cpu_count, gpu_ms, cpu_ms
+        );
+
+        assert_eq!(result.len(), cpu_count, "f32 16M count mismatch");
+    }
+
+    #[test]
+    fn test_filter_u64_16m() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 16_000_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(101);
+        let data: Vec<u64> = (0..n).map(|_| rng.gen::<u64>()).collect();
+
+        // ~50% selectivity: use u64::MAX / 2 as approximate median for random data
+        let threshold = u64::MAX / 2;
+        let pred = Predicate::Gt(threshold);
+
+        let t0 = Instant::now();
+        let result = filter.filter_u64(&data, &pred).expect("filter_u64 16M failed");
+        let gpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let t1 = Instant::now();
+        let cpu_count = data.iter().filter(|&&x| x > threshold).count();
+        let cpu_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+        println!(
+            "test_filter_u64_16m: GPU count={}, CPU count={}, GPU={:.2}ms, CPU={:.2}ms",
+            result.len(), cpu_count, gpu_ms, cpu_ms
+        );
+        println!(
+            "  num_tiles={}, hierarchical scan required (>4096 tiles for 64-bit)",
+            (n + 2047) / 2048
+        );
+
+        assert_eq!(result.len(), cpu_count, "u64 16M count mismatch");
     }
 }
