@@ -612,6 +612,69 @@ impl GpuFilter {
         })
     }
 
+    /// Filter a [`FilterBuffer`], returning only the indices of matching elements.
+    ///
+    /// Executes the 3-dispatch ordered pipeline. Output indices are in ascending order.
+    /// No values are copied — only the u32 indices of matching elements.
+    pub fn filter_indices<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        pred: &Predicate<T>,
+    ) -> Result<FilterResult<T>, FilterError> {
+        let n = buf.len();
+        if n == 0 {
+            return Ok(FilterResult {
+                count: 0,
+                values_buf: None,
+                indices_buf: None,
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+        let count = self.dispatch_filter(&buf.buffer, n, pred, false, true)?;
+
+        Ok(FilterResult {
+            count,
+            values_buf: None,
+            indices_buf: self.buf_output_idx.clone(),
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Filter a [`FilterBuffer`], returning both matching values and their indices.
+    ///
+    /// Executes the 3-dispatch ordered pipeline. Both values and indices preserve input order.
+    pub fn filter_with_indices<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        pred: &Predicate<T>,
+    ) -> Result<FilterResult<T>, FilterError> {
+        let n = buf.len();
+        if n == 0 {
+            return Ok(FilterResult {
+                count: 0,
+                values_buf: None,
+                indices_buf: None,
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+        let count = self.dispatch_filter(&buf.buffer, n, pred, true, true)?;
+
+        Ok(FilterResult {
+            count,
+            values_buf: self.buf_output.clone(),
+            indices_buf: self.buf_output_idx.clone(),
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
+
     /// Filter a slice of `u32`, returning matching values as a `Vec<u32>`.
     ///
     /// Convenience method that copies data to GPU, filters, and copies results back.
@@ -1386,5 +1449,146 @@ mod tests {
         let nan_count = result_ne.iter().filter(|x| x.is_nan()).count();
         println!("NaN count in Ne result: {}", nan_count);
         assert_eq!(nan_count, 1000, "expected 1000 NaN values in Ne output");
+    }
+
+    // --- Index output mode tests ---
+
+    #[test]
+    fn test_filter_indices_ascending() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Gt(500_000u32);
+
+        let mut buf = filter.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+        let result = filter
+            .filter_indices(&buf, &pred)
+            .expect("filter_indices failed");
+
+        let indices = result.indices().expect("indices() should be Some");
+        println!(
+            "test_filter_indices_ascending: count={}, indices len={}",
+            result.len(),
+            indices.len()
+        );
+
+        // Verify count matches CPU reference
+        let cpu_count = data.iter().filter(|&&x| x > 500_000).count();
+        assert_eq!(result.len(), cpu_count, "count mismatch");
+
+        // Verify indices are sorted ascending (ordered mode)
+        for i in 1..indices.len() {
+            assert!(
+                indices[i] > indices[i - 1],
+                "indices not ascending at pos {}: {} >= {}",
+                i,
+                indices[i - 1],
+                indices[i]
+            );
+        }
+
+        // Verify values_buf is None (index-only mode)
+        assert!(
+            result.as_slice().is_empty(),
+            "as_slice should be empty in index-only mode"
+        );
+
+        // Verify first and last indices make sense
+        assert_eq!(indices[0], 500_001, "first matching index should be 500_001");
+        assert_eq!(
+            indices[indices.len() - 1],
+            999_999,
+            "last matching index should be 999_999"
+        );
+    }
+
+    #[test]
+    fn test_filter_with_indices() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Gt(500_000u32);
+
+        let mut buf = filter.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+        let result = filter
+            .filter_with_indices(&buf, &pred)
+            .expect("filter_with_indices failed");
+
+        let values = result.as_slice();
+        let indices = result.indices().expect("indices() should be Some");
+
+        println!(
+            "test_filter_with_indices: values={}, indices={}",
+            values.len(),
+            indices.len()
+        );
+
+        // Both should have the same length
+        assert_eq!(
+            values.len(),
+            indices.len(),
+            "values and indices must have same length"
+        );
+
+        // Verify count matches CPU reference
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 500_000).copied().collect();
+        assert_eq!(result.len(), cpu_ref.len(), "count mismatch");
+
+        // Verify values match CPU reference
+        assert_eq!(values, cpu_ref.as_slice(), "values mismatch");
+
+        // Verify indices are ascending
+        for i in 1..indices.len() {
+            assert!(
+                indices[i] > indices[i - 1],
+                "indices not ascending at pos {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_indices_match_values() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        // Use non-sequential data to make this test meaningful
+        let data: Vec<u32> = (0..1_000_000u32).map(|i| i * 3 + 7).collect();
+        let pred = Predicate::Gt(1_500_000u32);
+
+        let mut buf = filter.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+
+        // Get both values and indices
+        let result = filter
+            .filter_with_indices(&buf, &pred)
+            .expect("filter_with_indices failed");
+
+        let values = result.as_slice();
+        let indices = result.indices().expect("indices() should be Some");
+
+        println!(
+            "test_filter_indices_match_values: count={}",
+            result.len()
+        );
+        assert!(result.len() > 0, "expected some matches");
+
+        // Gather original data at the reported indices and compare to values output
+        for (i, &idx) in indices.iter().enumerate() {
+            let original_val = data[idx as usize];
+            assert_eq!(
+                values[i], original_val,
+                "mismatch at result pos {}: value={} but data[{}]={}",
+                i, values[i], idx, original_val
+            );
+        }
+
+        // Also verify the indices point to elements that actually match the predicate
+        for &idx in indices.iter() {
+            assert!(
+                data[idx as usize] > 1_500_000,
+                "index {} points to value {} which doesn't match Gt(1_500_000)",
+                idx,
+                data[idx as usize]
+            );
+        }
     }
 }

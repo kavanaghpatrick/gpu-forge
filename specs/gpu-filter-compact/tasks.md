@@ -177,14 +177,14 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 - _Requirements: FR-3, AC-2.1 through AC-2.4_
 - _Design: Predicate Evaluation (pred_type 6)_
 
-### Task 2.4: [VERIFY] Quality checkpoint: build + all tests + clippy
+### Task 2.4: [VERIFY] Quality checkpoint: build + all tests + clippy [x]
 
 - **Do**: Run quality commands, fix any issues
 - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build -p forge-filter --release && cargo test -p forge-filter && cargo clippy -p forge-filter -- -D warnings`
 - **Done when**: All commands exit 0
 - **Commit**: `chore(forge-filter): pass quality checkpoint` (only if fixes needed)
 
-### Task 2.5: Index output mode (filter_indices, filter_with_indices)
+### Task 2.5: Index output mode (filter_indices, filter_with_indices) [x]
 
 - **Do**:
   1. Implement `pub fn filter_indices<T>(&mut self, buf: &FilterBuffer<T>, pred: &Predicate<T>) -> Result<FilterResult<T>>` — calls dispatch_filter with output_vals=false, output_idx=true
