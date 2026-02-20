@@ -324,7 +324,7 @@ impl GpuFilter {
         } else {
             FILTER_TILE_32 as usize
         };
-        let num_tiles = n.div_ceil(tile_size);
+        let num_tiles = (n + tile_size - 1) / tile_size;
 
         // partials: one u32 per tile
         self.buf_partials = Some(alloc_buffer(&self.device, num_tiles * 4));
@@ -360,7 +360,7 @@ impl GpuFilter {
         } else {
             FILTER_TILE_32 as usize
         };
-        let num_tiles = n.div_ceil(tile_size);
+        let num_tiles = (n + tile_size - 1) / tile_size;
 
         // Build params
         let (lo_bits, hi_bits) = pred.to_bits();
@@ -574,7 +574,7 @@ impl GpuFilter {
                 count: 0,
                 values_buf: None,
                 indices_buf: None,
-                capacity: 0,
+                _capacity: 0,
                 _marker: PhantomData,
             });
         }
@@ -586,7 +586,7 @@ impl GpuFilter {
             count,
             values_buf: self.buf_output.clone(),
             indices_buf: None,
-            capacity: n,
+            _capacity: n,
             _marker: PhantomData,
         })
     }
@@ -703,7 +703,7 @@ pub struct FilterResult<T: FilterKey> {
     count: usize,
     values_buf: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     indices_buf: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    capacity: usize,
+    _capacity: usize,
     _marker: PhantomData<T>,
 }
 
