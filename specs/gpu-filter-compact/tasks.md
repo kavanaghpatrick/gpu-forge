@@ -319,7 +319,7 @@ Focus: Doc comments, benchmarks, README, publish preparation.
 - **Commit**: `docs(forge-filter): complete rustdoc for all public items`
 - _Requirements: NFR-10, FR-15, NFR-7_
 
-### Task 4.2: Criterion benchmarks
+### Task 4.2: Criterion benchmarks [x]
 
 - **Do**:
   1. Create `metal-forge-compute/forge-filter/benches/filter_benchmark.rs`
