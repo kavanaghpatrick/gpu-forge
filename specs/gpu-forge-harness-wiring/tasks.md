@@ -226,7 +226,7 @@ created: 2026-02-20
 - _Requirements: FR-15 (AC-7.3, AC-7.4)_
 - _Design: Gap 6, commands.bats updates_
 
-### Task 3.3: [VERIFY] Quality checkpoint after Gap 6
+### Task 3.3: [VERIFY] Quality checkpoint after Gap 6 [x]
 
 - **Do**: Run commands and hooks unit tests to verify advise wiring
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/commands.bats && bats /Users/patrickkavanagh/gpu_kernel/tests/unit/hooks.bats`
