@@ -45,7 +45,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 - _Requirements: FR-1, FR-2, FR-3_
 - _Design: FilterKey Trait, Predicate Enum, FilterParams Struct_
 
-### Task 1.3: Write filter.metal — all 4 GPU kernels
+### Task 1.3: Write filter.metal — all 4 GPU kernels [x]
 
 - **Do**:
   1. Write `shaders/filter.metal` with defines: FILTER_THREADS=256, FILTER_ELEMS_32=16, FILTER_ELEMS_64=8, FILTER_TILE_32=4096, FILTER_TILE_64=2048, FILTER_NUM_SGS=8, SCAN_ELEMS_PER_THREAD=16
