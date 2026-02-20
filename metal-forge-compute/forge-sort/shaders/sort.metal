@@ -853,7 +853,10 @@ kernel void sort_transform_64(
     if (gid >= count) return;
     ulong v = data[gid];
 
-    if (transform_mode == 1u) {
+    if (transform_mode == 0u) {
+        // i64: flip sign bit (self-inverse)
+        v ^= 0x8000000000000000UL;
+    } else if (transform_mode == 1u) {
         // FloatFlip64 forward: negative (sign set) → flip all; positive → flip sign only
         v = (v & 0x8000000000000000UL) ? ~v : (v ^ 0x8000000000000000UL);
     } else if (transform_mode == 2u) {

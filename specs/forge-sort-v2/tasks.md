@@ -448,13 +448,13 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
   - _Requirements: AC-5.1, AC-5.4, AC-5.5, FR-10, FR-11_
   - _Design: 64-bit Sort Pipeline, PSO Compilation Strategy_
 
-- [ ] V5 [VERIFY] Quality checkpoint: 64-bit pipeline
+- [x] V5 [VERIFY] Quality checkpoint: 64-bit pipeline
   - **Do**: Verify 64-bit pipeline + all existing 32-bit tests pass
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | grep -E "test result|FAILED"`
   - **Done when**: All tests pass
   - **Commit**: `chore(forge-sort): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 3.4 Implement sort_i64, sort_f64 and buffer variants
+- [x] 3.4 Implement sort_i64, sort_f64 and buffer variants
   - **Do**:
     1. Implement `sort_i64(&mut self, data: &mut [i64])`:
        - Lazy compile sort_transform_64 mode=1 PSO

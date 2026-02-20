@@ -75,8 +75,8 @@ impl SortKey for i64 {
     const KEY_SIZE: usize = 8;
     const NEEDS_TRANSFORM: bool = true;
     const IS_64BIT: bool = true;
-    const TRANSFORM_MODE_FORWARD: u32 = 1;
-    const TRANSFORM_MODE_INVERSE: u32 = 1;
+    const TRANSFORM_MODE_FORWARD: u32 = 0;
+    const TRANSFORM_MODE_INVERSE: u32 = 0;
 }
 
 impl SortKey for f64 {
@@ -1117,8 +1117,8 @@ impl GpuSorter {
             "sort_inner_fused",
             &[(0, FnConstant::Bool(true)), (1, FnConstant::Bool(true))],
         );
-        // Transform PSOs for i64/f64
-        for mode in 1u32..=2 {
+        // Transform PSOs for i64 (mode 0) and f64 (modes 1, 2)
+        for mode in 0u32..=2 {
             self.pso_cache.get_or_create_specialized(
                 &self.library,
                 "sort_transform_64",
@@ -1271,18 +1271,20 @@ impl GpuSorter {
         //
         // After MSD scatter: data is in buf_b.
         //
-        // Inner #1: bytes 4,5,6 (start_shift=32, pass_count=3)
+        // start_shift is a BYTE index: kernel computes bit shift as start_shift * 8.
+        //
+        // Inner #1: bytes 4,5,6 (start_shift=4, pass_count=3)
         //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 3 passes → result in buf_a.
-        // Inner #2: bytes 1,2,3 (start_shift=8, pass_count=3)
+        // Inner #2: bytes 1,2,3 (start_shift=1, pass_count=3)
         //   buffer(0)=buf_b, buffer(1)=buf_a. Pass 0 reads buf_a. 3 passes → result in buf_b.
         // Inner #3: byte 0 (start_shift=0, pass_count=1)
         //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 1 pass → result in buf_a.
 
         // (start_shift, pass_count, buffer_0, buffer_1)
         let inner_configs: [(u32, u32, &ProtocolObject<dyn MTLBuffer>, &ProtocolObject<dyn MTLBuffer>); 3] = [
-            (32, 3, buf_a, buf_b),   // #1: reads buf_b, result in buf_a
-            (8, 3, buf_b, buf_a),    // #2: reads buf_a, result in buf_b
-            (0, 1, buf_a, buf_b),    // #3: reads buf_b, result in buf_a
+            (4, 3, buf_a, buf_b),   // #1: bytes 4,5,6 → reads buf_b, result in buf_a
+            (1, 3, buf_b, buf_a),   // #2: bytes 1,2,3 → reads buf_a, result in buf_b
+            (0, 1, buf_a, buf_b),   // #3: byte 0 → reads buf_b, result in buf_a
         ];
 
         let pso_inner = self.pso_cache.get_or_create_specialized(
@@ -2179,6 +2181,252 @@ impl GpuSorter {
 
         Ok(())
     }
+
+    /// Sort i64 slice in-place on GPU. Uses XOR sign-bit transform (mode=1, self-inverse).
+    ///
+    /// Empty/single-element inputs return immediately.
+    pub fn sort_i64(&mut self, data: &mut [i64]) -> Result<(), SortError> {
+        let n = data.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy input data to buf_a + zero the MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Forward transform: mode=0 (XOR sign bit, self-inverse for i64)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
+
+        // 6-dispatch 64-bit sort pipeline
+        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, n, num_tiles);
+
+        // Inverse transform: mode=0 (XOR sign bit, self-inverse for i64)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy result back from buf_a (8 bytes per element)
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const i64,
+                data.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sort f64 slice in-place on GPU. Uses FloatFlip64/IFloatFlip64 transform for IEEE 754 total ordering.
+    ///
+    /// Handles all special values correctly: -NaN < -Inf < -1.0 < -0.0 < 0.0 < 1.0 < Inf < NaN.
+    pub fn sort_f64(&mut self, data: &mut [f64]) -> Result<(), SortError> {
+        let n = data.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy input data to buf_a + zero the MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Forward transform: FloatFlip64 (mode 1)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 1);
+
+        // 6-dispatch 64-bit sort pipeline
+        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, n, num_tiles);
+
+        // Inverse transform: IFloatFlip64 (mode 2)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 2);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy result back from buf_a (8 bytes per element)
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const f64,
+                data.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sort a [`SortBuffer<i64>`] in-place on GPU. **Zero memcpy**.
+    ///
+    /// Uses XOR sign-bit transform (mode=1, self-inverse).
+    pub fn sort_i64_buffer(&mut self, buf: &SortBuffer<i64>) -> Result<(), SortError> {
+        let n = buf.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_scratch_buffers_64(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Zero the MSD histogram
+        unsafe {
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Forward transform: mode=0 (XOR sign bit, self-inverse for i64)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 0);
+
+        // 6-dispatch 64-bit sort pipeline
+        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, n, num_tiles);
+
+        // Inverse transform: mode=0 (XOR sign bit, self-inverse for i64)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 0);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Sort a [`SortBuffer<f64>`] in-place on GPU. **Zero memcpy**.
+    ///
+    /// Uses FloatFlip64/IFloatFlip64 transforms for IEEE 754 total ordering.
+    pub fn sort_f64_buffer(&mut self, buf: &SortBuffer<f64>) -> Result<(), SortError> {
+        let n = buf.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_scratch_buffers_64(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Zero the MSD histogram
+        unsafe {
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Forward transform: FloatFlip64 (mode 1)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 1);
+
+        // 6-dispatch 64-bit sort pipeline
+        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, n, num_tiles);
+
+        // Inverse transform: IFloatFlip64 (mode 2)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 2);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -2252,8 +2500,8 @@ mod tests {
         assert_eq!(i64::KEY_SIZE, 8);
         assert!(i64::NEEDS_TRANSFORM);
         assert!(i64::IS_64BIT);
-        assert_eq!(i64::TRANSFORM_MODE_FORWARD, 1);
-        assert_eq!(i64::TRANSFORM_MODE_INVERSE, 1);
+        assert_eq!(i64::TRANSFORM_MODE_FORWARD, 0);
+        assert_eq!(i64::TRANSFORM_MODE_INVERSE, 0);
     }
 
     #[test]
@@ -2452,5 +2700,60 @@ mod tests {
         let mut data = vec![42u64];
         sorter.sort_u64(&mut data).unwrap();
         assert_eq!(data, vec![42]);
+    }
+
+    #[test]
+    fn test_sort_i64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![5i64, -3, 0, i64::MIN, i64::MAX, -1, 1];
+        sorter.sort_i64(&mut data).unwrap();
+        let mut expected = vec![5i64, -3, 0, i64::MIN, i64::MAX, -1, 1];
+        expected.sort();
+        assert_eq!(data, expected);
+    }
+
+    #[test]
+    fn test_sort_i64_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data: Vec<i64> = vec![];
+        sorter.sort_i64(&mut data).unwrap();
+        assert_eq!(data, vec![]);
+    }
+
+    #[test]
+    fn test_sort_i64_single() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![42i64];
+        sorter.sort_i64(&mut data).unwrap();
+        assert_eq!(data, vec![42]);
+    }
+
+    #[test]
+    fn test_sort_f64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![1.0f64, f64::NAN, -0.0, 0.0, f64::NEG_INFINITY, -1.0, f64::INFINITY];
+        sorter.sort_f64(&mut data).unwrap();
+        let mut expected = vec![1.0f64, f64::NAN, -0.0, 0.0, f64::NEG_INFINITY, -1.0, f64::INFINITY];
+        expected.sort_by(f64::total_cmp);
+        assert_eq!(
+            data.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_sort_f64_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data: Vec<f64> = vec![];
+        sorter.sort_f64(&mut data).unwrap();
+        assert_eq!(data, vec![]);
+    }
+
+    #[test]
+    fn test_sort_f64_single() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![42.0f64];
+        sorter.sort_f64(&mut data).unwrap();
+        assert_eq!(data, vec![42.0]);
     }
 }
