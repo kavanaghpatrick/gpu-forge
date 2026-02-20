@@ -39,6 +39,7 @@ struct App {
     frame_ring: FrameRing,
     scale_index: usize,
     needs_shuffle: bool,
+    needs_initial_fill: bool,
     auto_sort: bool,
     cpu_sort: Option<CpuSortState>,
 }
@@ -53,6 +54,7 @@ impl App {
             frame_ring: FrameRing::new(),
             scale_index: 2, // 16M
             needs_shuffle: false,
+            needs_initial_fill: true,
             auto_sort: false,
             cpu_sort: None,
         }
@@ -98,8 +100,11 @@ impl App {
                 None => return,
             };
 
-            // Shuffle + sort if requested
-            if self.needs_shuffle || self.auto_sort {
+            // Initial fill: random data without sorting (shows noise on first frame)
+            if self.needs_initial_fill {
+                sort_engine.encode_shuffle(&cmd);
+                self.needs_initial_fill = false;
+            } else if self.needs_shuffle || self.auto_sort {
                 let sort_start = Instant::now();
                 sort_engine.encode_shuffle(&cmd);
                 sort_engine.encode_sort(&cmd);
