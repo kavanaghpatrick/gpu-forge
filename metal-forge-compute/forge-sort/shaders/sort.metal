@@ -168,6 +168,8 @@ kernel void sort_msd_atomic_scatter(
     device uint*           dst       [[buffer(1)]],
     device atomic_uint*    counters  [[buffer(2)]],
     constant SortParams&   params    [[buffer(3)]],
+    device const uint*     src_vals  [[buffer(4)]],
+    device uint*           dst_vals  [[buffer(5)]],
     uint lid [[thread_position_in_threadgroup]],
     uint gid [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
@@ -187,11 +189,15 @@ kernel void sort_msd_atomic_scatter(
     uint mk[SORT_ELEMS];
     uint md[SORT_ELEMS];
     bool mv[SORT_ELEMS];
+    uint mv_vals[SORT_ELEMS];
     for (uint e = 0u; e < SORT_ELEMS; e++) {
         uint idx = base + e * SORT_THREADS + lid;
         mv[e] = idx < n;
         mk[e] = mv[e] ? src[idx] : 0xFFFFFFFFu;
         md[e] = mv[e] ? ((mk[e] >> shift) & 0xFFu) : 0xFFu;
+        if (has_values) {
+            mv_vals[e] = mv[e] ? src_vals[idx] : 0u;
+        }
     }
 
     // ── Phase 2: Per-SG atomic histogram ─────────────────────────
@@ -246,6 +252,9 @@ kernel void sort_msd_atomic_scatter(
                      + sg_prefix[simd_id * SORT_NUM_BINS + d]
                      + within_sg;
             dst[gp] = mk[e];
+            if (has_values) {
+                dst_vals[gp] = mv_vals[e];
+            }
         }
     }
 }

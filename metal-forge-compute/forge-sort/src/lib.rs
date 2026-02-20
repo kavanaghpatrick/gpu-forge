@@ -312,7 +312,7 @@ fn dispatch_sort(
     enc.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
 
     // Dispatch 3: Atomic MSD scatter (buf_a → buf_b)
-    let pso = pso_cache.get_or_create(library, "sort_msd_atomic_scatter");
+    let pso = pso_cache.get_or_create_specialized(library, "sort_msd_atomic_scatter", &[(0, FnConstant::Bool(false))]);
     enc.setComputePipelineState(pso);
     unsafe {
         enc.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
@@ -332,7 +332,7 @@ fn dispatch_sort(
         pass_count: 3,
         batch_start: 0,
     };
-    let pso = pso_cache.get_or_create(library, "sort_inner_fused");
+    let pso = pso_cache.get_or_create_specialized(library, "sort_inner_fused", &[(0, FnConstant::Bool(false))]);
     enc.setComputePipelineState(pso);
     unsafe {
         enc.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
@@ -470,7 +470,7 @@ fn encode_sort_pipeline(
     encoder.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
 
     // Dispatch 3: Atomic MSD scatter (buf_a → buf_b)
-    let pso = pso_cache.get_or_create(library, "sort_msd_atomic_scatter");
+    let pso = pso_cache.get_or_create_specialized(library, "sort_msd_atomic_scatter", &[(0, FnConstant::Bool(false))]);
     encoder.setComputePipelineState(pso);
     unsafe {
         encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
@@ -490,7 +490,7 @@ fn encode_sort_pipeline(
         pass_count: 3,
         batch_start: 0,
     };
-    let pso = pso_cache.get_or_create(library, "sort_inner_fused");
+    let pso = pso_cache.get_or_create_specialized(library, "sort_inner_fused", &[(0, FnConstant::Bool(false))]);
     encoder.setComputePipelineState(pso);
     unsafe {
         encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
@@ -521,15 +521,21 @@ impl GpuSorter {
 
         let mut pso_cache = PsoCache::new();
 
-        // Pre-compile all 4 sort PSOs
-        for name in &[
-            "sort_msd_histogram",
-            "sort_msd_prep",
-            "sort_msd_atomic_scatter",
-            "sort_inner_fused",
-        ] {
+        // Pre-compile sort PSOs (histogram + prep use no function constants)
+        for name in &["sort_msd_histogram", "sort_msd_prep"] {
             pso_cache.get_or_create(&library, name);
         }
+        // scatter + inner fused require HAS_VALUES specialization (default false)
+        pso_cache.get_or_create_specialized(
+            &library,
+            "sort_msd_atomic_scatter",
+            &[(0, FnConstant::Bool(false))],
+        );
+        pso_cache.get_or_create_specialized(
+            &library,
+            "sort_inner_fused",
+            &[(0, FnConstant::Bool(false))],
+        );
 
         // Pre-compile transform PSOs for i32/f32 (index 2 = TRANSFORM_MODE)
         for mode in 0u32..=2 {

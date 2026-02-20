@@ -209,7 +209,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: FR-8_
   - _Design: InnerParams Struct_
 
-- [ ] 2.2 Add HAS_VALUES branches to sort_msd_atomic_scatter
+- [x] 2.2 Add HAS_VALUES branches to sort_msd_atomic_scatter
   - **Do**:
     1. Add value buffer bindings to scatter kernel: `device const uint* src_vals [[buffer(4)]]`, `device uint* dst_vals [[buffer(5)]]`
     2. Guard with `if (has_values)` for all value operations
