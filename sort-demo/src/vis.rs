@@ -11,6 +11,7 @@ use objc2_metal::{
 use objc2_quartz_core::CAMetalDrawable;
 
 #[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 pub enum VisMode {
     Heatmap,
     Barchart,
@@ -98,6 +99,7 @@ impl Visualization {
         }
     }
 
+    #[allow(dead_code)]
     pub fn resize_if_needed(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,

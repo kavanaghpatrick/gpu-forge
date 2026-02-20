@@ -9,10 +9,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
-    MTLComputePipelineState, MTLDevice, MTLLoadAction, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLResourceOptions, MTLSize, MTLStoreAction,
+    MTLComputePipelineState, MTLDevice, MTLResourceOptions, MTLSize,
 };
-use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -107,9 +105,7 @@ impl App {
                 height: 1,
                 depth: 1,
             };
-            unsafe {
-                encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
-            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
             encoder.endEncoding();
         }
 

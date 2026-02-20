@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Frame pacing with semaphore-based GPU/CPU synchronization.
 //!
 //! Manages a dispatch semaphore to limit in-flight frames, computes per-frame
