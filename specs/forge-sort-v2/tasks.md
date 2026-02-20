@@ -474,7 +474,7 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
   - _Requirements: AC-5.2, AC-5.3, AC-5.5_
   - _Design: 64-bit Sort Pipeline_
 
-- [ ] 3.5 Implement 64-bit argsort and sort_pairs
+- [x] 3.5 Implement 64-bit argsort and sort_pairs
   - **Do**:
     1. `argsort_u64`, `argsort_i64`, `argsort_f64`:
        - 64-bit sort pipeline with HAS_VALUES=true + IS_64BIT=true PSOs

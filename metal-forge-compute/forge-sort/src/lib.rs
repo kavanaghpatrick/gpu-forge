@@ -1169,18 +1169,50 @@ impl GpuSorter {
         }
     }
 
+    /// Allocate 64-bit key buffers + u32 value buffers for 64-bit argsort.
+    fn ensure_buffers_64_with_values(&mut self, n: usize) {
+        // Key buffers (8 bytes per element)
+        self.ensure_buffers_64(n);
+
+        // Value buffers (always 4 bytes — u32 indices)
+        let val_bytes = n * 4;
+        if self.buf_vals_a.is_none() || val_bytes > self.vals_buf_capacity {
+            self.buf_vals_a = Some(alloc_buffer(&self.device, val_bytes));
+            self.buf_vals_b = Some(alloc_buffer(&self.device, val_bytes));
+            self.vals_buf_capacity = val_bytes;
+        }
+    }
+
+    /// Allocate 64-bit key + u32 value + u32 orig_vals buffers for 64-bit sort_pairs.
+    fn ensure_buffers_64_with_values_and_orig(&mut self, n: usize) {
+        self.ensure_buffers_64_with_values(n);
+
+        let orig_bytes = n * 4;
+        if self.buf_orig_vals.is_none() || orig_bytes > self.orig_vals_capacity {
+            self.buf_orig_vals = Some(alloc_buffer(&self.device, orig_bytes));
+            self.orig_vals_capacity = orig_bytes;
+        }
+    }
+
     /// Encode the 64-bit 6-dispatch sort pipeline onto an existing encoder.
     ///
     /// Architecture: MSD histogram (byte 7) + MSD prep + MSD scatter (byte 7)
     /// + 3 inner fused dispatches (bytes 4-6, bytes 1-3, byte 0).
     /// Final output in buf_a (same as 32-bit).
+    ///
+    /// When `with_values` is true, uses HAS_VALUES=true + IS_64BIT=true PSOs and binds
+    /// value buffers at buffer(4) and buffer(5) for scatter and inner fused kernels.
+    /// Values are always u32 (4 bytes) even though keys are 8 bytes.
     fn encode_sort_pipeline_64(
         &mut self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
         buf_a: &ProtocolObject<dyn MTLBuffer>,
         buf_b: &ProtocolObject<dyn MTLBuffer>,
+        vals_a: Option<&ProtocolObject<dyn MTLBuffer>>,
+        vals_b: Option<&ProtocolObject<dyn MTLBuffer>>,
         n: usize,
         num_tiles: usize,
+        with_values: bool,
     ) {
         let params = SortParams {
             element_count: n as u32,
@@ -1244,11 +1276,11 @@ impl GpuSorter {
         }
         encoder.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
 
-        // Dispatch 3: MSD scatter (IS_64BIT=true, buf_a → buf_b)
+        // Dispatch 3: MSD scatter (IS_64BIT=true, buf_a → buf_b, vals_a → vals_b if with_values)
         let pso = self.pso_cache.get_or_create_specialized(
             &self.library,
             "sort_msd_atomic_scatter",
-            &[(0, FnConstant::Bool(false)), (1, FnConstant::Bool(true))],
+            &[(0, FnConstant::Bool(with_values)), (1, FnConstant::Bool(true))],
         );
         encoder.setComputePipelineState(pso);
         unsafe {
@@ -1260,6 +1292,10 @@ impl GpuSorter {
                 std::mem::size_of::<SortParams>(),
                 3,
             );
+            if with_values {
+                encoder.setBuffer_offset_atIndex(vals_a, 0, 4);
+                encoder.setBuffer_offset_atIndex(vals_b, 0, 5);
+            }
         }
         encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
 
@@ -1269,40 +1305,52 @@ impl GpuSorter {
         // After odd number of passes → result in buffer(0).
         // After even number of passes → result in buffer(1).
         //
-        // After MSD scatter: data is in buf_b.
+        // After MSD scatter: data is in buf_b, values (if any) in vals_b.
         //
         // start_shift is a BYTE index: kernel computes bit shift as start_shift * 8.
         //
         // Inner #1: bytes 4,5,6 (start_shift=4, pass_count=3)
         //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 3 passes → result in buf_a.
+        //   vals buffer(4)=vals_a, buffer(5)=vals_b. Values follow same ping-pong.
         // Inner #2: bytes 1,2,3 (start_shift=1, pass_count=3)
         //   buffer(0)=buf_b, buffer(1)=buf_a. Pass 0 reads buf_a. 3 passes → result in buf_b.
+        //   vals buffer(4)=vals_b, buffer(5)=vals_a.
         // Inner #3: byte 0 (start_shift=0, pass_count=1)
         //   buffer(0)=buf_a, buffer(1)=buf_b. Pass 0 reads buf_b. 1 pass → result in buf_a.
-
-        // (start_shift, pass_count, buffer_0, buffer_1)
-        let inner_configs: [(u32, u32, &ProtocolObject<dyn MTLBuffer>, &ProtocolObject<dyn MTLBuffer>); 3] = [
-            (4, 3, buf_a, buf_b),   // #1: bytes 4,5,6 → reads buf_b, result in buf_a
-            (1, 3, buf_b, buf_a),   // #2: bytes 1,2,3 → reads buf_a, result in buf_b
-            (0, 1, buf_a, buf_b),   // #3: byte 0 → reads buf_b, result in buf_a
-        ];
+        //   vals buffer(4)=vals_a, buffer(5)=vals_b.
 
         let pso_inner = self.pso_cache.get_or_create_specialized(
             &self.library,
             "sort_inner_fused",
-            &[(0, FnConstant::Bool(false)), (1, FnConstant::Bool(true))],
+            &[(0, FnConstant::Bool(with_values)), (1, FnConstant::Bool(true))],
         );
 
-        for &(start_shift, pass_count, buf_0, buf_1) in &inner_configs {
+        // (start_shift, pass_count, key_buf_0, key_buf_1, val_buf_4, val_buf_5)
+        struct InnerConfig<'a> {
+            start_shift: u32,
+            pass_count: u32,
+            buf_0: &'a ProtocolObject<dyn MTLBuffer>,
+            buf_1: &'a ProtocolObject<dyn MTLBuffer>,
+            val_4: Option<&'a ProtocolObject<dyn MTLBuffer>>,
+            val_5: Option<&'a ProtocolObject<dyn MTLBuffer>>,
+        }
+
+        let inner_configs = [
+            InnerConfig { start_shift: 4, pass_count: 3, buf_0: buf_a, buf_1: buf_b, val_4: vals_a, val_5: vals_b },
+            InnerConfig { start_shift: 1, pass_count: 3, buf_0: buf_b, buf_1: buf_a, val_4: vals_b, val_5: vals_a },
+            InnerConfig { start_shift: 0, pass_count: 1, buf_0: buf_a, buf_1: buf_b, val_4: vals_a, val_5: vals_b },
+        ];
+
+        for cfg in &inner_configs {
             let inner_params = InnerParams {
-                start_shift,
-                pass_count,
+                start_shift: cfg.start_shift,
+                pass_count: cfg.pass_count,
                 batch_start: 0,
             };
             encoder.setComputePipelineState(pso_inner);
             unsafe {
-                encoder.setBuffer_offset_atIndex(Some(buf_0), 0, 0);
-                encoder.setBuffer_offset_atIndex(Some(buf_1), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(cfg.buf_0), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(cfg.buf_1), 0, 1);
                 encoder.setBuffer_offset_atIndex(
                     Some(self.buf_bucket_descs.as_ref().unwrap()),
                     0,
@@ -1313,6 +1361,10 @@ impl GpuSorter {
                     std::mem::size_of::<InnerParams>(),
                     3,
                 );
+                if with_values {
+                    encoder.setBuffer_offset_atIndex(cfg.val_4, 0, 4);
+                    encoder.setBuffer_offset_atIndex(cfg.val_5, 0, 5);
+                }
             }
             encoder.dispatchThreadgroups_threadsPerThreadgroup(fused_grid, tg_size);
         }
@@ -2110,7 +2162,7 @@ impl GpuSorter {
         let buf_b = self.buf_b.as_ref().unwrap().clone();
 
         // 6-dispatch 64-bit sort pipeline (no transform for u64)
-        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, n, num_tiles);
+        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, None, None, n, num_tiles, false);
 
         enc.endEncoding();
         cmd.commit();
@@ -2166,7 +2218,7 @@ impl GpuSorter {
 
         // 6-dispatch 64-bit sort pipeline (no transform for u64)
         let buf_b = self.buf_b.as_ref().unwrap().clone();
-        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, n, num_tiles);
+        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, None, None, n, num_tiles, false);
 
         enc.endEncoding();
         cmd.commit();
@@ -2223,7 +2275,7 @@ impl GpuSorter {
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
 
         // 6-dispatch 64-bit sort pipeline
-        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, n, num_tiles);
+        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, None, None, n, num_tiles, false);
 
         // Inverse transform: mode=0 (XOR sign bit, self-inverse for i64)
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
@@ -2292,7 +2344,7 @@ impl GpuSorter {
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 1);
 
         // 6-dispatch 64-bit sort pipeline
-        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, n, num_tiles);
+        self.encode_sort_pipeline_64(&enc, &buf_a, &buf_b, None, None, n, num_tiles, false);
 
         // Inverse transform: IFloatFlip64 (mode 2)
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 2);
@@ -2355,7 +2407,7 @@ impl GpuSorter {
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 0);
 
         // 6-dispatch 64-bit sort pipeline
-        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, n, num_tiles);
+        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, None, None, n, num_tiles, false);
 
         // Inverse transform: mode=0 (XOR sign bit, self-inverse for i64)
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 0);
@@ -2409,7 +2461,7 @@ impl GpuSorter {
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 1);
 
         // 6-dispatch 64-bit sort pipeline
-        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, n, num_tiles);
+        self.encode_sort_pipeline_64(&enc, &buf.buffer, &buf_b, None, None, n, num_tiles, false);
 
         // Inverse transform: IFloatFlip64 (mode 2)
         encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 2);
@@ -2423,6 +2475,433 @@ impl GpuSorter {
                 "command buffer error: {:?}",
                 cmd.error()
             )));
+        }
+
+        Ok(())
+    }
+
+    /// Return the sorted indices that would sort u64 `data` in ascending order.
+    ///
+    /// Values are u32 indices (always 4 bytes) even though keys are 8 bytes.
+    /// Input `data` is NOT modified.
+    pub fn argsort_u64(&mut self, data: &[u64]) -> Result<Vec<u32>, SortError> {
+        let n = data.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64_with_values(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy keys to buf_a, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Init indices: vals_a[i] = i
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // 64-bit sort pipeline with HAS_VALUES=true (no transform for u64)
+        self.encode_sort_pipeline_64(
+            &enc, &buf_a, &buf_b, Some(&vals_a), Some(&vals_b), n, num_tiles, true,
+        );
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read sorted indices from vals_a (final output after odd total passes)
+        let mut result = vec![0u32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_a.as_ref().unwrap().contents().as_ptr() as *const u32,
+                result.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Return the sorted indices for i64 data in ascending order.
+    ///
+    /// Uses XOR sign-bit transform (mode=0) on keys. Input `data` is NOT modified.
+    pub fn argsort_i64(&mut self, data: &[i64]) -> Result<Vec<u32>, SortError> {
+        let n = data.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64_with_values(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy keys to buf_a, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Init indices
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // Forward transform: XOR sign bit (mode 0, self-inverse for i64)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
+
+        // 64-bit sort pipeline with HAS_VALUES=true
+        self.encode_sort_pipeline_64(
+            &enc, &buf_a, &buf_b, Some(&vals_a), Some(&vals_b), n, num_tiles, true,
+        );
+
+        // No inverse transform needed for argsort (we don't read keys back)
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        let mut result = vec![0u32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_a.as_ref().unwrap().contents().as_ptr() as *const u32,
+                result.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Return the sorted indices for f64 data in ascending order (IEEE 754 total ordering).
+    ///
+    /// Uses FloatFlip64 transform on keys. Input `data` is NOT modified.
+    pub fn argsort_f64(&mut self, data: &[f64]) -> Result<Vec<u32>, SortError> {
+        let n = data.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64_with_values(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy keys to buf_a, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+
+        // Init indices
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // Forward transform: FloatFlip64 (mode 1)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 1);
+
+        // 64-bit sort pipeline with HAS_VALUES=true
+        self.encode_sort_pipeline_64(
+            &enc, &buf_a, &buf_b, Some(&vals_a), Some(&vals_b), n, num_tiles, true,
+        );
+
+        // No inverse transform needed for argsort (we don't read keys back)
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        let mut result = vec![0u32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_a.as_ref().unwrap().contents().as_ptr() as *const u32,
+                result.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Sort key-value pairs in-place by u64 keys using Strategy B (argsort + gather).
+    ///
+    /// After sorting, `keys` is sorted ascending and `values[i]` is the value
+    /// that was originally paired with the key now at position `i`.
+    pub fn sort_pairs_u64(
+        &mut self,
+        keys: &mut [u64],
+        values: &mut [u32],
+    ) -> Result<(), SortError> {
+        let n = keys.len();
+        if n != values.len() {
+            return Err(SortError::LengthMismatch {
+                keys: n,
+                values: values.len(),
+            });
+        }
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64_with_values_and_orig(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy keys (8 bytes) to buf_a, values (4 bytes) to buf_orig_vals, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                keys.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr() as *const u8,
+                self.buf_orig_vals.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+        let orig_vals = self.buf_orig_vals.as_ref().unwrap().clone();
+
+        // Init indices: vals_a[i] = i
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // 64-bit sort pipeline with HAS_VALUES=true (no transform for u64)
+        self.encode_sort_pipeline_64(
+            &enc, &buf_a, &buf_b, Some(&vals_a), Some(&vals_b), n, num_tiles, true,
+        );
+
+        // Gather: gathered[i] = orig_vals[sorted_indices[i]]
+        self.encode_gather_values(&enc, &vals_a, &orig_vals, &vals_b, n);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy sorted keys (8 bytes) from buf_a, gathered values (4 bytes) from buf_vals_b
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const u64,
+                keys.as_mut_ptr(),
+                n,
+            );
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_b.as_ref().unwrap().contents().as_ptr() as *const u32,
+                values.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sort key-value pairs in-place by i64 keys using Strategy B (argsort + gather).
+    ///
+    /// Uses XOR sign-bit transform on keys. After sorting, `keys` is sorted ascending
+    /// and `values[i]` is the value that was originally paired with the key now at position `i`.
+    pub fn sort_pairs_i64(
+        &mut self,
+        keys: &mut [i64],
+        values: &mut [u32],
+    ) -> Result<(), SortError> {
+        let n = keys.len();
+        if n != values.len() {
+            return Err(SortError::LengthMismatch {
+                keys: n,
+                values: values.len(),
+            });
+        }
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_64bit_psos();
+        self.ensure_buffers_64_with_values_and_orig(n);
+        let num_tiles = n.div_ceil(TILE_SIZE_64);
+
+        // Copy keys (8 bytes) to buf_a, values (4 bytes) to buf_orig_vals, zero MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                keys.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 8,
+            );
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr() as *const u8,
+                self.buf_orig_vals.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let vals_a = self.buf_vals_a.as_ref().unwrap().clone();
+        let vals_b = self.buf_vals_b.as_ref().unwrap().clone();
+        let buf_a = self.buf_a.as_ref().unwrap().clone();
+        let buf_b = self.buf_b.as_ref().unwrap().clone();
+        let orig_vals = self.buf_orig_vals.as_ref().unwrap().clone();
+
+        // Init indices
+        self.encode_init_indices(&enc, &vals_a, n);
+
+        // Forward transform: XOR sign bit (mode 0, self-inverse for i64)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
+
+        // 64-bit sort pipeline with HAS_VALUES=true
+        self.encode_sort_pipeline_64(
+            &enc, &buf_a, &buf_b, Some(&vals_a), Some(&vals_b), n, num_tiles, true,
+        );
+
+        // Inverse transform: XOR sign bit (mode 0, self-inverse)
+        encode_transform_64(&enc, &self.library, &mut self.pso_cache, &buf_a, n, 0);
+
+        // Gather: gathered[i] = orig_vals[sorted_indices[i]]
+        self.encode_gather_values(&enc, &vals_a, &orig_vals, &vals_b, n);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy sorted keys (8 bytes) from buf_a, gathered values (4 bytes) from buf_vals_b
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const i64,
+                keys.as_mut_ptr(),
+                n,
+            );
+            std::ptr::copy_nonoverlapping(
+                self.buf_vals_b.as_ref().unwrap().contents().as_ptr() as *const u32,
+                values.as_mut_ptr(),
+                n,
+            );
         }
 
         Ok(())
@@ -2755,5 +3234,86 @@ mod tests {
         let mut data = vec![42.0f64];
         sorter.sort_f64(&mut data).unwrap();
         assert_eq!(data, vec![42.0]);
+    }
+
+    #[test]
+    fn test_argsort_u64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![30u64, 10, 20];
+        let indices = sorter.argsort_u64(&data).unwrap();
+        assert_eq!(indices, vec![1, 2, 0]);
+        assert_eq!(data, vec![30, 10, 20]); // unchanged
+    }
+
+    #[test]
+    fn test_argsort_u64_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data: Vec<u64> = vec![];
+        let indices = sorter.argsort_u64(&data).unwrap();
+        assert_eq!(indices, vec![]);
+    }
+
+    #[test]
+    fn test_argsort_u64_single() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![42u64];
+        let indices = sorter.argsort_u64(&data).unwrap();
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn test_argsort_i64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![5i64, -3, 0, -1, 1];
+        let indices = sorter.argsort_i64(&data).unwrap();
+        // sorted: -3, -1, 0, 1, 5 -> indices: 1, 3, 2, 4, 0
+        assert_eq!(indices, vec![1, 3, 2, 4, 0]);
+    }
+
+    #[test]
+    fn test_argsort_f64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let data = vec![3.0f64, 1.0, 2.0];
+        let indices = sorter.argsort_f64(&data).unwrap();
+        assert_eq!(indices, vec![1, 2, 0]);
+        assert_eq!(data, vec![3.0, 1.0, 2.0]); // unchanged
+    }
+
+    #[test]
+    fn test_sort_pairs_u64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut keys = vec![30u64, 10, 20];
+        let mut vals = vec![300u32, 100, 200];
+        sorter.sort_pairs_u64(&mut keys, &mut vals).unwrap();
+        assert_eq!(keys, vec![10, 20, 30]);
+        assert_eq!(vals, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn test_sort_pairs_i64_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut keys = vec![5i64, -3, 0];
+        let mut vals = vec![50u32, 30, 40];
+        sorter.sort_pairs_i64(&mut keys, &mut vals).unwrap();
+        assert_eq!(keys, vec![-3, 0, 5]);
+        assert_eq!(vals, vec![30, 40, 50]);
+    }
+
+    #[test]
+    fn test_sort_pairs_u64_empty() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut keys: Vec<u64> = vec![];
+        let mut vals: Vec<u32> = vec![];
+        sorter.sort_pairs_u64(&mut keys, &mut vals).unwrap();
+        assert_eq!(keys, vec![]);
+        assert_eq!(vals, vec![]);
+    }
+
+    #[test]
+    fn test_sort_pairs_i64_length_mismatch() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut keys = vec![1i64, 2, 3];
+        let mut vals = vec![10u32, 20];
+        assert!(sorter.sort_pairs_i64(&mut keys, &mut vals).is_err());
     }
 }
