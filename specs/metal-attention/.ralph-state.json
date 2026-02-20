@@ -1,0 +1,10 @@
+{
+  "specName": "metal-attention",
+  "basePath": "/Users/patrickkavanagh/gpu_kernel/specs/metal-attention",
+  "projectPath": "/Users/patrickkavanagh/gpu_kernel/metal-attention",
+  "phase": "complete",
+  "taskIndex": 33,
+  "totalTasks": 33,
+  "iteration": 0,
+  "awaitingApproval": false
+}

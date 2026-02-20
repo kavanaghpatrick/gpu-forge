@@ -1,0 +1,308 @@
+{
+  "platform": "Apple M4",
+  "tool": "criterion 0.5",
+  "date": "2026-02-12",
+  "benchmarks": {
+    "binary_archive/cache_hit_72": {
+      "mean_us": 12.88,
+      "std_dev_us": 0.19,
+      "ci_lower_us": 12.78,
+      "ci_upper_us": 13.0
+    },
+    "binary_archive/cold_compile_72": {
+      "mean_us": 5654.95,
+      "std_dev_us": 83.18,
+      "ci_lower_us": 5609.45,
+      "ci_upper_us": 5706.77
+    },
+    "binary_archive/create_72_variants": {
+      "mean_us": 90481.35,
+      "std_dev_us": 4297.16,
+      "ci_lower_us": 88217.88,
+      "ci_upper_us": 93187.65
+    },
+    "binary_archive/load_from_archive_72": {
+      "mean_us": 5935.77,
+      "std_dev_us": 68.07,
+      "ci_lower_us": 5894.03,
+      "ci_upper_us": 5973.55
+    },
+    "burn_extension/bridge_N=128/128": {
+      "mean_us": 427.64,
+      "std_dev_us": 2.37,
+      "ci_lower_us": 426.58,
+      "ci_upper_us": 428.61
+    },
+    "burn_extension/bridge_N=256/256": {
+      "mean_us": 645.75,
+      "std_dev_us": 7.36,
+      "ci_lower_us": 642.56,
+      "ci_upper_us": 648.86
+    },
+    "burn_extension/bridge_N=512/512": {
+      "mean_us": 1064.54,
+      "std_dev_us": 2.99,
+      "ci_lower_us": 1063.25,
+      "ci_upper_us": 1065.8
+    },
+    "burn_extension/bridge_N=64/64": {
+      "mean_us": 275.53,
+      "std_dev_us": 2.88,
+      "ci_lower_us": 274.46,
+      "ci_upper_us": 276.9
+    },
+    "burn_extension/direct_N=128/128": {
+      "mean_us": 424.58,
+      "std_dev_us": 9.21,
+      "ci_lower_us": 420.27,
+      "ci_upper_us": 428.13
+    },
+    "burn_extension/direct_N=256/256": {
+      "mean_us": 635.05,
+      "std_dev_us": 14.39,
+      "ci_lower_us": 629.39,
+      "ci_upper_us": 641.57
+    },
+    "burn_extension/direct_N=512/512": {
+      "mean_us": 1048.2,
+      "std_dev_us": 4.95,
+      "ci_lower_us": 1046.09,
+      "ci_upper_us": 1050.32
+    },
+    "burn_extension/direct_N=64/64": {
+      "mean_us": 272.77,
+      "std_dev_us": 1.11,
+      "ci_lower_us": 272.29,
+      "ci_upper_us": 273.24
+    },
+    "cold_compile/variants/1": {
+      "mean_us": 35.51,
+      "std_dev_us": 0.29,
+      "ci_lower_us": 35.34,
+      "ci_upper_us": 35.68
+    },
+    "cold_compile/variants/10": {
+      "mean_us": 351.27,
+      "std_dev_us": 0.99,
+      "ci_lower_us": 350.77,
+      "ci_upper_us": 351.92
+    },
+    "cold_compile/variants/100": {
+      "mean_us": 4949.69,
+      "std_dev_us": 405.95,
+      "ci_lower_us": 4715.17,
+      "ci_upper_us": 5188.59
+    },
+    "cold_compile/variants/50": {
+      "mean_us": 1946.88,
+      "std_dev_us": 174.92,
+      "ci_lower_us": 1875.14,
+      "ci_upper_us": 2063.58
+    },
+    "cubecl_vs_handwritten/cubecl_matmul_N=1024/1024": {
+      "mean_us": 904.66,
+      "std_dev_us": 11.03,
+      "ci_lower_us": 900.03,
+      "ci_upper_us": 909.5
+    },
+    "cubecl_vs_handwritten/cubecl_matmul_N=256/256": {
+      "mean_us": 193.42,
+      "std_dev_us": 1.83,
+      "ci_lower_us": 192.7,
+      "ci_upper_us": 194.24
+    },
+    "cubecl_vs_handwritten/cubecl_matmul_N=512/512": {
+      "mean_us": 312.86,
+      "std_dev_us": 4.66,
+      "ci_lower_us": 310.87,
+      "ci_upper_us": 314.83
+    },
+    "cubecl_vs_handwritten/handwritten_flash_N=1024/1024": {
+      "mean_us": 2498.44,
+      "std_dev_us": 2.37,
+      "ci_lower_us": 2497.42,
+      "ci_upper_us": 2499.43
+    },
+    "cubecl_vs_handwritten/handwritten_flash_N=256/256": {
+      "mean_us": 511.15,
+      "std_dev_us": 2.69,
+      "ci_lower_us": 510.04,
+      "ci_upper_us": 512.35
+    },
+    "cubecl_vs_handwritten/handwritten_flash_N=512/512": {
+      "mean_us": 884.29,
+      "std_dev_us": 3.69,
+      "ci_lower_us": 883.01,
+      "ci_upper_us": 886.09
+    },
+    "flash_attention/N=1024_D=64_Br=16_Bc=64/1024": {
+      "mean_us": 2424.53,
+      "std_dev_us": 72.64,
+      "ci_lower_us": 2406.39,
+      "ci_upper_us": 2446.19
+    },
+    "flash_attention/N=2048_D=64_Br=16_Bc=64/2048": {
+      "mean_us": 6502.68,
+      "std_dev_us": 195.19,
+      "ci_lower_us": 6447.24,
+      "ci_upper_us": 6555.01
+    },
+    "flash_attention/N=256_D=64_Br=16_Bc=64/256": {
+      "mean_us": 389.18,
+      "std_dev_us": 0.58,
+      "ci_lower_us": 389.04,
+      "ci_upper_us": 389.36
+    },
+    "flash_attention/N=512_D=64_Br=16_Bc=64/512": {
+      "mean_us": 761.83,
+      "std_dev_us": 0.89,
+      "ci_lower_us": 761.61,
+      "ci_upper_us": 762.09
+    },
+    "function_stitch/always_inline/1": {
+      "mean_us": 2460.62,
+      "std_dev_us": 47.77,
+      "ci_lower_us": 2449.45,
+      "ci_upper_us": 2475.18
+    },
+    "function_stitch/monolithic/0": {
+      "mean_us": 2486.94,
+      "std_dev_us": 36.66,
+      "ci_lower_us": 2476.89,
+      "ci_upper_us": 2497.26
+    },
+    "function_stitch/noinline/2": {
+      "mean_us": 3391.66,
+      "std_dev_us": 33.03,
+      "ci_lower_us": 3382.15,
+      "ci_upper_us": 3400.42
+    },
+    "linear_attention/flash_N=1024/1024": {
+      "mean_us": 2381.2,
+      "std_dev_us": 10.93,
+      "ci_lower_us": 2376.57,
+      "ci_upper_us": 2385.9
+    },
+    "linear_attention/flash_N=256/256": {
+      "mean_us": 387.74,
+      "std_dev_us": 0.18,
+      "ci_lower_us": 387.68,
+      "ci_upper_us": 387.83
+    },
+    "linear_attention/flash_N=512/512": {
+      "mean_us": 760.97,
+      "std_dev_us": 0.24,
+      "ci_lower_us": 760.87,
+      "ci_upper_us": 761.07
+    },
+    "linear_attention/linear_N=1024/1024": {
+      "mean_us": 279.82,
+      "std_dev_us": 9.92,
+      "ci_lower_us": 275.73,
+      "ci_upper_us": 284.18
+    },
+    "linear_attention/linear_N=256/256": {
+      "mean_us": 204.95,
+      "std_dev_us": 10.3,
+      "ci_lower_us": 201.09,
+      "ci_upper_us": 209.82
+    },
+    "linear_attention/linear_N=512/512": {
+      "mean_us": 230.85,
+      "std_dev_us": 9.72,
+      "ci_lower_us": 226.77,
+      "ci_upper_us": 235.09
+    },
+    "paged_attention/contiguous_N=1024/1024": {
+      "mean_us": 2430.4,
+      "std_dev_us": 54.93,
+      "ci_lower_us": 2409.04,
+      "ci_upper_us": 2455.56
+    },
+    "paged_attention/contiguous_N=256/256": {
+      "mean_us": 390.77,
+      "std_dev_us": 0.57,
+      "ci_lower_us": 390.58,
+      "ci_upper_us": 391.05
+    },
+    "paged_attention/contiguous_N=512/512": {
+      "mean_us": 765.8,
+      "std_dev_us": 1.66,
+      "ci_lower_us": 765.18,
+      "ci_upper_us": 766.58
+    },
+    "paged_attention/paged_N=1024/1024": {
+      "mean_us": 1722.84,
+      "std_dev_us": 10.36,
+      "ci_lower_us": 1718.77,
+      "ci_upper_us": 1727.59
+    },
+    "paged_attention/paged_N=256/256": {
+      "mean_us": 438.36,
+      "std_dev_us": 0.41,
+      "ci_lower_us": 438.2,
+      "ci_upper_us": 438.55
+    },
+    "paged_attention/paged_N=512/512": {
+      "mean_us": 1308.82,
+      "std_dev_us": 429.62,
+      "ci_lower_us": 1131.08,
+      "ci_upper_us": 1496.73
+    },
+    "variant_overhead/alibi_fused_N=2048_D=64_H=32": {
+      "mean_us": 195693.51,
+      "std_dev_us": 28897.95,
+      "ci_lower_us": 183997.71,
+      "ci_upper_us": 203574.92
+    },
+    "variant_overhead/base_flash_N=2048_D=64_H=32": {
+      "mean_us": 204625.96,
+      "std_dev_us": 3073.72,
+      "ci_lower_us": 203533.7,
+      "ci_upper_us": 205691.17
+    },
+    "variant_overhead/gqa_remap_gs=1/1": {
+      "mean_us": 182.72,
+      "std_dev_us": 0.65,
+      "ci_lower_us": 182.52,
+      "ci_upper_us": 182.97
+    },
+    "variant_overhead/gqa_remap_gs=2/2": {
+      "mean_us": 113.72,
+      "std_dev_us": 3.21,
+      "ci_lower_us": 112.77,
+      "ci_upper_us": 115.0
+    },
+    "variant_overhead/gqa_remap_gs=4/4": {
+      "mean_us": 78.22,
+      "std_dev_us": 0.79,
+      "ci_lower_us": 77.97,
+      "ci_upper_us": 78.52
+    },
+    "variant_overhead/gqa_remap_gs=8/8": {
+      "mean_us": 74.07,
+      "std_dev_us": 0.06,
+      "ci_lower_us": 74.05,
+      "ci_upper_us": 74.1
+    },
+    "variant_overhead/rope_standalone_N=2048_D=64": {
+      "mean_us": 10.28,
+      "std_dev_us": 3.38,
+      "ci_lower_us": 9.11,
+      "ci_upper_us": 11.48
+    }
+  },
+  "summary": {
+    "total_benchmarks": 48,
+    "benchmark_groups": [
+      "flash_attention",
+      "function_stitch",
+      "constant_overhead (cold_compile + binary_archive)",
+      "paged_attention",
+      "linear_attention",
+      "variant_overhead",
+      "cubecl_comparison",
+      "burn_extension"
+    ]
+  }
+}

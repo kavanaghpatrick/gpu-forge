@@ -1,0 +1,157 @@
+name: gpu-query CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "gpu-query/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "gpu-query/**"
+  schedule:
+    # Nightly fuzz run at 3am UTC
+    - cron: "0 3 * * *"
+
+defaults:
+  run:
+    working-directory: gpu-query
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ---------- Tier 1: Fast checks (Linux, no GPU) ----------
+
+  fmt:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: Clippy lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpu-query
+      - run: cargo clippy --lib --tests -- -D warnings
+
+  unit-tests:
+    name: Unit tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpu-query
+      - run: cargo test --lib
+        env:
+          RUST_BACKTRACE: 1
+
+  # ---------- Tier 2: GPU tests (macOS Apple Silicon) ----------
+
+  gpu-tests:
+    name: GPU tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpu-query
+      - run: cargo test --all-targets
+        env:
+          RUST_BACKTRACE: 1
+
+  # ---------- Metal Shader Validation ----------
+
+  shader-validation:
+    name: Metal shader validation
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpu-query
+      - run: cargo test --test gpu_filter --test gpu_aggregate --test gpu_csv --test gpu_sort
+        env:
+          MTL_SHADER_VALIDATION: 1
+          RUST_BACKTRACE: 1
+
+  # ---------- Benchmarks (main only, save baseline) ----------
+
+  benchmarks:
+    name: Benchmarks
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpu-query
+      - run: cargo bench -- --output-format bencher | tee bench-output.txt
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: gpu-query/target/criterion
+          retention-days: 30
+
+  # ---------- Fuzz (nightly schedule only) ----------
+
+  fuzz:
+    name: Fuzz testing
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz
+      - name: Fuzz CSV parser (5 min)
+        run: cargo fuzz run fuzz_csv_parser -- -max_total_time=300
+        continue-on-error: true
+      - name: Fuzz JSON parser (5 min)
+        run: cargo fuzz run fuzz_json_parser -- -max_total_time=300
+        continue-on-error: true
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: gpu-query/fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------- Gate: All required checks must pass ----------
+
+  ci-pass:
+    name: CI pass gate
+    if: always()
+    needs: [fmt, clippy, unit-tests, gpu-tests, shader-validation]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all required jobs
+        run: |
+          if [[ "${{ needs.fmt.result }}" != "success" ]] || \
+             [[ "${{ needs.clippy.result }}" != "success" ]] || \
+             [[ "${{ needs.unit-tests.result }}" != "success" ]] || \
+             [[ "${{ needs.gpu-tests.result }}" != "success" ]] || \
+             [[ "${{ needs.shader-validation.result }}" != "success" ]]; then
+            echo "One or more required checks failed"
+            exit 1
+          fi
+          echo "All required checks passed"

@@ -1,0 +1,24 @@
+[package]
+name = "forge-sort"
+version = "0.2.0"
+edition = "2021"
+description = "GPU radix sort for Apple Silicon (Metal 3.2)"
+
+[dependencies]
+forge-primitives = { path = "../forge-primitives" }
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+thiserror = "2"
+
+[features]
+perf-test = []
+
+[dev-dependencies]
+rand = "0.8"
+rand_chacha = "0.3"
+rayon = "1.10"
+
+[[bench]]
+name = "sort_benchmark"
+harness = false

@@ -1,0 +1,14 @@
+{
+  "source": "plan",
+  "name": "gpu-search",
+  "basePath": "./specs/gpu-search",
+  "phase": "execution",
+  "taskIndex": 54,
+  "totalTasks": 56,
+  "taskIteration": 1,
+  "maxTaskIterations": 5,
+  "globalIteration": 55,
+  "maxGlobalIterations": 100,
+  "commitSpec": true,
+  "awaitingApproval": true
+}

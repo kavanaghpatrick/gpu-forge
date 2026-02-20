@@ -1,0 +1,46 @@
+[package]
+name = "gpu-query"
+version = "0.1.0"
+edition = "2021"
+description = "GPU-native local data analytics engine for Apple Silicon"
+
+[dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
+sqlparser = "0.53"
+parquet = { version = "54", default-features = false, features = ["arrow"] }
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "scan_throughput"
+harness = false
+
+[[bench]]
+name = "filter_throughput"
+harness = false
+
+[[bench]]
+name = "aggregate_throughput"
+harness = false
+
+[[bench]]
+name = "sort_throughput"
+harness = false
+
+[[bench]]
+name = "query_latency"
+harness = false
+
+[[bench]]
+name = "autonomous_latency"
+harness = false

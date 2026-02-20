@@ -31,7 +31,7 @@ struct Uniforms {
     float3   grid_bounds_max;       // offset 176 (16 bytes)
     uint     frame_number;          // offset 192 (4 bytes)
     float    particle_size_scale;   // offset 196 (4 bytes)
-    uint     emission_count;        // offset 200 (4 bytes)
+    uint     base_emission_rate;    // offset 200 (4 bytes)
     uint     pool_size;             // offset 204 (4 bytes)
     float    interaction_strength;  // offset 208 (4 bytes)
     float    mouse_attraction_radius;   // offset 212 (4 bytes)
@@ -51,6 +51,40 @@ struct DrawArgs {
     uint vertexStart;     // first vertex (0)
     uint baseInstance;    // first instance (0)
 };
+
+// Indirect dispatch arguments for dispatchThreadgroups(indirectBuffer:).
+// Layout: 3 x uint = 12 bytes, matching Metal's indirect dispatch buffer format.
+// Written by prepare_dispatch kernel on GPU each frame.
+struct DispatchArgs {
+    uint threadgroupsPerGridX;
+    uint threadgroupsPerGridY;
+    uint threadgroupsPerGridZ;
+};
+
+// GPU-computed emission parameters written by prepare_dispatch kernel.
+// Layout: 4 x uint = 16 bytes (16-byte aligned for GPU buffer access).
+// Consumed by emission_kernel to know how many particles to emit.
+struct GpuEmissionParams {
+    uint emission_count;
+    uint actual_burst_count;
+    uint _pad0;
+    uint _pad1;
+};
+
+// Debug telemetry data written by GPU compute kernels for diagnostics.
+// Layout: 8 x uint = 32 bytes. Only available when DEBUG_TELEMETRY is defined.
+#if DEBUG_TELEMETRY
+struct DebugTelemetry {
+    uint alive_count;
+    uint dead_count;
+    uint emit_count;
+    uint update_threadgroups;
+    uint emission_threadgroups;
+    uint frame_number;
+    uint _reserved0;
+    uint _reserved1;
+};
+#endif
 
 // Counter header for dead/alive list buffers.
 // Layout: first 16 bytes of buffer.

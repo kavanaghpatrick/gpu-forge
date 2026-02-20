@@ -332,13 +332,43 @@ case "${1}" in
     fi
     issues=$((issues + suspicious))
 
-    # Check 5: Findings without source URLs
-    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_url IS NULL OR source_url='';")
+    # Check 5a: Web-source findings without URLs (ERROR)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE (source_url IS NULL OR source_url='') AND source_type NOT IN ('benchmark','empirical_test');")
     if [ "$count" -gt 0 ] 2>/dev/null; then
-      echo "WARNING: $count findings have no source URL"
+      echo "ERROR: $count web-source findings have no source URL"
       issues=$((issues + count))
     else
-      echo "OK: All findings have source URLs"
+      echo "OK: All web-source findings have source URLs"
+    fi
+
+    # Check 5b: Benchmark/empirical_test findings without local path (INFO)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE (source_url IS NULL OR source_url='') AND source_type IN ('benchmark','empirical_test');")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "INFO: $count benchmark/empirical_test findings have no source path (run: kb backfill-urls)"
+    else
+      echo "OK: All benchmark/empirical_test findings have local paths"
+    fi
+
+    # Check 6: Stale investigations (running for >1 hour)
+    count=$(run_sql "$DB" "SELECT COUNT(*) FROM investigations WHERE status='running' AND started_at < datetime('now', '-1 hours');")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      echo "WARNING: $count investigations running for >1 hour (may be orphaned). Run: kb cleanup --dry-run"
+      issues=$((issues + count))
+    else
+      echo "OK: No stale investigations"
+    fi
+
+    # Check 7: Academic findings without citations
+    count=$(run_sql "$DB" \
+      "SELECT COUNT(*) FROM findings f
+       WHERE f.source_type='academic_paper'
+         AND NOT EXISTS (SELECT 1 FROM citations c WHERE c.finding_id=f.id);")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      total=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_type='academic_paper';")
+      echo "WARNING: $count of $total academic paper findings have no citation record"
+      issues=$((issues + count))
+    else
+      echo "OK: All academic paper findings have citations"
     fi
 
     echo ""
@@ -430,6 +460,72 @@ case "${1}" in
     fi
     ;;
 
+  cleanup)
+    # kb cleanup [--dry-run] [--hours N]
+    dry_run=0
+    hours=1
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dry-run) dry_run=1 ;;
+        --hours) shift; hours="$1" ;;
+      esac
+      shift
+    done
+
+    if [ "$dry_run" -eq 1 ]; then
+      echo "=== Dry Run: Stale Investigations ==="
+      run_sql -header -column "$DB" \
+        "SELECT id, topic, status, started_at,
+                ROUND((julianday('now') - julianday(started_at)) * 24, 1) as hours_running
+         FROM investigations
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours')
+         ORDER BY started_at;"
+      count=$(run_sql "$DB" \
+        "SELECT COUNT(*) FROM investigations
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours');")
+      echo ""
+      echo "Would close: ${count} investigation(s)"
+    else
+      count=$(run_sql "$DB" \
+        "SELECT COUNT(*) FROM investigations
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours');")
+      run_sql "$DB" \
+        "UPDATE investigations
+         SET status='failed',
+             completed_at=datetime('now'),
+             summary='Auto-closed: agent did not complete'
+         WHERE status='running'
+           AND started_at < datetime('now', '-${hours} hours');"
+      if [ $? -eq 0 ]; then
+        echo "Closed ${count} stale investigation(s)"
+      fi
+    fi
+    ;;
+
+  backfill-urls)
+    # kb backfill-urls — list findings with missing source_url grouped by source_type
+    echo "=== Findings Missing Source URLs ==="
+    echo ""
+    run_sql -header -column "$DB" \
+      "SELECT source_type, COUNT(*) as count
+       FROM findings
+       WHERE source_url IS NULL OR source_url=''
+       GROUP BY source_type
+       ORDER BY count DESC;"
+    echo ""
+    echo "--- Details ---"
+    run_sql -header -column "$DB" \
+      "SELECT f.id, s.name as skill, f.topic, f.source_type, substr(f.claim,1,60) as claim
+       FROM findings f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE f.source_url IS NULL OR f.source_url=''
+       ORDER BY f.source_type, f.id;"
+    ;;
+
   *)
     echo "GPU Knowledge Base CLI"
     echo ""
@@ -452,6 +548,8 @@ case "${1}" in
     echo "  verify                   Run quality checks on the entire knowledge base"
     echo "  dedup                    Detect duplicate citations and findings"
     echo "  fix-confidence           Downgrade inflated confidence levels"
+    echo "  cleanup [--dry-run] [--hours N]  Close stale investigations (default: >1h)"
+    echo "  backfill-urls                List findings missing source URLs"
     echo ""
     echo "Investigation tracking:"
     echo "  log-start <skill> <topic> [issue#]  Start investigation session"

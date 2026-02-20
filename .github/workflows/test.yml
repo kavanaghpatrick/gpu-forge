@@ -28,17 +28,17 @@ jobs:
       - name: Run unit tests
         run: |
           cd "${GITHUB_WORKSPACE}"
-          bats tests/unit/ || true
+          bats tests/unit/
 
       - name: Run integration tests
         run: |
           cd "${GITHUB_WORKSPACE}"
-          bats tests/integration/ || true
+          bats tests/integration/
 
       - name: Run performance benchmarks
         run: |
           cd "${GITHUB_WORKSPACE}"
-          bats tests/performance/ || true
+          bats tests/performance/
 
       - name: Run full test suite
         run: |

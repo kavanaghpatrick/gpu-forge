@@ -7,19 +7,24 @@ load ../test_helper/common-setup
   assert_success
 }
 
-@test "hooks.json has hooks array" {
+@test "hooks.json has hooks object" {
   run jq -e '.hooks | type' "${PLUGIN_ROOT}/hooks/hooks.json"
   assert_success
-  assert_output '"array"'
+  assert_output '"object"'
 }
 
 @test "SessionStart event exists" {
-  run jq -e '.hooks[] | select(.event == "SessionStart")' "${PLUGIN_ROOT}/hooks/hooks.json"
+  run jq -e '.hooks.SessionStart' "${PLUGIN_ROOT}/hooks/hooks.json"
   assert_success
 }
 
 @test "PostToolUse event exists" {
-  run jq -e '.hooks[] | select(.event == "PostToolUse")' "${PLUGIN_ROOT}/hooks/hooks.json"
+  run jq -e '.hooks.PostToolUse' "${PLUGIN_ROOT}/hooks/hooks.json"
+  assert_success
+}
+
+@test "SubagentStop event exists" {
+  run jq -e '.hooks.SubagentStop' "${PLUGIN_ROOT}/hooks/hooks.json"
   assert_success
 }
 
@@ -46,6 +51,6 @@ load ../test_helper/common-setup
 @test "hook timeouts under 30 seconds" {
   # Check any explicit timeout values in hooks.json are under 30
   local max_timeout
-  max_timeout=$(jq '[.hooks[].hooks[]? | .timeout // 0] | max' "${PLUGIN_ROOT}/hooks/hooks.json")
+  max_timeout=$(jq '[.hooks[][] | .hooks[]? | .timeout // 0] | max' "${PLUGIN_ROOT}/hooks/hooks.json")
   [ "$max_timeout" -lt 30 ]
 }

@@ -106,19 +106,44 @@ Template types:
 - **`benchmark`**: Benchmark harness with GPU timing, multiple sizes, CSV output
 - **`full-project`**: Complete project with Swift, Python/MLX, benchmarks, and docs
 
-## Step 3: Read Templates
+### Pattern-to-JSON Config Mapping
 
-Read scaffold specification files from the templates directory:
+| Compute Pattern | Language | JSON Config File |
+|----------------|----------|-----------------|
+| reduction | swift-metal | `reduction-kernel.json` |
+| gemm | swift-metal | `matrix-multiply.json` |
+| scan | swift-metal | `scan-kernel.json` |
+| custom | swift-metal | `metal-compute-blank.json` |
+| custom | mlx-kernel | `mlx-custom-kernel.json` |
+| histogram | swift-metal | `metal-compute-blank.json` *(fallback)* |
+| * | both | `metal-compute-blank.json` *(fallback)* |
+| *(unmapped)* | * | `metal-compute-blank.json` *(default fallback)* |
 
-```bash
-ls ${CLAUDE_PLUGIN_ROOT}/templates/project/
-```
+## Step 3: Read JSON Config and Templates
 
-Load relevant templates based on the selected template type:
-- For `swift-metal` / `minimal` (Swift): Read from `${CLAUDE_PLUGIN_ROOT}/templates/swift/` and `${CLAUDE_PLUGIN_ROOT}/templates/metal/`
-- For `mlx-kernel`: Read from `${CLAUDE_PLUGIN_ROOT}/templates/mlx/`
-- For `full-project`: Read from all template directories
-- For `benchmark`: Read from `${CLAUDE_PLUGIN_ROOT}/templates/project/`
+Based on the pattern + language selection from Step 1, determine the JSON config file
+using the mapping table above.
+
+1. **Read the JSON config**:
+   ```bash
+   cat ${CLAUDE_PLUGIN_ROOT}/templates/project/<config-file>.json
+   ```
+
+2. **Extract parameters**: The JSON `parameters` field defines available parameters
+   with types, defaults, and options. Use these defaults for template substitution
+   unless the user overrides them.
+
+3. **Extract file mappings**: The JSON `files` array defines template-to-output mappings:
+   ```json
+   { "template": "metal/reduction.metal.tmpl", "output": "Sources/{{PROJECT_NAME}}/Shaders/reduce.metal" }
+   ```
+   Read each template from `${CLAUDE_PLUGIN_ROOT}/templates/<template-path>`.
+
+4. **Fallback**: If no JSON config matches the pattern+language combination,
+   use `metal-compute-blank.json` as the default.
+
+5. **Note knowledge areas**: The JSON `knowledge_applied` field lists relevant
+   skill areas. After scaffolding, suggest these as KB queries.
 
 ## Step 4: Template Parameter Substitution
 
@@ -310,3 +335,15 @@ For Python/MLX projects:
   python -m {{KERNEL_NAME_LOWER}}
   python benchmark.py
 ```
+
+### Suggested KB Queries
+
+Based on the JSON config's `knowledge_applied` field, suggest relevant queries:
+
+```
+Relevant knowledge areas for this project:
+  /gpu-forge:ask <skill-1> "optimization strategies for <pattern>"
+  /gpu-forge:ask <skill-2> "best practices for <pattern>"
+```
+
+Where `<skill-N>` comes from the JSON `knowledge_applied` array.

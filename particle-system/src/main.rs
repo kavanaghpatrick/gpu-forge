@@ -6,6 +6,7 @@
 
 mod buffers;
 mod camera;
+mod encode;
 mod frame;
 mod gpu;
 mod input;
@@ -18,8 +19,8 @@ use objc2_core_foundation::CGSize;
 use objc2_foundation::ns_string;
 use objc2_metal::{
     MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder, MTLLoadAction, MTLPrimitiveType, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLSize, MTLStoreAction,
+    MTLLoadAction, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLStoreAction,
 };
 use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -32,10 +33,10 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use buffers::ParticlePool;
 use camera::OrbitCamera;
-use frame::FrameRing;
+use frame::{FrameRing, MAX_FRAMES_IN_FLIGHT};
 use gpu::GpuState;
 use input::InputState;
-use types::{CounterHeader, Uniforms};
+use types::Uniforms;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -73,10 +74,19 @@ impl App {
         // Acquire a frame slot (blocks until GPU finishes previous frame)
         self.frame_ring.acquire();
 
-        // --- Handle pending pool grow (safe here: GPU is idle after acquire with single buffering) ---
+        // --- Handle pending pool grow (drain all in-flight frames for safe reallocation) ---
         if let Some(new_size) = self.input.pending_grow.take() {
+            // We already acquired 1 slot above. Drain the remaining in-flight frames
+            // so no GPU work references the old buffers during reallocation.
+            for _ in 0..(MAX_FRAMES_IN_FLIGHT - 1) {
+                self.frame_ring.wait_one();
+            }
             if let Some(pool) = &mut self.pool {
                 pool.grow(new_size);
+            }
+            // Restore the extra semaphore slots we drained
+            for _ in 0..(MAX_FRAMES_IN_FLIGHT - 1) {
+                self.frame_ring.signal();
             }
         }
 
@@ -89,14 +99,8 @@ impl App {
         // write_list: update kernel writes this frame's survivors here; render uses this
         let (read_list, write_list) = pool.get_ping_pong_lists(self.ping_pong);
 
-        // --- Reset ONLY the write list counter to 0 at frame start (CPU write) ---
-        // The read list still holds last frame's survivors — do NOT reset it.
-        unsafe {
-            let write_ptr = write_list.contents().as_ptr() as *mut CounterHeader;
-            (*write_ptr).count = 0;
-        }
-
-        // --- Update uniforms ---
+        // --- Update uniforms (write to per-frame slot in uniform ring buffer) ---
+        let uniform_offset = ParticlePool::uniforms_offset(self.frame_ring.frame_index());
         let base_emission: u32 = self.input.physics.emission_rate;
         let view_mat = self.camera.view_matrix();
         let proj_mat = self.camera.projection_matrix();
@@ -128,23 +132,20 @@ impl App {
             0
         };
 
-        // Total emission = base + burst, clamped to available dead list slots
-        let dead_count = unsafe {
-            let dead_ptr = pool.dead_list.contents().as_ptr() as *const CounterHeader;
-            (*dead_ptr).count
-        };
-        let emission_count = (base_emission + burst_count).min(dead_count);
-        // Actual burst_count must not exceed total emission
-        let actual_burst_count = burst_count.min(emission_count);
-
+        // Write uniforms to the per-frame slot in the uniform ring buffer
+        // SAFETY: uniform_ring buffer is 768 bytes (3 x 256). uniform_offset is computed from
+        // frame_index (0-2) * 256, so the write stays within bounds. The frame slot is not
+        // accessed by the GPU until the command buffer is committed. StorageModeShared
+        // guarantees CPU-visible pointer. Uniforms is repr(C) with correct alignment.
         unsafe {
-            let uniforms_ptr = pool.uniforms.contents().as_ptr() as *mut Uniforms;
+            let ring_base = pool.uniform_ring.contents().as_ptr() as *mut u8;
+            let uniforms_ptr = ring_base.add(uniform_offset) as *mut Uniforms;
             (*uniforms_ptr).view_matrix = view_mat;
             (*uniforms_ptr).projection_matrix = proj_mat;
             (*uniforms_ptr).mouse_world_pos = mouse_world_pos;
             (*uniforms_ptr).dt = self.frame_ring.dt;
             (*uniforms_ptr).frame_number = self.frame_number;
-            (*uniforms_ptr).emission_count = emission_count;
+            (*uniforms_ptr).base_emission_rate = base_emission;
             (*uniforms_ptr).pool_size = pool.pool_size as u32;
             // Set grid bounds for density field
             (*uniforms_ptr).grid_bounds_min = [-10.0, -10.0, -10.0];
@@ -162,7 +163,7 @@ impl App {
             // Burst emission parameters
             (*uniforms_ptr).burst_position = self.input.burst_world_pos;
             (*uniforms_ptr)._pad_burst = 0.0;
-            (*uniforms_ptr).burst_count = actual_burst_count;
+            (*uniforms_ptr).burst_count = burst_count;
         }
 
         // Clear burst_requested after uploading uniforms
@@ -182,6 +183,8 @@ impl App {
 
         // Create render pass descriptor with dark background
         let render_pass_desc = MTLRenderPassDescriptor::renderPassDescriptor();
+        // SAFETY: objectAtIndexedSubscript(0) is always valid — MTLRenderPassDescriptor
+        // always has at least one color attachment slot.
         let color_attachment = unsafe {
             render_pass_desc.colorAttachments().objectAtIndexedSubscript(0)
         };
@@ -205,129 +208,25 @@ impl App {
         };
         command_buffer.setLabel(Some(ns_string!("Frame")));
 
+        // F1 GPU capture: log request and reset flag
+        // TODO: Full MTLCaptureManager programmatic capture requires objc2-metal
+        // bindings for MTLCaptureManager/MTLCaptureDescriptor (not yet available).
+        // For now, log a hint to use Xcode GPU capture or MTL_CAPTURE_ENABLED env var.
+        if self.input.capture_next_frame {
+            self.input.capture_next_frame = false;
+            eprintln!("[DEBUG] GPU capture requested (set MTL_CAPTURE_ENABLED=1 to enable)");
+        }
+
         // Register completion handler that signals the semaphore
         self.frame_ring.register_completion_handler(&command_buffer);
 
-        // --- Emission compute pass ---
-        // Emission appends new particles to the READ list (alongside last frame's survivors).
-        if let Some(compute_encoder) = command_buffer.computeCommandEncoder() {
-            compute_encoder.setLabel(Some(ns_string!("Emission")));
-            compute_encoder.setComputePipelineState(&gpu.emission_pipeline);
-
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = alive_list (read_list),
-            // buffer(3) = positions, buffer(4) = velocities, buffer(5) = lifetimes,
-            // buffer(6) = colors, buffer(7) = sizes
-            unsafe {
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                compute_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 3);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 4);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 6);
-                compute_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 7);
-            }
-
-            // Dispatch ceil(emission_count / 256) threadgroups of 256
-            let threadgroup_size = 256usize;
-            let threadgroup_count = (emission_count as usize).div_ceil(threadgroup_size);
-            compute_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
-
-            compute_encoder.endEncoding();
-        }
-
-        // --- Grid clear compute pass ---
-        // Zero all 262144 cells in the grid density buffer.
-        // Must run BEFORE grid_populate and update so update kernel reads fresh grid data.
-        if let Some(grid_clear_encoder) = command_buffer.computeCommandEncoder() {
-            grid_clear_encoder.setLabel(Some(ns_string!("Grid Clear")));
-            grid_clear_encoder.setComputePipelineState(&gpu.grid_clear_pipeline);
-            unsafe {
-                grid_clear_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 0);
-            }
-            // 262144 cells / 256 threads per group = 1024 threadgroups
-            grid_clear_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: 1024, height: 1, depth: 1 },
-                MTLSize { width: 256, height: 1, depth: 1 },
-            );
-            grid_clear_encoder.endEncoding();
-        }
-
-        // --- Grid populate compute pass ---
-        // Each alive particle atomically increments its grid cell density.
-        // Reads from read_list (last frame's survivors + this frame's new emissions).
-        // Must run BEFORE update so the update kernel can read the density field.
-        if let Some(grid_pop_encoder) = command_buffer.computeCommandEncoder() {
-            grid_pop_encoder.setLabel(Some(ns_string!("Grid Populate")));
-            grid_pop_encoder.setComputePipelineState(&gpu.grid_populate_pipeline);
-            unsafe {
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 1);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 2);
-                grid_pop_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 3);
-            }
-            // Dispatch pool_size / 256 threadgroups; shader guards with alive_count
-            let threadgroup_size = 256usize;
-            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
-            grid_pop_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
-            grid_pop_encoder.endEncoding();
-        }
-
-        // --- Physics update compute pass ---
-        // Reads from read_list (last frame's survivors + this frame's new emissions).
-        // Reads grid_density for pressure gradient force.
-        // Writes survivors to write_list, writes dead particles back to dead_list.
-        if let Some(update_encoder) = command_buffer.computeCommandEncoder() {
-            update_encoder.setLabel(Some(ns_string!("Physics Update")));
-            update_encoder.setComputePipelineState(&gpu.update_pipeline);
-
-            // buffer(0) = uniforms, buffer(1) = dead_list, buffer(2) = read_list (input),
-            // buffer(3) = write_list (output), buffer(4-8) = SoA data, buffer(9) = grid_density
-            unsafe {
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.uniforms), 0, 0);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.dead_list), 0, 1);
-                update_encoder.setBuffer_offset_atIndex(Some(read_list), 0, 2);
-                update_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 3);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.positions), 0, 4);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.velocities), 0, 5);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 6);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.colors), 0, 7);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.sizes), 0, 8);
-                update_encoder.setBuffer_offset_atIndex(Some(&pool.grid_density), 0, 9);
-            }
-
-            // Dispatch ceil(pool_size / 256) threadgroups; shader guards with tid < alive_count
-            let threadgroup_size = 256usize;
-            let threadgroup_count = pool.pool_size.div_ceil(threadgroup_size);
-            update_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: threadgroup_count, height: 1, depth: 1 },
-                MTLSize { width: threadgroup_size, height: 1, depth: 1 },
-            );
-
-            update_encoder.endEncoding();
-        }
-
-        // --- Sync alive count to indirect args (GPU compute, single thread) ---
-        // Reads from write_list (update kernel output = this frame's survivors).
-        if let Some(sync_encoder) = command_buffer.computeCommandEncoder() {
-            sync_encoder.setLabel(Some(ns_string!("Compaction")));
-            sync_encoder.setComputePipelineState(&gpu.sync_indirect_pipeline);
-            unsafe {
-                sync_encoder.setBuffer_offset_atIndex(Some(write_list), 0, 0);
-                sync_encoder.setBuffer_offset_atIndex(Some(&pool.indirect_args), 0, 1);
-            }
-            sync_encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize { width: 1, height: 1, depth: 1 },
-                MTLSize { width: 1, height: 1, depth: 1 },
-            );
-            sync_encoder.endEncoding();
-        }
+        // --- 6-pass GPU compute pipeline ---
+        encode::encode_prepare_dispatch(&command_buffer, gpu, pool, write_list, uniform_offset);
+        encode::encode_emission(&command_buffer, gpu, pool, read_list, uniform_offset);
+        encode::encode_grid_clear(&command_buffer, gpu, pool);
+        encode::encode_grid_populate(&command_buffer, gpu, pool, read_list, uniform_offset);
+        encode::encode_update(&command_buffer, gpu, pool, read_list, write_list, uniform_offset);
+        encode::encode_sync_indirect(&command_buffer, gpu, pool, write_list);
 
         // --- Render pass: draw particle billboard quads ---
         let encoder = match command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc) {
@@ -343,17 +242,23 @@ impl App {
         encoder.setRenderPipelineState(&gpu.render_pipeline);
         encoder.setDepthStencilState(Some(&gpu.depth_stencil_state));
 
-        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniforms + lifetimes
+        // Bind vertex buffers: buffer(0) = write_list (survivors), rest = SoA + uniform_ring + lifetimes
+        // SAFETY: All buffer references are valid Retained<MTLBuffer> from ParticlePool.
+        // Buffers remain valid for the lifetime of the command buffer (Retained keeps them alive).
+        // uniform_offset is within the uniform_ring buffer bounds (frame_index * 256 < 768).
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(write_list), 0, 0);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.positions), 0, 1);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.colors), 0, 2);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.sizes), 0, 3);
-            encoder.setVertexBuffer_offset_atIndex(Some(&pool.uniforms), 0, 4);
+            encoder.setVertexBuffer_offset_atIndex(Some(&pool.uniform_ring), uniform_offset, 4);
             encoder.setVertexBuffer_offset_atIndex(Some(&pool.lifetimes), 0, 5);
         }
 
         // Indirect draw: triangle strip, 4 vertices per instance, instanceCount from indirect_args
+        // SAFETY: indirect_args buffer contains valid MTLDrawPrimitivesIndirectArguments (DrawArgs).
+        // Written by sync_indirect_args kernel in the same command buffer, so it's always
+        // populated before the render pass executes. Buffer offset 0 is correctly aligned.
         unsafe {
             encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
                 MTLPrimitiveType::TriangleStrip,
@@ -380,7 +285,7 @@ impl App {
             if let Some(window) = &self.window {
                 // Read alive count from the write list (this frame's survivors)
                 // Safe because GPU is done with this buffer (single buffering)
-                let alive_count = pool.read_alive_count(write_list);
+                let alive_count = pool.read_alive_count_from_indirect();
                 let alive_k = alive_count as f64 / 1_000.0;
                 let pool_m = pool.pool_size as f64 / 1_000_000.0;
                 let fps = self.frame_ring.fps;
@@ -419,6 +324,8 @@ impl ApplicationHandler for App {
         let handle = window.window_handle().expect("Failed to get window handle");
         match handle.as_raw() {
             RawWindowHandle::AppKit(appkit_handle) => {
+                // SAFETY: ns_view is a valid NSView obtained from winit's window handle.
+                // This runs on the main thread during resumed() as required by AppKit.
                 unsafe {
                     gpu.attach_layer_to_view(appkit_handle.ns_view);
                 }

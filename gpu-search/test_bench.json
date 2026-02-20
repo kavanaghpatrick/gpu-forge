@@ -1,0 +1,16 @@
+{
+  "benchmarks": {
+    "search_1mb": { "mean_ns": 1250000.0 },
+    "search_10mb": { "mean_ns": 11500000.0 },
+    "search_100mb": { "mean_ns": 98000000.0 },
+    "io_batch_100": { "mean_ns": 450000.0 },
+    "io_batch_1k": { "mean_ns": 3200000.0 }
+  },
+  "baseline": {
+    "search_1mb": { "mean_ns": 1000000.0 },
+    "search_10mb": { "mean_ns": 10000000.0 },
+    "search_100mb": { "mean_ns": 95000000.0 },
+    "io_batch_100": { "mean_ns": 500000.0 },
+    "io_batch_1k": { "mean_ns": 3000000.0 }
+  }
+}

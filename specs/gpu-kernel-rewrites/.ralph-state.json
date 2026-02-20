@@ -1,0 +1,17 @@
+{
+  "source": "spec",
+  "name": "gpu-kernel-rewrites",
+  "basePath": "./specs/gpu-kernel-rewrites",
+  "phase": "execution",
+  "taskIndex": 26,
+  "totalTasks": 35,
+  "taskIteration": 1,
+  "maxTaskIterations": 5,
+  "recoveryMode": false,
+  "maxFixTasksPerOriginal": 3,
+  "maxFixTaskDepth": 3,
+  "globalIteration": 27,
+  "maxGlobalIterations": 100,
+  "fixTaskMap": {},
+  "awaitingApproval": false
+}

@@ -1,0 +1,3 @@
+[workspace]
+members = ["forge-bench", "forge-primitives", "forge-sort"]
+resolver = "2"

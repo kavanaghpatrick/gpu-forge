@@ -1,0 +1,13 @@
+{
+  "source": "spec",
+  "name": "gpu-perf-phase3",
+  "basePath": "specs/gpu-perf-phase3",
+  "phase": "tasks",
+  "taskIndex": 0,
+  "totalTasks": 0,
+  "taskIteration": 1,
+  "maxTaskIterations": 5,
+  "globalIteration": 1,
+  "maxGlobalIterations": 100,
+  "awaitingApproval": false
+}

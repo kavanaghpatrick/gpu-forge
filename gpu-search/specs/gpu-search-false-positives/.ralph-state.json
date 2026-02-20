@@ -1,0 +1,8 @@
+{
+  "spec": "gpu-search-false-positives",
+  "phase": "execution",
+  "totalTasks": 16,
+  "taskIndex": 0,
+  "branch": "feat/gpu-query",
+  "basePath": "./specs/gpu-search-false-positives/"
+}

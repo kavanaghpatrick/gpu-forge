@@ -51,7 +51,7 @@ All findings MUST be stored in the knowledge database -- not in scattered markdo
    ```bash
    ${CLAUDE_PLUGIN_ROOT}/scripts/kb log-start "<skill-name>" "<topic>"
    ```
-   Save the returned investigation ID for use in Phase 4.
+   Save the returned investigation ID for use in Phase 3 and Phase 4.
 
 ### Phase 2: Research
 
@@ -71,7 +71,7 @@ For each sub-question in the topic, conduct thorough research:
    - llama.cpp: search GitHub for Metal kernel implementations
    - Asahi Linux: search for GPU driver code
 
-### Phase 3: Store Findings
+### Phase 3: Store Findings & Citations
 
 For EACH discrete finding, store it in the database using sqlite3 directly:
 
@@ -84,6 +84,9 @@ sqlite3 "${CLAUDE_PLUGIN_ROOT}/data/gpu_knowledge.db" "INSERT INTO findings (ski
 - Always include the source URL. If there is no URL, use the source description.
 - Escape single quotes in SQL by doubling them: `''`
 - Set source_type from: academic_paper, apple_docs, wwdc_session, github_repo, blog_post, reverse_engineering, benchmark, empirical_test, patent, forum_post, book, other
+- For `benchmark` or `empirical_test` findings from local experiments, set `source_url` to the
+  relative file path (e.g., `experiments/exp16_8bit.rs`, `metal-gpu-experiments/shaders/exp16_8bit.metal`).
+  This makes the finding traceable to its source code.
 - Use tags for cross-cutting concerns (e.g., "m4,m5,performance,memory")
 
 **Confidence-source cross-validation (enforced by DB triggers):**
@@ -117,36 +120,28 @@ SELECT COUNT(*) FROM findings WHERE source_url='<url>' AND skill_id=<id> AND top
 
 If count > 0, skip the INSERT or merge the new evidence into the existing finding.
 
-### Phase 4: Citations
+**Inline Citation Protocol (for academic papers)**:
 
-For academic papers, add a citation record. Author names require verification.
+After EACH finding INSERT where `source_type='academic_paper'`, IMMEDIATELY add a citation:
 
-**CRITICAL: Do NOT guess or recall author names from memory.** Author names MUST be:
-1. Extracted from the actual paper page via WebFetch (check the PDF header, abstract page, or metadata)
-2. OR extracted from DOI metadata (e.g., `https://api.crossref.org/works/<doi>`)
-3. OR explicitly marked as `author_source='unverified'` if neither method works
+1. Get the finding_id: `sqlite3 ... "SELECT last_insert_rowid();"`
+2. WebFetch the paper's landing page to extract authors
+3. INSERT citation record:
+   ```bash
+   sqlite3 "${CLAUDE_PLUGIN_ROOT}/data/gpu_knowledge.db" "INSERT INTO citations (finding_id, authors, title, venue, year, doi, url, author_source) VALUES (<finding_id>, '<authors>', '<title>', '<venue>', <year>, '<doi>', '<url>', '<author_source>');"
+   ```
+4. Author verification rules:
+   - `extracted_from_page`: authors confirmed from actual source page
+   - `from_metadata`: authors from DOI/API metadata
+   - `unverified`: neither method works -- NEVER fabricate
 
-```bash
-sqlite3 "${CLAUDE_PLUGIN_ROOT}/data/gpu_knowledge.db" "INSERT INTO citations (finding_id, authors, title, venue, year, doi, url, author_source) VALUES (<finding_id>, '<authors>', '<title>', '<venue>', <year>, '<doi>', '<url>', '<author_source>');"
-```
+**CRITICAL**: Do NOT batch citations to the end. Each academic paper finding gets its
+citation immediately after the finding INSERT. This ensures citations are never skipped
+when the agent hits its turn limit.
 
-**Citation workflow:**
-1. WebFetch the paper's landing page (arXiv abstract, ACM DL page, etc.)
-2. Extract authors from the page content
-3. Set `author_source` to `'extracted_from_page'`
-4. If page does not clearly list authors, try DOI metadata API and set `author_source='from_metadata'`
-5. If neither works, set `author_source='unverified'` -- NEVER fabricate author names
+Dedup check before citation: `SELECT COUNT(*) FROM citations WHERE title='<title>' AND year=<year>;`
 
-**Dedup check before citation INSERT:**
-```sql
-SELECT COUNT(*) FROM citations WHERE title='<title>' AND year=<year>;
-```
-
-The database has a UNIQUE index on (title, year) and will reject duplicates, but checking first gives a cleaner error path.
-
-Get the finding_id from: `sqlite3 ... "SELECT last_insert_rowid();"`
-
-### Phase 5: Summary, Quality Check & Close
+### Phase 4: Summary, Quality Check & Close
 
 1. **Run quality checks:**
    ```bash

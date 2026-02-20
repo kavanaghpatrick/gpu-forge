@@ -1,3 +1,6 @@
+# Rust build artifacts
+**/target/
+
 # macOS
 .DS_Store
 
@@ -8,6 +11,7 @@
 
 # Test artifacts
 tests/tmp/
+**/test-data/sales_1m.csv
 tests/test_helper/bats/
 tests/test_helper/bats-support/
 tests/test_helper/bats-assert/
