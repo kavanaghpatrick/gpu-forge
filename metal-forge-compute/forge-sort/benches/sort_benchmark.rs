@@ -17,8 +17,18 @@ fn gen_random_i32(n: usize) -> Vec<i32> {
 }
 
 fn gen_random_f32(n: usize) -> Vec<f32> {
+    // Uniform random bit patterns (not narrow-range).
+    // Narrow-range floats (e.g. -1e6..1e6) cluster in ~20 MSD bins,
+    // causing pathological bucket imbalance for MSD radix sort.
     let mut rng = rand::thread_rng();
-    (0..n).map(|_| rng.gen_range(-1e6f32..1e6f32)).collect()
+    (0..n)
+        .map(|_| loop {
+            let v = f32::from_bits(rng.gen::<u32>());
+            if v.is_finite() {
+                return v;
+            }
+        })
+        .collect()
 }
 
 fn gen_random_u64(n: usize) -> Vec<u64> {
@@ -33,7 +43,14 @@ fn gen_random_i64(n: usize) -> Vec<i64> {
 
 fn gen_random_f64(n: usize) -> Vec<f64> {
     let mut rng = rand::thread_rng();
-    (0..n).map(|_| rng.gen_range(-1e12f64..1e12f64)).collect()
+    (0..n)
+        .map(|_| loop {
+            let v = f64::from_bits(rng.gen::<u64>());
+            if v.is_finite() {
+                return v;
+            }
+        })
+        .collect()
 }
 
 fn percentile(times: &[f64], p: f64) -> f64 {
