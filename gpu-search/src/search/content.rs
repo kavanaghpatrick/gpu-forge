@@ -747,40 +747,7 @@ impl ContentSearchEngine {
             }
         }
 
-        // Sort by file index, then byte offset (authoritative position).
-        // Use GPU argsort for n > 64, CPU fallback otherwise.
-        let mut gpu_sorted = false;
-
-        if results.len() > 64 {
-            if let Ok(mut sorter) = forge_sort::GpuSorter::new() {
-                let keys: Vec<u64> = results
-                    .iter()
-                    .map(|r| ((r.file_index as u64) << 32) | (r.byte_offset as u64))
-                    .collect();
-                match sorter.argsort_u64(&keys) {
-                    Ok(indices) => {
-                        let sorted: Vec<ContentMatch> = indices
-                            .iter()
-                            .map(|&i| results[i as usize].clone())
-                            .collect();
-                        results = sorted;
-                        gpu_sorted = true;
-                    }
-                    Err(e) => {
-                        eprintln!("[gpu-search] argsort_u64 failed: {e}, falling back to CPU sort");
-                    }
-                }
-            }
-        }
-
-        if !gpu_sorted {
-            results.sort_by(|a, b| {
-                a.file_index
-                    .cmp(&b.file_index)
-                    .then(a.byte_offset.cmp(&b.byte_offset))
-            });
-        }
-
+        gpu_sort_results(&mut results);
         results
     }
 
@@ -871,6 +838,48 @@ pub fn cpu_search(content: &[u8], pattern: &[u8], case_sensitive: bool) -> usize
     }
 
     count
+}
+
+// ============================================================================
+// GPU Sort Helper
+// ============================================================================
+
+/// Sort ContentMatch results by (file_index, byte_offset) using GPU argsort
+/// for batches >64, falling back to CPU sort for small batches or GPU errors.
+fn gpu_sort_results(results: &mut Vec<ContentMatch>) {
+    const GPU_SORT_THRESHOLD: usize = 64;
+
+    let mut gpu_sorted = false;
+
+    if results.len() > GPU_SORT_THRESHOLD {
+        if let Ok(mut sorter) = forge_sort::GpuSorter::new() {
+            let keys: Vec<u64> = results
+                .iter()
+                .map(|r| ((r.file_index as u64) << 32) | (r.byte_offset as u64))
+                .collect();
+            match sorter.argsort_u64(&keys) {
+                Ok(indices) => {
+                    let sorted: Vec<ContentMatch> = indices
+                        .iter()
+                        .map(|&i| results[i as usize].clone())
+                        .collect();
+                    *results = sorted;
+                    gpu_sorted = true;
+                }
+                Err(e) => {
+                    eprintln!("[gpu-search] argsort_u64 failed: {e}, falling back to CPU sort");
+                }
+            }
+        }
+    }
+
+    if !gpu_sorted {
+        results.sort_by(|a, b| {
+            a.file_index
+                .cmp(&b.file_index)
+                .then(a.byte_offset.cmp(&b.byte_offset))
+        });
+    }
 }
 
 // ============================================================================
