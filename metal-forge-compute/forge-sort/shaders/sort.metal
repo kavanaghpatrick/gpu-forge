@@ -31,6 +31,12 @@ struct BucketDesc {
     uint tile_base;
 };
 
+struct InnerParams {
+    uint start_shift;
+    uint pass_count;
+    uint batch_start;
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // Function constants — specialized at PSO creation time
 // Defaults ensure existing kernels are unaffected when unset.
@@ -259,13 +265,13 @@ kernel void sort_inner_fused(
     device uint*                buf_a         [[buffer(0)]],
     device uint*                buf_b         [[buffer(1)]],
     device const BucketDesc*    bucket_descs  [[buffer(2)]],
-    constant uint&              batch_start   [[buffer(3)]],
+    constant InnerParams&       inner_params  [[buffer(3)]],
     uint lid       [[thread_position_in_threadgroup]],
     uint gid       [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
     uint simd_id   [[simdgroup_index_in_threadgroup]])
 {
-    BucketDesc desc = bucket_descs[gid + batch_start];
+    BucketDesc desc = bucket_descs[gid + inner_params.batch_start];
     if (desc.count == 0u) return;
 
     uint tile_count = desc.tile_count;
@@ -290,8 +296,8 @@ kernel void sort_inner_fused(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (uint pass = 0u; pass < 3u; pass++) {
-        uint shift = pass * 8u;
+    for (uint pass = 0u; pass < inner_params.pass_count; pass++) {
+        uint shift = (inner_params.start_shift + pass) * 8u;
 
         // Alternate buffers: pass 0: b->a, pass 1: a->b, pass 2: b->a
         device uint* src = (pass % 2u == 0u) ? buf_b : buf_a;

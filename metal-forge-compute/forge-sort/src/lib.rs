@@ -113,6 +113,14 @@ struct SortParams {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct InnerParams {
+    start_shift: u32,
+    pass_count: u32,
+    batch_start: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct BucketDesc {
     offset: u32,
     count: u32,
@@ -319,7 +327,11 @@ fn dispatch_sort(
     enc.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
 
     // Dispatch 4: Fused inner sort (3-pass LSD, buf_b ↔ buf_a)
-    let batch_start_0 = 0u32;
+    let inner_params = InnerParams {
+        start_shift: 0,
+        pass_count: 3,
+        batch_start: 0,
+    };
     let pso = pso_cache.get_or_create(library, "sort_inner_fused");
     enc.setComputePipelineState(pso);
     unsafe {
@@ -327,8 +339,8 @@ fn dispatch_sort(
         enc.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
         enc.setBuffer_offset_atIndex(Some(buf_bucket_descs), 0, 2);
         enc.setBytes_length_atIndex(
-            NonNull::new(&batch_start_0 as *const u32 as *mut _).unwrap(),
-            4,
+            NonNull::new(&inner_params as *const InnerParams as *mut _).unwrap(),
+            std::mem::size_of::<InnerParams>(),
             3,
         );
     }
@@ -473,7 +485,11 @@ fn encode_sort_pipeline(
     encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
 
     // Dispatch 4: Fused inner sort (3-pass LSD, buf_b ↔ buf_a)
-    let batch_start_0 = 0u32;
+    let inner_params = InnerParams {
+        start_shift: 0,
+        pass_count: 3,
+        batch_start: 0,
+    };
     let pso = pso_cache.get_or_create(library, "sort_inner_fused");
     encoder.setComputePipelineState(pso);
     unsafe {
@@ -481,8 +497,8 @@ fn encode_sort_pipeline(
         encoder.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
         encoder.setBuffer_offset_atIndex(Some(buf_bucket_descs), 0, 2);
         encoder.setBytes_length_atIndex(
-            NonNull::new(&batch_start_0 as *const u32 as *mut _).unwrap(),
-            4,
+            NonNull::new(&inner_params as *const InnerParams as *mut _).unwrap(),
+            std::mem::size_of::<InnerParams>(),
             3,
         );
     }

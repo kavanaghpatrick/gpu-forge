@@ -168,13 +168,13 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: AC-1.1, AC-1.2, AC-2.1, AC-2.2, AC-2.3, AC-2.4_
   - _Design: Test Strategy_
 
-- [ ] V2 [VERIFY] Quality checkpoint: full test suite
+- [x] V2 [VERIFY] Quality checkpoint: full test suite
   - **Do**: Run full workspace check + all forge-sort tests
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | tail -10`
   - **Done when**: Zero errors, all tests pass (25 existing + ~33 new i32/f32)
   - **Commit**: `chore(forge-sort): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.8 POC Checkpoint: verify i32/f32 sort end-to-end
+- [x] 1.8 POC Checkpoint: verify i32/f32 sort end-to-end
   - **Do**:
     1. Run the full i32 + f32 test suites
     2. Run existing u32 tests to confirm no regression
@@ -190,7 +190,7 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
 
 Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES branches in scatter+inner, argsort, sort_pairs.
 
-- [ ] 2.1 Add InnerParams struct and refactor sort_inner_fused binding
+- [x] 2.1 Add InnerParams struct and refactor sort_inner_fused binding
   - **Do**:
     1. Add `InnerParams` struct to sort.metal: `{start_shift: uint, pass_count: uint, batch_start: uint}`
     2. Change `sort_inner_fused` buffer(3) from `constant uint& batch_start` to `constant InnerParams& inner_params`
