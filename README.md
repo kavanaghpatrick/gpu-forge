@@ -53,7 +53,7 @@ sorter.sort_buffer(&buf)?;
 | 4M | 39.71 ms | 10.55 ms | **1.50 ms** | 26.5x | 7.0x |
 | 16M | 172.72 ms | 49.60 ms | **5.67 ms** | 30.5x | 8.7x |
 
-Zero-copy throughput (data already in Metal buffer): **4,800+ Mk/s** at sweet-spot sizes.
+All 6 types at similar throughput: u32 2,790 / i32 2,184 / f32 2,198 / u64 905 / i64 815 / f64 825 Mk/s. Zero-copy throughput (data already in Metal buffer): **5,300+ Mk/s** at sweet-spot sizes.
 
 **Algorithm**: MSD+fused-inner 8-bit radix sort in 4 GPU dispatches within a single command encoder. Atomic scatter (no spin-wait), fused 3-pass inner LSD, per-simdgroup histograms, ~22 KB threadgroup memory.
 

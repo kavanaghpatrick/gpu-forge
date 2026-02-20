@@ -37,6 +37,19 @@ When data is already in a Metal buffer, skip the memcpy for up to **2.3x more th
 
 GPU wins above ~200K elements. Sweet spot is 4M-16M where data fits in the System Level Cache.
 
+### Multi-type performance (all 6 types @ 16M elements)
+
+| Type | sort (w/ memcpy) | sort_buffer (zero-copy) | argsort | sort_pairs |
+|------|----------------:|------------------------:|--------:|-----------:|
+| **u32** | **2,790 Mk/s** | **4,077 Mk/s** | 1,181 Mk/s | 881 Mk/s |
+| **i32** | 2,184 Mk/s | - | - | - |
+| **f32** | 2,198 Mk/s | - | 1,127 Mk/s | 807 Mk/s |
+| **u64** | 905 Mk/s | - | - | 455 Mk/s |
+| **i64** | 815 Mk/s | - | - | - |
+| **f64** | 825 Mk/s | - | 514 Mk/s | - |
+
+32-bit types sort at ~2,200-2,800 Mk/s. 64-bit types sort at ~800-900 Mk/s (2x data, ~3x slower due to halved tile size + extra passes). Float types match integer performance when data has uniform bit distribution.
+
 ### vs other implementations
 
 | Implementation | Platform | 1M Mk/s | 16M Mk/s |
