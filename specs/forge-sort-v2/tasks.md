@@ -309,7 +309,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: AC-3.1, AC-3.2, AC-3.3, AC-3.4, AC-3.5, FR-12_
   - _Design: dispatch_sort_pipeline, Buffer Management_
 
-- [ ] 2.6 Implement sort_pairs methods
+- [x] 2.6 Implement sort_pairs methods
   - **Do**:
     1. Add `buf_orig_vals` as `Option<Retained<...>>` field to GpuSorter
     2. Add `ensure_buffers_with_values_and_orig(&mut self, n: usize)` method
