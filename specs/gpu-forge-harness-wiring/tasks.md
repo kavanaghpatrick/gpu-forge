@@ -482,7 +482,7 @@ created: 2026-02-20
 - _Requirements: AC-1.5_
 - _Design: Gap 8_
 
-### Task 10.3: Create PR and verify CI
+### Task 10.3: Create PR and verify CI [x]
 
 - **Do**:
   1. Verify current branch is a feature branch: `git branch --show-current`
@@ -502,14 +502,14 @@ created: 2026-02-20
 
 ## Phase 6: PR Lifecycle
 
-### Task 11.1: [VERIFY] CI pipeline passes
+### Task 11.1: [VERIFY] CI pipeline passes [x]
 
 - **Do**: Monitor CI after push, fix any failures
 - **Verify**: `gh pr checks` shows all green
 - **Done when**: CI pipeline passes
 - **Commit**: None
 
-### Task 11.2: [VERIFY] AC checklist
+### Task 11.2: [VERIFY] AC checklist [x]
 
 - **Do**: Programmatically verify each acceptance criterion is satisfied:
   1. AC-1.1-1.6: `kb cleanup` exists, --dry-run works, --hours works, verify reports stale
