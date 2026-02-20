@@ -1347,57 +1347,50 @@ impl SearchOrchestrator {
             }
         }
 
-        // DEFERRED LINE COUNTING: resolve_match() is the sole source of
+        // DEFERRED LINE COUNTING: resolve_from_cache() is the sole source of
         // truth for line numbers.  GPU's m.line_number (local to 64B thread
         // window) is intentionally ignored -- only byte_offset is used.
+        //
+        // FileCache: results are sorted by (file_index, byte_offset), so
+        // consecutive matches are in the same file. We load each file once
+        // and resolve all its matches from the cache.
         let resolve_start = Instant::now();
         let mut content_matches = Vec::new();
-
-        // File-level content validation cache: tracks whether each file
-        // actually contains the search pattern. Defense-in-depth against
-        // byte_offset mapping to the wrong file entirely.
-        let mut file_contains_pattern: std::collections::HashMap<PathBuf, bool> =
-            std::collections::HashMap::new();
-        let pattern_lower = pattern.to_lowercase();
+        let mut file_cache: Option<FileCache> = None;
 
         for m in &gpu_results {
             if content_matches.len() >= remaining_budget {
                 break;
             }
-            if let Some((line_number, line_content, context_before, context_after, match_start)) =
-                resolve_match(&m.file_path, m.byte_offset as usize, pattern, options.case_sensitive)
-            {
-                // FILE-LEVEL VALIDATION GATE: verify the file itself contains
-                // the pattern. resolve_match already confirms the pattern is
-                // in the resolved line, but this catches the hypothetical case
-                // where byte_offset maps to the wrong file entirely.
-                let file_valid = *file_contains_pattern
-                    .entry(m.file_path.clone())
-                    .or_insert_with(|| {
-                        match std::fs::read(&m.file_path) {
-                            Ok(content) => {
-                                let text = String::from_utf8_lossy(&content);
-                                if options.case_sensitive {
-                                    text.contains(pattern)
-                                } else {
-                                    text.to_lowercase().contains(&pattern_lower)
-                                }
-                            }
-                            Err(_) => false,
-                        }
-                    });
 
-                if !file_valid {
+            // Refresh cache when file changes
+            let need_refresh = file_cache
+                .as_ref()
+                .map(|c| c.path != m.file_path)
+                .unwrap_or(true);
+            if need_refresh {
+                file_cache = FileCache::load(&m.file_path, pattern, options.case_sensitive);
+            }
+
+            let cache = match &file_cache {
+                Some(c) if c.contains_pattern => c,
+                Some(c) => {
+                    // File doesn't contain pattern — skip all matches for this file
                     eprintln!(
                         "[gpu-search] FILE-LEVEL REJECTION: file does not contain pattern \
                          file={} pattern='{}' byte_offset={}",
-                        m.file_path.display(),
+                        c.path.display(),
                         pattern,
                         m.byte_offset,
                     );
                     continue;
                 }
+                None => continue, // File unreadable
+            };
 
+            if let Some((line_number, line_content, context_before, context_after, match_start)) =
+                resolve_from_cache(cache, m.byte_offset as usize, pattern, options.case_sensitive)
+            {
                 let match_end = match_start + pattern.len();
                 content_matches.push(ContentMatch {
                     path: m.file_path.clone(),
@@ -1997,6 +1990,113 @@ fn walk_and_filter(
 
 /// Resolve a GPU byte offset to line number, line content, and context.
 ///
+// ============================================================================
+// FileCache: single-file content cache for the resolve loop
+// ============================================================================
+
+/// Caches one file's content + precomputed line structure for the resolve loop.
+/// Since results are sorted by file_index, consecutive matches hit the same file.
+/// This eliminates redundant fs::read() calls (N reads -> U unique-file reads).
+struct FileCache {
+    path: PathBuf,
+    content: Vec<u8>,
+    lines: Vec<String>,
+    line_offsets: Vec<usize>, // byte offset where each line starts
+    contains_pattern: bool,
+}
+
+impl FileCache {
+    /// Load a file and precompute line structure. Returns None if unreadable.
+    fn load(path: &Path, pattern: &str, case_sensitive: bool) -> Option<Self> {
+        let content = std::fs::read(path).ok()?;
+        let text = String::from_utf8_lossy(&content);
+
+        let contains_pattern = if case_sensitive {
+            text.contains(pattern)
+        } else {
+            text.to_lowercase().contains(&pattern.to_lowercase())
+        };
+
+        // Precompute line offsets and line strings
+        let mut lines = Vec::new();
+        let mut line_offsets = Vec::new();
+        let mut offset = 0usize;
+
+        for line in text.lines() {
+            line_offsets.push(offset);
+            lines.push(line.to_string());
+            // Advance past line content + newline character(s)
+            offset += line.len();
+            // Check for \r\n vs \n
+            if content.get(offset) == Some(&b'\r') {
+                offset += 2; // \r\n
+            } else if offset < content.len() {
+                offset += 1; // \n
+            }
+        }
+
+        Some(FileCache {
+            path: path.to_path_buf(),
+            content,
+            lines,
+            line_offsets,
+            contains_pattern,
+        })
+    }
+}
+
+/// Resolve a match using cached file content instead of re-reading from disk.
+/// Same logic as resolve_match() but operates on precomputed line structure.
+#[allow(clippy::type_complexity)]
+fn resolve_from_cache(
+    cache: &FileCache,
+    byte_offset: usize,
+    pattern: &str,
+    case_sensitive: bool,
+) -> Option<(usize, String, Vec<String>, Vec<String>, usize)> {
+    if byte_offset >= cache.content.len() {
+        return None;
+    }
+
+    // Binary search for the line containing byte_offset
+    let target_line = match cache.line_offsets.binary_search(&byte_offset) {
+        Ok(i) => i,         // Exact match: byte_offset is at line start
+        Err(i) => i.saturating_sub(1), // Between two lines: take the previous one
+    };
+
+    let line_content = cache.lines.get(target_line)?.to_string();
+    let line_start = cache.line_offsets[target_line];
+    let expected_col = byte_offset - line_start;
+
+    // Find the actual pattern match within the line
+    let match_col = if case_sensitive {
+        line_content.find(pattern)?
+    } else {
+        line_content.to_lowercase().find(&pattern.to_lowercase())?
+    };
+
+    // Diagnostic: validate GPU byte_offset against find() position
+    let col_diff = match_col.abs_diff(expected_col);
+    if col_diff > pattern.len() {
+        eprintln!(
+            "[gpu-search] byte_offset discrepancy: file={} byte_offset={} expected_col={} match_col={} diff={} pattern='{}'",
+            cache.path.display(), byte_offset, expected_col, match_col, col_diff, pattern
+        );
+    }
+
+    // Context: 2 lines before and after
+    let context_before: Vec<String> = (target_line.saturating_sub(2)..target_line)
+        .filter_map(|i| cache.lines.get(i).cloned())
+        .collect();
+    let context_after: Vec<String> =
+        (target_line + 1..=(target_line + 2).min(cache.lines.len().saturating_sub(1)))
+            .filter_map(|i| cache.lines.get(i).cloned())
+            .collect();
+
+    // Line number is 1-based
+    Some((target_line + 1, line_content, context_before, context_after, match_col))
+}
+
 /// This is the **deferred line counting** implementation (KB #1320, #1322):
 /// the GPU kernel only records byte offsets; this CPU function reads the file
 /// and counts newlines up to `byte_offset` to derive the authoritative
