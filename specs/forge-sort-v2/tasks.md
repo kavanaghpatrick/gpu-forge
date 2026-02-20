@@ -534,7 +534,7 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
   - _Requirements: AC-5.1 through AC-5.9_
   - _Design: Test Strategy_
 
-- [ ] V6 [VERIFY] Quality checkpoint: complete 64-bit pipeline
+- [x] V6 [VERIFY] Quality checkpoint: complete 64-bit pipeline
   - **Do**: Full test suite verification
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | grep -E "test result|FAILED"`
   - **Done when**: All tests pass across all types
@@ -544,7 +544,7 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
 
 Focus: Comprehensive test coverage, regression tests, performance validation.
 
-- [ ] 4.1 Add regression tests and cross-type interleaving tests
+- [x] 4.1 Add regression tests and cross-type interleaving tests
   - **Do**:
     1. Create `tests/regression.rs` (~7 tests):
        - `test_v1_compat_sort_u32_unchanged`: sort_u32 behavior identical to v1
