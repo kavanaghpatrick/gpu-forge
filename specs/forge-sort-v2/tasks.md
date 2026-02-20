@@ -404,7 +404,7 @@ Focus: IS_64BIT branches in sort kernels, 8-pass sort via 3 inner fused dispatch
   - _Requirements: FR-3, FR-11_
   - _Design: Kernel Modifications Summary_
 
-- [ ] 3.2 Add sort_transform_64 kernel
+- [x] 3.2 Add sort_transform_64 kernel
   - **Do**:
     1. Add `sort_transform_64` kernel to sort.metal (~15 lines):
        - mode 1 (i64/f64 forward): FloatFlip64 -- if sign bit set, flip all 64 bits; else flip only sign bit

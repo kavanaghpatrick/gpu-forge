@@ -830,3 +830,36 @@ kernel void sort_transform_32(
 
     data[gid] = v;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel 8: 64-bit Key Transform — pre/post sort bit manipulation
+//
+// mode 1: FloatFlip64 forward (also works for i64 sign-XOR)
+//         if sign bit set: flip all 64 bits (negative float/i64)
+//         else: flip only sign bit (positive float/i64)
+//         Mathematically: FloatFlip for f64, XOR 0x8000000000000000 for i64
+// mode 2: IFloatFlip64 inverse
+//         if sign bit set (was positive): flip only sign bit
+//         else (was negative): flip all 64 bits
+//
+// Simple 1D dispatch: 1 thread per element.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void sort_transform_64(
+    device ulong*      data  [[buffer(0)]],
+    constant uint&     count [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) return;
+    ulong v = data[gid];
+
+    if (transform_mode == 1u) {
+        // FloatFlip64 forward: negative (sign set) → flip all; positive → flip sign only
+        v = (v & 0x8000000000000000UL) ? ~v : (v ^ 0x8000000000000000UL);
+    } else if (transform_mode == 2u) {
+        // IFloatFlip64 inverse: sign set (was positive) → flip sign; sign clear (was negative) → flip all
+        v = (v & 0x8000000000000000UL) ? (v ^ 0x8000000000000000UL) : ~v;
+    }
+
+    data[gid] = v;
+}
