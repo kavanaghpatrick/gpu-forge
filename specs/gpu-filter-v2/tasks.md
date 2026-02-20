@@ -78,7 +78,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Done when**: 47 tests pass, zero clippy warnings
   - **Commit**: `chore(forge-filter): pass quality checkpoint after bitmap pipeline` (only if fixes needed)
 
-- [ ] 1.5 Add bitmap-cached ordered benchmark and measure speedup
+- [x] 1.5 Add bitmap-cached ordered benchmark and measure speedup
   - **Do**:
     1. Add `filter_u32_bitmap_ordered` benchmark group to `filter_benchmark.rs`
     2. Benchmark: 16M u32, 50% selectivity, ordered mode (now uses bitmap internally)

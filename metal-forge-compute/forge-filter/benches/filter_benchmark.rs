@@ -5,14 +5,14 @@
 //   u32  4M = 0.89ms (4489 Mrows/s)
 //   u32  1M = 0.24ms (4117 Mrows/s)
 //
-// forge-filter measured results (M4 Pro, 2026-02-20):
+// forge-filter v0.1 baselines (pre-bitmap, M4 Pro, 2026-02-20):
 //
-// ── u32 ordered (3-dispatch scan+scatter) ──────────────────────────────────
+// ── u32 ordered (3-dispatch scan+scatter, v0.1) ───────────────────────────
 //   1M  @ 50% sel:  145 µs  (40.0x vs Polars 5.8ms — N/A, different N)
 //   4M  @ 50% sel:  283 µs  ( 3.1x vs Polars 0.89ms)
 //   16M @ 50% sel:  848 µs  ( 6.8x vs Polars 5.8ms)
 //
-// ── u32 selectivity sweep @ 16M (ordered) ─────────────────────────────────
+// ── u32 selectivity sweep @ 16M (ordered, v0.1) ──────────────────────────
 //    1% sel (Gt 990K):  695 µs  ( 8.3x vs Polars)
 //   10% sel (Gt 900K):  714 µs  ( 8.1x vs Polars)
 //   50% sel (Gt 500K):  846 µs  ( 6.9x vs Polars)
@@ -20,19 +20,41 @@
 //   99% sel (Gt  10K):  990 µs  ( 5.9x vs Polars)
 //
 // ── u32 unordered (single-dispatch atomic scatter) ────────────────────────
-//   16M @ 50% sel:  574 µs  (10.1x vs Polars)  ** exceeds 10x target **
+//   16M @ 50% sel:  548 µs  (10.6x vs Polars)  ** exceeds 10x target **
 //
 // ── other types @ 16M, 50% sel (ordered) ──────────────────────────────────
 //   f32 Between:  846 µs  ( 6.9x vs Polars)
 //   u64 Gt:     1514 µs  ( 3.8x — 2x bandwidth, expected)
 //   u32 indices: 843 µs  ( 6.9x — index-only, same as values)
 //
+// ── bitmap-cached ordered (v0.2, post tasks 1.1-1.3) ─────────────────────
+//   Bitmap pipeline: filter_bitmap_scan -> scan_partials -> filter_bitmap_scatter
+//   Bitmap caches predicate evaluation in packed u32 words (1 bit/element).
+//   Scatter reads bitmap instead of re-evaluating predicate.
+//
+//   16M u32 selectivity sweep (bitmap-cached ordered):
+//    1% sel (Gt 990K):  697 µs  ( 8.3x vs Polars)
+//   10% sel (Gt 900K):  729 µs  ( 8.0x vs Polars)
+//   50% sel (Gt 500K):  882 µs  ( 6.6x vs Polars)
+//   90% sel (Gt 100K):  998 µs  ( 5.8x vs Polars)
+//   99% sel (Gt  10K): 1021 µs  ( 5.7x vs Polars)
+//
+//   Bitmap overhead analysis (bitmap vs v0.1 at 50% sel):
+//     v0.1: 848 µs  →  bitmap: 882 µs  (+4.0%, 34 µs overhead)
+//     The +4% overhead comes from writing the bitmap buffer (2MB for 16M elements).
+//     This is expected — the bitmap's value is in Phase 2 where scatter can read the
+//     cached bitmap without re-evaluating the predicate, and in multi-column filter
+//     where bitmaps from multiple columns are AND/OR'd together.
+//
 // Summary:
-//   - Unordered mode: 10.1x over Polars at 50% selectivity (exceeds 10x target)
-//   - Ordered mode:   8.3x at 1% selectivity, 6.8x at 50% selectivity
+//   - Unordered mode: 10.6x over Polars at 50% selectivity (exceeds 10x target)
+//   - Ordered bitmap mode: 8.3x at 1% selectivity, 6.6x at 50% selectivity
+//   - Bitmap overhead vs v0.1: +4% (34 µs) — acceptable for multi-column benefits
 //   - At typical SQL WHERE selectivity (<25%), ordered mode delivers 8x+
 //   - Unordered mode recommended for COUNT/SUM aggregation (10x+ at all selectivities)
-//   - Throughput @ 16M ordered 50%: 18.9 Grows/s (vs Polars 2.78 Grows/s)
+//   - Throughput @ 16M ordered 50%: 18.1 Grows/s (vs Polars 2.78 Grows/s)
+//   - Target 10x ordered (<=580 µs) NOT yet achieved — needs further optimization
+//     in later phases (SLC residency hints, tile size tuning, fused kernel)
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use forge_filter::{GpuFilter, Predicate};
@@ -200,6 +222,41 @@ fn filter_u32_indices(c: &mut Criterion) {
     group.finish();
 }
 
+// ── filter_u32_bitmap_ordered: 16M selectivity sweep (bitmap-cached pipeline) ─
+
+fn filter_u32_bitmap_ordered(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_u32_bitmap_ordered");
+    let mut gpu = GpuFilter::new().unwrap();
+    let n = 16_000_000usize;
+    let data = gen_u32(n);
+
+    let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+    buf.copy_from_slice(&data);
+
+    // Selectivity sweep — data uniform 0..1M, Gt(threshold) selects above threshold
+    let cases: &[(&str, u32)] = &[
+        ("01pct", 990_000),
+        ("10pct", 900_000),
+        ("50pct", 500_000),
+        ("90pct", 100_000),
+        ("99pct", 10_000),
+    ];
+
+    for &(label, threshold) in cases {
+        let pred = Predicate::Gt(threshold);
+        group.bench_with_input(
+            BenchmarkId::new("ordered_16M", label),
+            &threshold,
+            |b, _| {
+                b.iter(|| {
+                    gpu.filter(&buf, &pred).unwrap();
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     filter_u32_gt,
@@ -208,5 +265,6 @@ criterion_group!(
     filter_u64_gt,
     filter_u32_unordered_vs_ordered,
     filter_u32_indices,
+    filter_u32_bitmap_ordered,
 );
 criterion_main!(benches);
