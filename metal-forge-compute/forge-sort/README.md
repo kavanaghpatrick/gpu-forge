@@ -13,13 +13,27 @@ sorter.sort_u32(&mut data)?;
 
 Measured on Apple M4 Pro (20-core GPU, 48GB unified memory). All numbers are median of 10 runs on random `u32` data.
 
+### sort_u32 (includes memcpy)
+
 | Size | `sort_unstable` | `rayon par_sort` | **forge-sort** | vs CPU | vs Rayon |
 |-----:|----------------:|-----------------:|---------------:|-------:|---------:|
-| 100K | 1.19 ms / 84 Mk/s | 0.44 ms / 226 Mk/s | **0.78 ms / 128 Mk/s** | 1.5x | 0.6x |
-| 1M | 9.01 ms / 111 Mk/s | 2.69 ms / 372 Mk/s | **0.98 ms / 1,019 Mk/s** | 9.2x | 2.7x |
-| 4M | 39.57 ms / 101 Mk/s | 10.46 ms / 382 Mk/s | **2.09 ms / 1,915 Mk/s** | 18.9x | 5.0x |
-| 16M | 172.15 ms / 93 Mk/s | 44.75 ms / 358 Mk/s | **5.60 ms / 2,859 Mk/s** | 30.8x | 8.0x |
-| 32M | 358.39 ms / 89 Mk/s | 90.10 ms / 355 Mk/s | **11.45 ms / 2,794 Mk/s** | 31.3x | 7.9x |
+| 100K | 0.79 ms / 127 Mk/s | 0.35 ms / 285 Mk/s | **0.58 ms / 172 Mk/s** | 1.4x | 0.6x |
+| 1M | 9.05 ms / 110 Mk/s | 2.61 ms / 383 Mk/s | **0.97 ms / 1,028 Mk/s** | 9.3x | 2.7x |
+| 4M | 39.71 ms / 101 Mk/s | 10.55 ms / 379 Mk/s | **1.50 ms / 2,667 Mk/s** | 26.5x | 7.0x |
+| 16M | 172.72 ms / 93 Mk/s | 49.60 ms / 323 Mk/s | **5.67 ms / 2,822 Mk/s** | 30.5x | 8.7x |
+| 32M | 360.91 ms / 89 Mk/s | 90.85 ms / 352 Mk/s | **11.49 ms / 2,785 Mk/s** | 31.4x | 7.9x |
+
+### sort_buffer (zero-copy, pure GPU speed)
+
+When data is already in a Metal buffer, skip the memcpy for up to **2.3x more throughput**:
+
+| Size | sort_u32 (w/ memcpy) | sort_buffer (zero-copy) | Speedup |
+|-----:|---------------------:|------------------------:|--------:|
+| 1M | 2,703 Mk/s | 2,894 Mk/s | 1.07x |
+| 4M | 2,677 Mk/s | **3,736 Mk/s** | 1.40x |
+| 8M | 2,255 Mk/s | **5,207 Mk/s** | **2.31x** |
+| 16M | 2,746 Mk/s | **4,281 Mk/s** | 1.56x |
+| 32M | 2,795 Mk/s | **4,198 Mk/s** | 1.50x |
 
 GPU wins above ~200K elements. Sweet spot is 4M-16M where data fits in the System Level Cache.
 
@@ -27,7 +41,8 @@ GPU wins above ~200K elements. Sweet spot is 4M-16M where data fits in the Syste
 
 | Implementation | Platform | 1M Mk/s | 16M Mk/s |
 |---------------|----------|--------:|----------:|
-| **forge-sort** | **M4 Pro (Metal)** | **1,019** | **2,859** |
+| **forge-sort** (zero-copy) | **M4 Pro (Metal)** | **2,894** | **4,281** |
+| **forge-sort** (sort_u32) | **M4 Pro (Metal)** | **1,028** | **2,822** |
 | VSort | M4 Pro (CPU+Metal) | 99 | - |
 | VkRadixSort | RTX 3070 (Vulkan) | 53 | - |
 | MPS | Apple Silicon | *no sort function* | *no sort function* |
@@ -69,6 +84,10 @@ Add to your `Cargo.toml`:
 forge-sort = { path = "path/to/metal-forge-compute/forge-sort" }
 ```
 
+### Simple (sort_u32)
+
+Copies data to GPU buffer and back. Easiest to use:
+
 ```rust
 use forge_sort::{GpuSorter, SortError};
 
@@ -79,9 +98,35 @@ fn main() -> Result<(), SortError> {
     sorter.sort_u32(&mut data)?;
     assert_eq!(data, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
-    // GpuSorter reuses GPU buffers across calls (grow-only, never shrink)
-    let mut more_data: Vec<u32> = (0..16_000_000).rev().collect();
-    sorter.sort_u32(&mut more_data)?;
+    Ok(())
+}
+```
+
+### Zero-copy (sort_buffer)
+
+Write directly into GPU-visible memory. No memcpy, maximum throughput:
+
+```rust
+use forge_sort::{GpuSorter, SortError};
+
+fn main() -> Result<(), SortError> {
+    let mut sorter = GpuSorter::new()?;
+
+    // Allocate a buffer in unified memory (shared CPU/GPU)
+    let mut buf = sorter.alloc_sort_buffer(16_000_000);
+
+    // Write data directly into GPU-visible memory
+    let slice = buf.as_mut_slice();
+    for i in 0..16_000_000 {
+        slice[i] = (16_000_000 - i) as u32;
+    }
+    buf.set_len(16_000_000);
+
+    // Sort in-place — zero memcpy
+    sorter.sort_buffer(&buf)?;
+
+    // Read sorted results directly from GPU memory
+    assert_eq!(buf.as_slice()[0], 1);
 
     Ok(())
 }
@@ -91,15 +136,31 @@ fn main() -> Result<(), SortError> {
 
 ```rust
 pub struct GpuSorter { /* ... */ }
+pub struct SortBuffer { /* ... */ }
 
 impl GpuSorter {
     /// Create a new sorter. Initializes Metal device, compiles 4 GPU kernels.
     pub fn new() -> Result<Self, SortError>;
 
-    /// Sort a u32 slice in-place on GPU.
-    /// Empty and single-element inputs return immediately.
-    /// GPU buffers are allocated on first call and reused across subsequent calls.
+    /// Sort a u32 slice in-place on GPU (copies data to/from GPU buffer).
     pub fn sort_u32(&mut self, data: &mut [u32]) -> Result<(), SortError>;
+
+    /// Allocate a GPU buffer for zero-copy sorting (unified memory).
+    pub fn alloc_sort_buffer(&self, capacity: usize) -> SortBuffer;
+
+    /// Sort a SortBuffer in-place on GPU. Zero memcpy — pure GPU speed.
+    pub fn sort_buffer(&mut self, buf: &SortBuffer) -> Result<(), SortError>;
+}
+
+impl SortBuffer {
+    pub fn as_slice(&self) -> &[u32];       // read sorted results
+    pub fn as_mut_slice(&mut self) -> &mut [u32]; // write data directly
+    pub fn copy_from_slice(&mut self, data: &[u32]); // bulk copy in
+    pub fn copy_to_slice(&self, dest: &mut [u32]);   // bulk copy out
+    pub fn set_len(&mut self, len: usize);   // set valid element count
+    pub fn len(&self) -> usize;
+    pub fn capacity(&self) -> usize;
+    pub fn metal_buffer(&self) -> &MTLBuffer; // access underlying Metal buffer
 }
 ```
 
@@ -112,12 +173,12 @@ cargo bench -p forge-sort
 ## Running tests
 
 ```bash
-cargo test -p forge-sort                    # all 21 tests
+cargo test -p forge-sort                    # all 28 tests
 cargo test -p forge-sort --release          # faster (0.3s vs 12s)
 cargo test -p forge-sort -- --nocapture     # see output
 ```
 
-Tests cover 8 sizes (100 to 16M), edge cases (empty, single, all-same, pre-sorted, reverse, non-aligned), buffer reuse, and performance sanity.
+Tests cover 8 sizes (100 to 16M), edge cases (empty, single, all-same, pre-sorted, reverse, non-aligned), buffer reuse, zero-copy SortBuffer API, interleaved usage, and performance sanity.
 
 ## Architecture
 
@@ -125,8 +186,8 @@ Tests cover 8 sizes (100 to 16M), edge cases (empty, single, all-same, pre-sorte
 forge-sort/
   build.rs              # compiles sort.metal with -std=metal3.2
   shaders/sort.metal    # 4 Metal compute kernels (~350 lines)
-  src/lib.rs            # GpuSorter struct (~290 lines)
-  tests/correctness.rs  # 18 integration tests
+  src/lib.rs            # GpuSorter + SortBuffer (~340 lines)
+  tests/correctness.rs  # 25 integration tests
   benches/sort_benchmark.rs
 ```
 
@@ -140,14 +201,13 @@ Part of the `metal-forge-compute` workspace. Depends on `forge-primitives` for M
 | 16M | 2 x 64 MB + 6 KB | ~128 MB |
 | 32M | 2 x 128 MB + 6 KB | ~256 MB |
 
-Buffers are allocated via Apple Silicon unified memory (shared CPU/GPU). They grow on demand and are never shrunk, so repeated calls with the same or smaller sizes have zero allocation overhead.
+Buffers are allocated via Apple Silicon unified memory (shared CPU/GPU). They grow on demand and are never shrunk, so repeated calls with the same or smaller sizes have zero allocation overhead. `sort_buffer()` only allocates scratch space (1 data-sized buffer + 6 KB metadata).
 
 ## Limitations
 
 - **u32 keys only** -- no key-value pairs, no signed integers, no floats (planned for v2)
-- **Synchronous** -- `sort_u32()` blocks until the GPU completes
+- **Synchronous** -- `sort_u32()` and `sort_buffer()` block until the GPU completes
 - **Apple Silicon only** -- requires Metal 3.2 (M1+)
-- **Wall-clock includes memcpy** -- input is copied to GPU buffer and result copied back; for maximum throughput, a future `sort_buffer()` API could accept pre-allocated Metal buffers
 
 ## License
 

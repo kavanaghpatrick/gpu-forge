@@ -26,7 +26,6 @@ fn bench_std_sort(data: &[u32]) -> (f64, f64, f64) {
         if i >= WARMUP {
             times.push(ms);
         }
-        // Prevent optimization
         assert!(copy.first() <= copy.last());
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -65,11 +64,29 @@ fn bench_gpu_sort(sorter: &mut GpuSorter, data: &[u32]) -> (f64, f64, f64) {
     (percentile(&times, 50.0), percentile(&times, 5.0), percentile(&times, 95.0))
 }
 
+fn bench_gpu_sort_zerocopy(sorter: &mut GpuSorter, data: &[u32]) -> (f64, f64, f64) {
+    let n = data.len();
+    let mut buf = sorter.alloc_sort_buffer(n);
+    let mut times = Vec::new();
+    for i in 0..(WARMUP + RUNS) {
+        buf.copy_from_slice(data);
+        let start = Instant::now();
+        sorter.sort_buffer(&buf).unwrap();
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        if i >= WARMUP {
+            times.push(ms);
+        }
+        assert!(buf.as_slice().first() <= buf.as_slice().last());
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (percentile(&times, 50.0), percentile(&times, 5.0), percentile(&times, 95.0))
+}
+
 fn main() {
-    println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║              forge-sort Benchmark — Apple M4 Pro               ║");
-    println!("║  GPU Radix Sort vs CPU sort_unstable vs Rayon par_sort         ║");
-    println!("╚══════════════════════════════════════════════════════════════════╝\n");
+    println!("╔══════════════════════════════════════════════════════════════════════════════╗");
+    println!("║                    forge-sort Benchmark — Apple M4 Pro                      ║");
+    println!("║  GPU Radix Sort vs CPU sort_unstable vs Rayon par_sort                      ║");
+    println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
 
     let sizes: &[usize] = &[
         100_000,
@@ -90,7 +107,7 @@ fn main() {
     }
 
     println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>7} {:>7}",
-        "Size", "std_unstable", "Mk/s", "rayon_par", "Mk/s", "forge-sort", "Mk/s", "vs CPU", "vs par");
+        "Size", "std_unstable", "Mk/s", "rayon_par", "Mk/s", "sort_u32", "Mk/s", "vs CPU", "vs par");
     println!("  ──────┼────────────────────────┼────────────────────────┼────────────────────────┼────────────────");
 
     for &n in sizes {
@@ -116,6 +133,35 @@ fn main() {
         println!(
             "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>5.1}x {:>5.1}x",
             size_str, std_p50, std_mkeys, par_p50, par_mkeys, gpu_p50, gpu_mkeys, vs_cpu, vs_par
+        );
+    }
+
+    // Zero-copy benchmark
+    println!("\n  ─── Zero-Copy (sort_buffer) — no memcpy, pure GPU speed ───\n");
+    println!("  {:>5} │ {:>12} {:>9} │ {:>12} {:>9} │ {:>7}",
+        "Size", "sort_u32", "Mk/s", "sort_buffer", "Mk/s", "speedup");
+    println!("  ──────┼────────────────────────┼────────────────────────┼────────");
+
+    for &n in sizes {
+        let data = gen_random_u32(n);
+
+        let (gpu_p50, _, _) = bench_gpu_sort(&mut sorter, &data);
+        let (zc_p50, _, _) = bench_gpu_sort_zerocopy(&mut sorter, &data);
+
+        let gpu_mkeys = n as f64 / gpu_p50 / 1e3;
+        let zc_mkeys = n as f64 / zc_p50 / 1e3;
+
+        let speedup = zc_mkeys / gpu_mkeys;
+
+        let size_str = if n >= 1_000_000 {
+            format!("{}M", n / 1_000_000)
+        } else {
+            format!("{}K", n / 1_000)
+        };
+
+        println!(
+            "  {:>5} │ {:>8.3} ms {:>7.0} │ {:>8.3} ms {:>7.0} │ {:>5.2}x",
+            size_str, gpu_p50, gpu_mkeys, zc_p50, zc_mkeys, speedup
         );
     }
 
