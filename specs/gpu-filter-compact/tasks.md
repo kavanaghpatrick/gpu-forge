@@ -78,7 +78,7 @@ Focus: Get a u32 > threshold filter working end-to-end with the 3-dispatch pipel
 - _Requirements: FR-6, FR-13, AC-4.1 through AC-4.5_
 - _Design: FilterBuffer, FilterResult_
 
-### Task 1.5: Implement GpuFilter::new() and 3-dispatch filter pipeline
+### Task 1.5: Implement GpuFilter::new() and 3-dispatch filter pipeline [x]
 
 - **Do**:
   1. Add `GpuFilter` struct: device, queue, library, pso_cache, scratch buffers (buf_partials, buf_output, buf_output_idx, buf_count), scratch_capacity
