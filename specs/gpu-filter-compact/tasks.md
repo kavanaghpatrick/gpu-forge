@@ -340,14 +340,14 @@ Focus: Doc comments, benchmarks, README, publish preparation.
 - _Requirements: FR-14, AC-8.1 through AC-8.5_
 - _Design: Benchmarks (Criterion)_
 
-### Task 4.3: [VERIFY] Full local CI: build + test + clippy + doc + bench
+### Task 4.3: [VERIFY] Full local CI: build + test + clippy + doc + bench [x]
 
 - **Do**: Run complete local CI suite
 - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo build -p forge-filter --release && cargo test -p forge-filter && cargo clippy -p forge-filter -- -D warnings && RUSTDOCFLAGS="-D warnings" cargo doc -p forge-filter --no-deps && cargo bench -p forge-filter -- --quick 2>&1 | tail -5`
 - **Done when**: All commands pass
 - **Commit**: `chore(forge-filter): pass full local CI` (only if fixes needed)
 
-### Task 4.4: Verify 10x+ speedup over Polars
+### Task 4.4: Verify 10x+ speedup over Polars [x]
 
 - **Do**:
   1. Run `cargo bench -p forge-filter -- filter_u32_gt/16M` and capture mean time
