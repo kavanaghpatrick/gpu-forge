@@ -32,6 +32,18 @@ struct BucketDesc {
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// Function constants — specialized at PSO creation time
+// Defaults ensure existing kernels are unaffected when unset.
+// ═══════════════════════════════════════════════════════════════════
+
+constant bool HAS_VALUES [[function_constant(0)]];
+constant bool IS_64BIT   [[function_constant(1)]];
+constant uint TRANSFORM_MODE [[function_constant(2)]];
+constant bool has_values = is_function_constant_defined(HAS_VALUES) ? HAS_VALUES : false;
+constant bool is_64bit   = is_function_constant_defined(IS_64BIT)   ? IS_64BIT   : false;
+constant uint transform_mode = is_function_constant_defined(TRANSFORM_MODE) ? TRANSFORM_MODE : 0u;
+
+// ═══════════════════════════════════════════════════════════════════
 // Kernel 1: MSD Histogram — single-pass, bits[24:31]
 //
 // Reads ALL data once, computes 256-bin histogram for MSD byte only.
@@ -436,4 +448,36 @@ kernel void sort_inner_fused(
         // Device memory barrier: ensure scatter writes visible for next pass reads
         threadgroup_barrier(mem_flags::mem_device);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Kernel 5: 32-bit Key Transform — pre/post sort bit manipulation
+//
+// mode 0: XOR 0x80000000 (i32 sign flip, self-inverse)
+// mode 1: FloatFlip forward (map float order → unsigned order)
+// mode 2: IFloatFlip inverse (map unsigned order → float order)
+//
+// Simple 1D dispatch: 1 thread per element.
+// ═══════════════════════════════════════════════════════════════════
+
+kernel void sort_transform_32(
+    device uint*       data  [[buffer(0)]],
+    constant uint&     count [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) return;
+    uint v = data[gid];
+
+    if (transform_mode == 0u) {
+        // i32: flip sign bit (self-inverse)
+        v ^= 0x80000000u;
+    } else if (transform_mode == 1u) {
+        // FloatFlip forward: negative (sign set) → flip all; positive → flip sign only
+        v = (v & 0x80000000u) ? ~v : (v ^ 0x80000000u);
+    } else if (transform_mode == 2u) {
+        // IFloatFlip inverse: sign set (was positive) → flip sign; sign clear (was negative) → flip all
+        v = (v & 0x80000000u) ? (v ^ 0x80000000u) : ~v;
+    }
+
+    data[gid] = v;
 }

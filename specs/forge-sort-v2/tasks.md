@@ -58,13 +58,13 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: AC-7.1, AC-7.2, AC-7.4_
   - _Design: Backward-Compatible u32 Sorting_
 
-- [ ] V1 [VERIFY] Quality checkpoint: cargo check + existing tests
+- [x] V1 [VERIFY] Quality checkpoint: cargo check + existing tests
   - **Do**: Run type check and all existing tests
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo check --workspace && cargo test -p forge-sort --release -- --test-threads=1 2>&1 | tail -5`
   - **Done when**: Zero compiler errors, all 25 tests pass
   - **Commit**: `chore(forge-sort): pass quality checkpoint` (only if fixes needed)
 
-- [ ] 1.4 Add sort_transform_32 kernel + function constant declarations to sort.metal
+- [x] 1.4 Add sort_transform_32 kernel + function constant declarations to sort.metal
   - **Do**:
     1. Add function constant declarations at top of sort.metal (after struct defs):
        ```metal
