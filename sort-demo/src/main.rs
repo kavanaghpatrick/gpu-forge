@@ -1,13 +1,16 @@
 mod frame;
 mod gpu;
+mod vis;
 
 use std::sync::Arc;
 
+use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_metal::{
-    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLLoadAction,
-    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLStoreAction,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
+    MTLComputePipelineState, MTLDevice, MTLLoadAction, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLResourceOptions, MTLSize, MTLStoreAction,
 };
 use objc2_quartz_core::CAMetalDrawable;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -19,11 +22,17 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use frame::FrameRing;
 use gpu::GpuState;
+use vis::{DemoParams, Visualization};
 
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
+    vis: Option<Visualization>,
     frame_ring: FrameRing,
+    // Temp: buf_a + pso for random fill (will move to SortEngine later)
+    buf_a: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    pso_random_fill: Option<Retained<ProtocolObject<dyn MTLComputePipelineState>>>,
+    element_count: usize,
 }
 
 impl App {
@@ -31,13 +40,29 @@ impl App {
         Self {
             window: None,
             gpu: None,
+            vis: None,
             frame_ring: FrameRing::new(),
+            buf_a: None,
+            pso_random_fill: None,
+            element_count: 16_000_000,
         }
     }
 
     fn render(&mut self) {
         let gpu = match &self.gpu {
             Some(g) => g,
+            None => return,
+        };
+        let vis = match &self.vis {
+            Some(v) => v,
+            None => return,
+        };
+        let buf_a = match &self.buf_a {
+            Some(b) => b,
+            None => return,
+        };
+        let pso = match &self.pso_random_fill {
+            Some(p) => p,
             None => return,
         };
 
@@ -48,33 +73,55 @@ impl App {
             None => return,
         };
 
-        let command_buffer = match gpu.command_queue.commandBuffer() {
+        let cmd = match gpu.command_queue.commandBuffer() {
             Some(cb) => cb,
             None => return,
         };
 
-        // Render pass: clear to blue
-        let render_pass_desc = MTLRenderPassDescriptor::renderPassDescriptor();
-        let color_attachment =
-            unsafe { render_pass_desc.colorAttachments().objectAtIndexedSubscript(0) };
-        color_attachment.setTexture(Some(&drawable.texture()));
-        color_attachment.setLoadAction(MTLLoadAction::Clear);
-        color_attachment.setStoreAction(MTLStoreAction::Store);
-        color_attachment.setClearColor(MTLClearColor {
-            red: 0.0,
-            green: 0.1,
-            blue: 0.3,
-            alpha: 1.0,
-        });
-
-        if let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc)
+        // Random fill buf_a every frame (POC: proves pipeline works)
+        let dim = vis.texture_dim;
+        let params = DemoParams {
+            element_count: self.element_count as u32,
+            texture_width: dim,
+            texture_height: dim,
+            max_value: 0xFFFFFFFF,
+        };
         {
+            let encoder = cmd
+                .computeCommandEncoder()
+                .expect("Failed to create compute encoder");
+            encoder.setComputePipelineState(pso);
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(buf_a.as_ref()), 0, 0);
+                encoder.setBytes_length_atIndex(
+                    std::ptr::NonNull::new(&params as *const DemoParams as *mut DemoParams)
+                        .unwrap()
+                        .cast(),
+                    std::mem::size_of::<DemoParams>(),
+                    1,
+                );
+            }
+            let tg = MTLSize { width: 256, height: 1, depth: 1 };
+            let grid = MTLSize {
+                width: self.element_count.div_ceil(256),
+                height: 1,
+                depth: 1,
+            };
+            unsafe {
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(grid, tg);
+            }
             encoder.endEncoding();
         }
 
-        self.frame_ring.register_completion_handler(&command_buffer);
-        command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
-        command_buffer.commit();
+        // Visualize: heatmap compute
+        vis.encode_visualize(&cmd, buf_a.as_ref(), self.element_count);
+
+        // Render: fullscreen triangle -> drawable
+        vis.encode_render(&cmd, &drawable);
+
+        self.frame_ring.register_completion_handler(&cmd);
+        cmd.presentDrawable(ProtocolObject::from_ref(&*drawable));
+        cmd.commit();
         self.frame_ring.advance();
     }
 }
@@ -112,6 +159,21 @@ impl ApplicationHandler for App {
             _ => panic!("Unsupported platform"),
         }
 
+        // Create visualization
+        let vis = Visualization::new(&gpu.device, &gpu.library, self.element_count);
+
+        // Allocate buf_a for 64M elements (pre-allocate max)
+        let buf_a = gpu
+            .device
+            .newBufferWithLength_options(64_000_000 * 4, MTLResourceOptions::StorageModeShared)
+            .expect("Failed to allocate buf_a");
+
+        // Create random fill PSO
+        let pso_random_fill = gpu.make_compute_pipeline("gpu_random_fill");
+
+        self.pso_random_fill = Some(pso_random_fill);
+        self.buf_a = Some(buf_a);
+        self.vis = Some(vis);
         self.gpu = Some(gpu);
         self.window = Some(window);
     }
