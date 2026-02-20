@@ -428,7 +428,7 @@ created: 2026-02-20
 - _Requirements: FR-16, FR-17, FR-18 (AC-8.1 through AC-8.7)_
 - _Design: Gap 7: Scaffold Wiring_
 
-### Task 8.2: [VERIFY] Quality checkpoint after Gap 7
+### Task 8.2: [VERIFY] Quality checkpoint after Gap 7 [x]
 
 - **Do**: Run commands, templates, and full unit test suite
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/commands.bats && bats /Users/patrickkavanagh/gpu_kernel/tests/unit/templates.bats`
