@@ -31,6 +31,9 @@ pub trait FilterKey: private::Sealed + Copy + PartialOrd + 'static {
     const KEY_SIZE: usize;
     /// Whether this is a 64-bit type.
     const IS_64BIT: bool;
+    /// Data type ID for Metal function constant DATA_TYPE (index 4).
+    /// 0 = unsigned (uint/ulong), 1 = signed (int/long), 2 = float/double.
+    const DATA_TYPE_ID: u32;
     /// Reinterpret threshold value as raw bits for Metal.
     fn to_bits(self) -> u64;
 }
@@ -38,6 +41,7 @@ pub trait FilterKey: private::Sealed + Copy + PartialOrd + 'static {
 impl FilterKey for u32 {
     const KEY_SIZE: usize = 4;
     const IS_64BIT: bool = false;
+    const DATA_TYPE_ID: u32 = 0; // unsigned
     fn to_bits(self) -> u64 {
         self as u64
     }
@@ -46,6 +50,7 @@ impl FilterKey for u32 {
 impl FilterKey for i32 {
     const KEY_SIZE: usize = 4;
     const IS_64BIT: bool = false;
+    const DATA_TYPE_ID: u32 = 1; // signed
     fn to_bits(self) -> u64 {
         (self as u32) as u64
     }
@@ -54,6 +59,7 @@ impl FilterKey for i32 {
 impl FilterKey for f32 {
     const KEY_SIZE: usize = 4;
     const IS_64BIT: bool = false;
+    const DATA_TYPE_ID: u32 = 2; // float
     fn to_bits(self) -> u64 {
         self.to_bits() as u64
     }
@@ -62,6 +68,7 @@ impl FilterKey for f32 {
 impl FilterKey for u64 {
     const KEY_SIZE: usize = 8;
     const IS_64BIT: bool = true;
+    const DATA_TYPE_ID: u32 = 0; // unsigned
     fn to_bits(self) -> u64 {
         self
     }
@@ -70,6 +77,7 @@ impl FilterKey for u64 {
 impl FilterKey for i64 {
     const KEY_SIZE: usize = 8;
     const IS_64BIT: bool = true;
+    const DATA_TYPE_ID: u32 = 1; // signed
     fn to_bits(self) -> u64 {
         self as u64
     }
@@ -78,6 +86,7 @@ impl FilterKey for i64 {
 impl FilterKey for f64 {
     const KEY_SIZE: usize = 8;
     const IS_64BIT: bool = true;
+    const DATA_TYPE_ID: u32 = 2; // float/double
     fn to_bits(self) -> u64 {
         self.to_bits()
     }
@@ -264,13 +273,18 @@ impl GpuFilter {
         let mut pso_cache = PsoCache::new();
 
         // Pre-compile 32-bit PSOs for all 7 predicate types (GT=0..BETWEEN=6)
-        // filter_predicate_scan needs: PRED_TYPE(0) + IS_64BIT(1)
-        // filter_scatter needs: PRED_TYPE(0) + IS_64BIT(1) + OUTPUT_IDX(2) + OUTPUT_VALS(3)
+        // filter_predicate_scan needs: PRED_TYPE(0) + IS_64BIT(1) + DATA_TYPE(4)
+        // filter_scatter needs: PRED_TYPE(0) + IS_64BIT(1) + OUTPUT_IDX(2) + OUTPUT_VALS(3) + DATA_TYPE(4)
+        // Pre-compile for u32 (DATA_TYPE=0); other types compiled lazily
         for pred in 0..=6u32 {
             pso_cache.get_or_create_specialized(
                 &library,
                 "filter_predicate_scan",
-                &[(0, FnConstant::U32(pred)), (1, FnConstant::Bool(false))],
+                &[
+                    (0, FnConstant::U32(pred)),
+                    (1, FnConstant::Bool(false)),
+                    (4, FnConstant::U32(0)),
+                ],
             );
             pso_cache.get_or_create_specialized(
                 &library,
@@ -280,6 +294,7 @@ impl GpuFilter {
                     (1, FnConstant::Bool(false)),
                     (2, FnConstant::Bool(false)),
                     (3, FnConstant::Bool(true)),
+                    (4, FnConstant::U32(0)),
                 ],
             );
         }
@@ -399,6 +414,8 @@ impl GpuFilter {
             FilterError::GpuExecution("failed to create compute encoder".to_string())
         })?;
 
+        let data_type = T::DATA_TYPE_ID;
+
         if T::IS_64BIT {
             let params = FilterParams64 {
                 element_count: n as u32,
@@ -417,6 +434,7 @@ impl GpuFilter {
                 &[
                     (0, FnConstant::U32(pred_type)),
                     (1, FnConstant::Bool(true)),
+                    (4, FnConstant::U32(data_type)),
                 ],
             );
             enc.setComputePipelineState(pso);
@@ -457,6 +475,7 @@ impl GpuFilter {
                     (1, FnConstant::Bool(true)),
                     (2, FnConstant::Bool(output_idx)),
                     (3, FnConstant::Bool(output_vals)),
+                    (4, FnConstant::U32(data_type)),
                 ],
             );
             enc.setComputePipelineState(pso);
@@ -487,6 +506,7 @@ impl GpuFilter {
                 &[
                     (0, FnConstant::U32(pred_type)),
                     (1, FnConstant::Bool(false)),
+                    (4, FnConstant::U32(data_type)),
                 ],
             );
             enc.setComputePipelineState(pso);
@@ -527,6 +547,7 @@ impl GpuFilter {
                     (1, FnConstant::Bool(false)),
                     (2, FnConstant::Bool(output_idx)),
                     (3, FnConstant::Bool(output_vals)),
+                    (4, FnConstant::U32(data_type)),
                 ],
             );
             enc.setComputePipelineState(pso);
@@ -605,6 +626,87 @@ impl GpuFilter {
             return Ok(Vec::new());
         }
         let mut buf = self.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(data);
+        let result = self.filter(&buf, pred)?;
+        Ok(result.to_vec())
+    }
+
+    /// Filter a slice of `i32`, returning matching values as a `Vec<i32>`.
+    pub fn filter_i32(
+        &mut self,
+        data: &[i32],
+        pred: &Predicate<i32>,
+    ) -> Result<Vec<i32>, FilterError> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut buf = self.alloc_filter_buffer::<i32>(data.len());
+        buf.copy_from_slice(data);
+        let result = self.filter(&buf, pred)?;
+        Ok(result.to_vec())
+    }
+
+    /// Filter a slice of `f32`, returning matching values as a `Vec<f32>`.
+    ///
+    /// NaN handling follows IEEE 754: NaN comparisons return false for all
+    /// ordered predicates (Gt, Lt, Ge, Le, Eq). NaN != NaN returns true.
+    pub fn filter_f32(
+        &mut self,
+        data: &[f32],
+        pred: &Predicate<f32>,
+    ) -> Result<Vec<f32>, FilterError> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut buf = self.alloc_filter_buffer::<f32>(data.len());
+        buf.copy_from_slice(data);
+        let result = self.filter(&buf, pred)?;
+        Ok(result.to_vec())
+    }
+
+    /// Filter a slice of `u64`, returning matching values as a `Vec<u64>`.
+    pub fn filter_u64(
+        &mut self,
+        data: &[u64],
+        pred: &Predicate<u64>,
+    ) -> Result<Vec<u64>, FilterError> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut buf = self.alloc_filter_buffer::<u64>(data.len());
+        buf.copy_from_slice(data);
+        let result = self.filter(&buf, pred)?;
+        Ok(result.to_vec())
+    }
+
+    /// Filter a slice of `i64`, returning matching values as a `Vec<i64>`.
+    pub fn filter_i64(
+        &mut self,
+        data: &[i64],
+        pred: &Predicate<i64>,
+    ) -> Result<Vec<i64>, FilterError> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut buf = self.alloc_filter_buffer::<i64>(data.len());
+        buf.copy_from_slice(data);
+        let result = self.filter(&buf, pred)?;
+        Ok(result.to_vec())
+    }
+
+    /// Filter a slice of `f64`, returning matching values as a `Vec<f64>`.
+    ///
+    /// Note: f64 has 1/32 ALU throughput on Apple Silicon M4 Pro, but filter
+    /// operations remain bandwidth-bound (single comparison per element).
+    pub fn filter_f64(
+        &mut self,
+        data: &[f64],
+        pred: &Predicate<f64>,
+    ) -> Result<Vec<f64>, FilterError> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut buf = self.alloc_filter_buffer::<f64>(data.len());
         buf.copy_from_slice(data);
         let result = self.filter(&buf, pred)?;
         Ok(result.to_vec())
@@ -930,5 +1032,214 @@ mod tests {
         assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
         assert_eq!(result.len(), 999_999, "expected 999_999 matches");
         assert_eq!(result, cpu_ref, "contents mismatch");
+    }
+
+    // --- Type-specific tests ---
+
+    #[test]
+    fn test_filter_i32_gt() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        // Range -500_000..500_000
+        let data: Vec<i32> = (-500_000..500_000i32).collect();
+        let pred = Predicate::Gt(-250_000i32);
+
+        let result = filter.filter_i32(&data, &pred).expect("filter_i32 failed");
+        let cpu_ref: Vec<i32> = data.iter().filter(|&&x| x > -250_000).copied().collect();
+
+        println!(
+            "test_filter_i32_gt: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        // Spot-check first and last elements
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+        if result.len() > check_n {
+            assert_eq!(
+                &result[result.len() - check_n..],
+                &cpu_ref[cpu_ref.len() - check_n..],
+                "last {} elements mismatch",
+                check_n
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_f32_gt() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        // Range 0.0..1.0 in steps of 1e-6
+        let data: Vec<f32> = (0..1_000_000u32).map(|i| i as f32 / 1_000_000.0).collect();
+        let pred = Predicate::Gt(0.5f32);
+
+        let result = filter.filter_f32(&data, &pred).expect("filter_f32 failed");
+        let cpu_ref: Vec<f32> = data.iter().filter(|&&x| x > 0.5).copied().collect();
+
+        println!(
+            "test_filter_f32_gt: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+    }
+
+    #[test]
+    fn test_filter_u64_gt() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u64> = (0..1_000_000u64).collect();
+        let pred = Predicate::Gt(500_000u64);
+
+        let result = filter.filter_u64(&data, &pred).expect("filter_u64 failed");
+        let cpu_ref: Vec<u64> = data.iter().filter(|&&x| x > 500_000).copied().collect();
+
+        println!(
+            "test_filter_u64_gt: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+        if result.len() > check_n {
+            assert_eq!(
+                &result[result.len() - check_n..],
+                &cpu_ref[cpu_ref.len() - check_n..],
+                "last {} elements mismatch",
+                check_n
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_i64_gt() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<i64> = (-500_000..500_000i64).collect();
+        let pred = Predicate::Gt(-250_000i64);
+
+        let result = filter.filter_i64(&data, &pred).expect("filter_i64 failed");
+        let cpu_ref: Vec<i64> = data.iter().filter(|&&x| x > -250_000).copied().collect();
+
+        println!(
+            "test_filter_i64_gt: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+        if result.len() > check_n {
+            assert_eq!(
+                &result[result.len() - check_n..],
+                &cpu_ref[cpu_ref.len() - check_n..],
+                "last {} elements mismatch",
+                check_n
+            );
+        }
+    }
+
+    #[test]
+    fn test_filter_f64_gt() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<f64> = (0..1_000_000u64).map(|i| i as f64 / 1_000_000.0).collect();
+        let pred = Predicate::Gt(0.5f64);
+
+        let result = filter.filter_f64(&data, &pred).expect("filter_f64 failed");
+        let cpu_ref: Vec<f64> = data.iter().filter(|&&x| x > 0.5).copied().collect();
+
+        println!(
+            "test_filter_f64_gt: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len(), "length mismatch");
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+    }
+
+    #[test]
+    fn test_filter_f32_nan() {
+        let mut filter = GpuFilter::new().expect("GpuFilter::new failed");
+
+        // Create data with NaN values interspersed
+        let mut data: Vec<f32> = Vec::with_capacity(1_000_000);
+        for i in 0..1_000_000u32 {
+            if i % 1000 == 0 {
+                data.push(f32::NAN);
+            } else {
+                data.push(i as f32 / 1_000_000.0);
+            }
+        }
+
+        // Test 1: Gt(0.0) should exclude NaN values (NaN > 0.0 = false)
+        let pred_gt = Predicate::Gt(0.0f32);
+        let result_gt = filter
+            .filter_f32(&data, &pred_gt)
+            .expect("filter_f32 Gt failed");
+        let cpu_ref_gt: Vec<f32> = data.iter().filter(|&&x| x > 0.0).copied().collect();
+
+        println!(
+            "test_filter_f32_nan Gt: GPU={}, CPU={}",
+            result_gt.len(),
+            cpu_ref_gt.len()
+        );
+        assert_eq!(
+            result_gt.len(),
+            cpu_ref_gt.len(),
+            "Gt length mismatch (NaN should be excluded)"
+        );
+        // Verify no NaN in output
+        assert!(
+            !result_gt.iter().any(|x| x.is_nan()),
+            "Gt output should not contain NaN"
+        );
+
+        // Test 2: Ne(0.0) should include NaN values (NaN != 0.0 = true)
+        let pred_ne = Predicate::Ne(0.0f32);
+        let result_ne = filter
+            .filter_f32(&data, &pred_ne)
+            .expect("filter_f32 Ne failed");
+        let cpu_ref_ne: Vec<f32> = data.iter().filter(|&&x| x != 0.0).copied().collect();
+
+        println!(
+            "test_filter_f32_nan Ne: GPU={}, CPU={}",
+            result_ne.len(),
+            cpu_ref_ne.len()
+        );
+        assert_eq!(
+            result_ne.len(),
+            cpu_ref_ne.len(),
+            "Ne length mismatch (NaN should be included)"
+        );
+        // Count NaN in Ne output — should be 1000 (every 1000th element)
+        let nan_count = result_ne.iter().filter(|x| x.is_nan()).count();
+        println!("NaN count in Ne result: {}", nan_count);
+        assert_eq!(nan_count, 1000, "expected 1000 NaN values in Ne output");
     }
 }

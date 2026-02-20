@@ -32,12 +32,14 @@ constant uint PRED_TYPE   [[function_constant(0)]]; // 0=GT,1=LT,2=GE,3=LE,4=EQ,
 constant bool IS_64BIT    [[function_constant(1)]]; // false=32-bit, true=64-bit
 constant bool OUTPUT_IDX  [[function_constant(2)]]; // true=write indices to output
 constant bool OUTPUT_VALS [[function_constant(3)]]; // true=write values to output
+constant uint DATA_TYPE   [[function_constant(4)]]; // 0=uint/ulong, 1=int/long, 2=float/double
 
 // Resolved with defaults (used when constants not set)
 constant uint pred_type   = is_function_constant_defined(PRED_TYPE)   ? PRED_TYPE   : 0u;
 constant bool is_64bit    = is_function_constant_defined(IS_64BIT)    ? IS_64BIT    : false;
 constant bool output_idx  = is_function_constant_defined(OUTPUT_IDX)  ? OUTPUT_IDX  : false;
 constant bool output_vals = is_function_constant_defined(OUTPUT_VALS) ? OUTPUT_VALS : true;
+constant uint data_type   = is_function_constant_defined(DATA_TYPE)   ? DATA_TYPE   : 0u;
 
 // --- Parameter Structs (must match Rust repr(C) layout) ---
 
@@ -72,6 +74,75 @@ inline bool evaluate_predicate(T val, T lo, T hi) {
     if (pred_type == 5u) return val != lo;             // NE
     if (pred_type == 6u) return val >= lo && val <= hi; // BETWEEN
     return true; // 7 = TRUE (passthrough)
+}
+
+// --- IEEE 754 f64 comparison via raw ulong bits ---
+// Metal has no `double` type, so we compare f64 bit patterns directly.
+// NaN handling: f64 NaN has exponent=0x7FF and nonzero mantissa.
+// We follow IEEE 754: NaN compares unordered (returns false for <, >, <=, >=, ==).
+// NaN != NaN returns true.
+
+inline bool is_f64_nan(ulong bits) {
+    // Exponent = bits[62:52] = 0x7FF, mantissa != 0
+    ulong exp_mask = 0x7FF0000000000000ul;
+    ulong mantissa_mask = 0x000FFFFFFFFFFFFFul;
+    return (bits & exp_mask) == exp_mask && (bits & mantissa_mask) != 0ul;
+}
+
+// Compare two f64 values stored as raw ulong bits.
+// Returns: -1 if a < b, 0 if a == b, 1 if a > b
+// For NaN: returns -2 (unordered)
+inline int f64_compare(ulong a_bits, ulong b_bits) {
+    if (is_f64_nan(a_bits) || is_f64_nan(b_bits)) return -2; // unordered
+
+    bool a_neg = (a_bits >> 63u) != 0u;
+    bool b_neg = (b_bits >> 63u) != 0u;
+
+    // Handle negative zero == positive zero
+    ulong a_abs = a_bits & 0x7FFFFFFFFFFFFFFFul;
+    ulong b_abs = b_bits & 0x7FFFFFFFFFFFFFFFul;
+    if (a_abs == 0ul && b_abs == 0ul) return 0; // -0.0 == +0.0
+
+    if (a_neg != b_neg) {
+        // Different signs: negative < positive
+        return a_neg ? -1 : 1;
+    }
+    if (!a_neg) {
+        // Both positive: larger bits = larger value
+        return (a_bits > b_bits) ? 1 : ((a_bits < b_bits) ? -1 : 0);
+    }
+    // Both negative: larger bits = more negative = smaller value
+    return (a_bits > b_bits) ? -1 : ((a_bits < b_bits) ? 1 : 0);
+}
+
+inline bool evaluate_predicate_f64(ulong val, ulong lo, ulong hi) {
+    if (pred_type == 5u) {
+        // NE: NaN != anything = true, also NaN != NaN = true
+        if (is_f64_nan(val) || is_f64_nan(lo)) return true;
+        // -0.0 == +0.0
+        ulong v_abs = val & 0x7FFFFFFFFFFFFFFFul;
+        ulong l_abs = lo & 0x7FFFFFFFFFFFFFFFul;
+        if (v_abs == 0ul && l_abs == 0ul) return false;
+        return val != lo;
+    }
+
+    int cmp_lo = f64_compare(val, lo);
+    if (cmp_lo == -2) return false; // NaN → unordered → false for all ordered predicates
+
+    if (pred_type == 0u) return cmp_lo > 0;   // GT
+    if (pred_type == 1u) return cmp_lo < 0;   // LT
+    if (pred_type == 2u) return cmp_lo >= 0;  // GE
+    if (pred_type == 3u) return cmp_lo <= 0;  // LE
+    if (pred_type == 4u) return cmp_lo == 0;  // EQ
+
+    if (pred_type == 6u) {
+        // BETWEEN: val >= lo && val <= hi
+        if (cmp_lo < 0) return false;
+        int cmp_hi = f64_compare(val, hi);
+        if (cmp_hi == -2) return false;
+        return cmp_hi <= 0;
+    }
+    return true; // 7 = TRUE
 }
 
 // =================================================================
@@ -115,10 +186,17 @@ kernel void filter_predicate_scan(
             uint idx = base + e * FILTER_THREADS + lid;
             if (idx < n) {
                 ulong raw = input64[idx];
-                // Use as_type to reinterpret for signed/double comparisons
-                // The predicate compares raw ulong bits — Rust side handles
-                // the bit reinterpretation for signed types
-                thread_match_count += uint(evaluate_predicate(raw, lo_raw, hi_raw));
+                if (data_type == 1u) {
+                    // Signed long comparison
+                    thread_match_count += uint(evaluate_predicate(
+                        as_type<long>(raw), as_type<long>(lo_raw), as_type<long>(hi_raw)));
+                } else if (data_type == 2u) {
+                    // f64 comparison via raw bit ordering (Metal has no double type)
+                    thread_match_count += uint(evaluate_predicate_f64(raw, lo_raw, hi_raw));
+                } else {
+                    // Unsigned ulong comparison
+                    thread_match_count += uint(evaluate_predicate(raw, lo_raw, hi_raw));
+                }
             }
         }
     } else {
@@ -133,7 +211,18 @@ kernel void filter_predicate_scan(
             uint idx = base + e * FILTER_THREADS + lid;
             if (idx < n) {
                 uint raw = input[idx];
-                thread_match_count += uint(evaluate_predicate(raw, lo_u, hi_u));
+                if (data_type == 1u) {
+                    // Signed int comparison
+                    thread_match_count += uint(evaluate_predicate(
+                        as_type<int>(raw), as_type<int>(lo_u), as_type<int>(hi_u)));
+                } else if (data_type == 2u) {
+                    // Float comparison (IEEE 754 — NaN comparisons follow standard)
+                    thread_match_count += uint(evaluate_predicate(
+                        as_type<float>(raw), as_type<float>(lo_u), as_type<float>(hi_u)));
+                } else {
+                    // Unsigned uint comparison
+                    thread_match_count += uint(evaluate_predicate(raw, lo_u, hi_u));
+                }
             }
         }
     }
@@ -278,7 +367,15 @@ kernel void filter_scatter(
             uint idx = base + e * FILTER_THREADS + lid;
             bool valid = idx < n;
             ulong raw = valid ? input64[idx] : 0ul;
-            bool match_flag = valid && evaluate_predicate(raw, lo_raw, hi_raw);
+            bool match_flag;
+            if (data_type == 1u) {
+                match_flag = valid && evaluate_predicate(
+                    as_type<long>(raw), as_type<long>(lo_raw), as_type<long>(hi_raw));
+            } else if (data_type == 2u) {
+                match_flag = valid && evaluate_predicate_f64(raw, lo_raw, hi_raw);
+            } else {
+                match_flag = valid && evaluate_predicate(raw, lo_raw, hi_raw);
+            }
             uint flag = uint(match_flag);
 
             // TG-wide prefix sum of the per-element flag
@@ -318,7 +415,16 @@ kernel void filter_scatter(
             uint idx = base + e * FILTER_THREADS + lid;
             bool valid = idx < n;
             uint raw = valid ? input[idx] : 0u;
-            bool match_flag = valid && evaluate_predicate(raw, lo_u, hi_u);
+            bool match_flag;
+            if (data_type == 1u) {
+                match_flag = valid && evaluate_predicate(
+                    as_type<int>(raw), as_type<int>(lo_u), as_type<int>(hi_u));
+            } else if (data_type == 2u) {
+                match_flag = valid && evaluate_predicate(
+                    as_type<float>(raw), as_type<float>(lo_u), as_type<float>(hi_u));
+            } else {
+                match_flag = valid && evaluate_predicate(raw, lo_u, hi_u);
+            }
             uint flag = uint(match_flag);
 
             // TG-wide prefix sum of the per-element flag
@@ -396,11 +502,19 @@ kernel void filter_atomic_scatter(
             uint idx = base + e * FILTER_THREADS + lid;
             bool valid = idx < n;
             ulong raw = valid ? input64[idx] : 0ul;
-            bool match = valid && evaluate_predicate(raw, lo_raw, hi_raw);
-            flags[e] = match;
+            bool match_v;
+            if (data_type == 1u) {
+                match_v = valid && evaluate_predicate(
+                    as_type<long>(raw), as_type<long>(lo_raw), as_type<long>(hi_raw));
+            } else if (data_type == 2u) {
+                match_v = valid && evaluate_predicate_f64(raw, lo_raw, hi_raw);
+            } else {
+                match_v = valid && evaluate_predicate(raw, lo_raw, hi_raw);
+            }
+            flags[e] = match_v;
             values[e] = raw;
             idx_cache[e] = idx;
-            local_count += uint(match);
+            local_count += uint(match_v);
         }
 
         // Phase 2: SIMD-aggregated atomic
@@ -439,11 +553,20 @@ kernel void filter_atomic_scatter(
             uint idx = base + e * FILTER_THREADS + lid;
             bool valid = idx < n;
             uint raw = valid ? input[idx] : 0u;
-            bool match = valid && evaluate_predicate(raw, lo_u, hi_u);
-            flags[e] = match;
+            bool match_v;
+            if (data_type == 1u) {
+                match_v = valid && evaluate_predicate(
+                    as_type<int>(raw), as_type<int>(lo_u), as_type<int>(hi_u));
+            } else if (data_type == 2u) {
+                match_v = valid && evaluate_predicate(
+                    as_type<float>(raw), as_type<float>(lo_u), as_type<float>(hi_u));
+            } else {
+                match_v = valid && evaluate_predicate(raw, lo_u, hi_u);
+            }
+            flags[e] = match_v;
             values[e] = raw;
             idx_cache[e] = idx;
-            local_count += uint(match);
+            local_count += uint(match_v);
         }
 
         // Phase 2: SIMD-aggregated atomic

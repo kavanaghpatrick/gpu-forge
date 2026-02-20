@@ -149,7 +149,7 @@ Focus: Complete the API — all 6 types, all predicates, index output, unordered
 - _Requirements: FR-1, AC-1.2_
 - _Design: Predicate Evaluation_
 
-### Task 2.2: Add all 6 numeric types with convenience methods
+### Task 2.2: Add all 6 numeric types with convenience methods [x]
 
 - **Do**:
   1. Implement convenience methods: `filter_i32`, `filter_f32`, `filter_u64`, `filter_i64`, `filter_f64` — each takes `&[T]` + `&Predicate<T>`, returns `Result<Vec<T>>`
