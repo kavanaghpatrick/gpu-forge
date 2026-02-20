@@ -4,11 +4,12 @@ using namespace metal;
 // =================================================================
 // forge-filter: GPU filter + compact kernels
 //
-// 4 kernels:
+// 5 kernels:
 //   1. filter_predicate_scan — fused predicate eval + local scan + partials
 //   2. filter_scan_partials  — single-TG exclusive scan of partials array
 //   3. filter_scatter        — re-eval + local scan + global prefix scatter
 //   4. filter_atomic_scatter — unordered single-dispatch atomic scatter
+//   5. filter_bitmap_scan    — predicate eval + bitmap write + partials
 //
 // Supports 32-bit (uint/int/float) and 64-bit (ulong/long/double) types
 // via IS_64BIT function constant. Predicate type eliminated at PSO
@@ -33,6 +34,7 @@ constant bool IS_64BIT    [[function_constant(1)]]; // false=32-bit, true=64-bit
 constant bool OUTPUT_IDX  [[function_constant(2)]]; // true=write indices to output
 constant bool OUTPUT_VALS [[function_constant(3)]]; // true=write values to output
 constant uint DATA_TYPE   [[function_constant(4)]]; // 0=uint/ulong, 1=int/long, 2=float/double
+constant bool HAS_NULLS   [[function_constant(5)]]; // true=check validity bitmap for NULLs
 
 // Resolved with defaults (used when constants not set)
 constant uint pred_type   = is_function_constant_defined(PRED_TYPE)   ? PRED_TYPE   : 0u;
@@ -40,6 +42,7 @@ constant bool is_64bit    = is_function_constant_defined(IS_64BIT)    ? IS_64BIT
 constant bool output_idx  = is_function_constant_defined(OUTPUT_IDX)  ? OUTPUT_IDX  : false;
 constant bool output_vals = is_function_constant_defined(OUTPUT_VALS) ? OUTPUT_VALS : true;
 constant uint data_type   = is_function_constant_defined(DATA_TYPE)   ? DATA_TYPE   : 0u;
+constant bool has_nulls   = is_function_constant_defined(HAS_NULLS)   ? HAS_NULLS   : false;
 
 // --- Parameter Structs (must match Rust repr(C) layout) ---
 
@@ -618,5 +621,175 @@ kernel void filter_atomic_scatter(
                 write_pos++;
             }
         }
+    }
+}
+
+// --- Manual Ballot ---
+// simd_ballot() returns opaque simd_vote on Metal — cannot extract
+// bitmask. Build ballot manually via butterfly reduction: 5 uniform
+// simd_shuffle_xor ops broadcast each lane's bit to all lanes.
+
+inline uint manual_ballot(bool pred, uint lane) {
+    uint val = pred ? (1u << lane) : 0u;
+    val |= simd_shuffle_xor(val, 1u);
+    val |= simd_shuffle_xor(val, 2u);
+    val |= simd_shuffle_xor(val, 4u);
+    val |= simd_shuffle_xor(val, 8u);
+    val |= simd_shuffle_xor(val, 16u);
+    return val;
+}
+
+// =================================================================
+// Kernel 5: filter_bitmap_scan
+//
+// Evaluate predicate for each element, pack 32 predicate results per
+// simdgroup into a bitmap word via manual ballot (butterfly reduction),
+// write bitmap for downstream bitmap_scatter to use (avoids
+// re-evaluating predicate). Also computes per-tile match count via
+// SIMD prefix sum + cross-SG aggregation, writes tile total to
+// partials[tg_idx].
+//
+// When has_nulls=true, reads validity bitmap and ANDs with predicate
+// result before ballot (NULLs always excluded).
+//
+// Buffer layout:
+//   buffer(0) = src data (const uint or const ulong)
+//   buffer(1) = bitmap output (atomic_uint, ceil(N/32) words)
+//   buffer(2) = partials output (one uint per threadgroup)
+//   buffer(3) = validity bitmap (const uint, optional, Arrow LSB-first)
+//   buffer(4) = params (FilterParams or FilterParams64)
+//
+// Dispatch: ceil(N / TILE_SIZE) threadgroups x 256 threads
+// TG memory: 32 bytes (simd_totals[8])
+// =================================================================
+
+kernel void filter_bitmap_scan(
+    device const uint*       input        [[buffer(0)]],
+    device atomic_uint*      bitmap       [[buffer(1)]],
+    device uint*             partials     [[buffer(2)]],
+    device const uint*       validity     [[buffer(3)]],
+    constant void*           params_raw   [[buffer(4)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint tg_idx    [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_idx  [[simdgroup_index_in_threadgroup]]
+)
+{
+    threadgroup uint simd_totals[FILTER_NUM_SGS];
+
+    uint thread_match_count = 0u;
+
+    if (is_64bit) {
+        // --- 64-bit path ---
+        constant FilterParams64& params = *reinterpret_cast<constant FilterParams64*>(params_raw);
+        uint n = params.element_count;
+        uint base = tg_idx * FILTER_TILE_64;
+
+        // Reconstruct 64-bit thresholds from split halves
+        ulong lo_raw = ulong(params.lo_lo) | (ulong(params.lo_hi) << 32u);
+        ulong hi_raw = ulong(params.hi_lo) | (ulong(params.hi_hi) << 32u);
+
+        device const ulong* input64 = reinterpret_cast<device const ulong*>(input);
+
+        for (uint e = 0u; e < FILTER_ELEMS_64; e++) {
+            uint idx = base + e * FILTER_THREADS + lid;
+            bool pred_result = false;
+            if (idx < n) {
+                ulong raw = input64[idx];
+                if (data_type == 1u) {
+                    pred_result = evaluate_predicate(
+                        as_type<long>(raw), as_type<long>(lo_raw), as_type<long>(hi_raw));
+                } else if (data_type == 2u) {
+                    pred_result = evaluate_predicate_f64(raw, lo_raw, hi_raw);
+                } else {
+                    pred_result = evaluate_predicate(raw, lo_raw, hi_raw);
+                }
+
+                // NULL check: exclude NULLs by ANDing with validity bitmap
+                if (has_nulls) {
+                    uint validity_word = validity[idx / 32u];
+                    bool is_valid = (validity_word >> (idx % 32u)) & 1u;
+                    pred_result = pred_result && is_valid;
+                }
+            }
+
+            // Manual ballot: butterfly reduction packs 32 results into one uint
+            uint ballot_bits = manual_ballot(pred_result, simd_lane);
+
+            // Lane 0 of each simdgroup writes ballot word to bitmap
+            if (simd_lane == 0u) {
+                uint bitmap_word_idx = (base + e * FILTER_THREADS + simd_idx * 32u) / 32u;
+                atomic_store_explicit(&bitmap[bitmap_word_idx],
+                                     ballot_bits, memory_order_relaxed);
+            }
+
+            // Each thread counts its own match
+            thread_match_count += uint(pred_result);
+        }
+    } else {
+        // --- 32-bit path ---
+        constant FilterParams& params = *reinterpret_cast<constant FilterParams*>(params_raw);
+        uint n = params.element_count;
+        uint base = tg_idx * FILTER_TILE_32;
+        uint lo_u = params.lo_bits;
+        uint hi_u = params.hi_bits;
+
+        for (uint e = 0u; e < FILTER_ELEMS_32; e++) {
+            uint idx = base + e * FILTER_THREADS + lid;
+            bool pred_result = false;
+            if (idx < n) {
+                uint raw = input[idx];
+                if (data_type == 1u) {
+                    pred_result = evaluate_predicate(
+                        as_type<int>(raw), as_type<int>(lo_u), as_type<int>(hi_u));
+                } else if (data_type == 2u) {
+                    pred_result = evaluate_predicate(
+                        as_type<float>(raw), as_type<float>(lo_u), as_type<float>(hi_u));
+                } else {
+                    pred_result = evaluate_predicate(raw, lo_u, hi_u);
+                }
+
+                // NULL check: exclude NULLs by ANDing with validity bitmap
+                if (has_nulls) {
+                    uint validity_word = validity[idx / 32u];
+                    bool is_valid = (validity_word >> (idx % 32u)) & 1u;
+                    pred_result = pred_result && is_valid;
+                }
+            }
+
+            // Manual ballot: butterfly reduction packs 32 results into one uint
+            uint ballot_bits = manual_ballot(pred_result, simd_lane);
+
+            // Lane 0 of each simdgroup writes ballot word to bitmap
+            if (simd_lane == 0u) {
+                uint bitmap_word_idx = (base + e * FILTER_THREADS + simd_idx * 32u) / 32u;
+                atomic_store_explicit(&bitmap[bitmap_word_idx],
+                                     ballot_bits, memory_order_relaxed);
+            }
+
+            // Each thread counts its own match
+            thread_match_count += uint(pred_result);
+        }
+    }
+
+    // --- SIMD prefix sum ---
+    uint simd_prefix = simd_prefix_exclusive_sum(thread_match_count);
+
+    // Last lane in each simdgroup writes total to shared memory
+    if (simd_lane == 31u) {
+        simd_totals[simd_idx] = simd_prefix + thread_match_count;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // --- Cross-SG scan (first 8 threads) ---
+    if (lid < FILTER_NUM_SGS) {
+        simd_totals[lid] = simd_prefix_exclusive_sum(simd_totals[lid]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // --- Last thread writes TG total to partials ---
+    if (lid == FILTER_THREADS - 1u) {
+        uint tg_total = simd_prefix + thread_match_count + simd_totals[simd_idx];
+        partials[tg_idx] = tg_total;
     }
 }

@@ -11,7 +11,7 @@ created: 2026-02-20
 
 Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=10x vs Polars.
 
-- [ ] 1.1 Add `filter_bitmap_scan` kernel to filter.metal
+- [x] 1.1 Add `filter_bitmap_scan` kernel to filter.metal
   - **Do**:
     1. Add `HAS_NULLS` function constant (index 5) with default false
     2. Add `filter_bitmap_scan` kernel that:
