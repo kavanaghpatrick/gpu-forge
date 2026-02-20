@@ -161,6 +161,42 @@ Use /gpu-forge:ask for deeper explanation of any finding
 Use /gpu-forge:knowledge detail <id> for full finding details
 ```
 
+## Step 5: Store New Findings
+
+After completing the review, check if any CRITICAL or WARNING issues represent patterns
+NOT already in the knowledge base. For each genuinely new pattern:
+
+1. **Dedup check**: Search the KB for the pattern before adding:
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/scripts/kb search "<brief description of the anti-pattern>" --limit 5
+   ```
+
+2. **Skip if found**: If any returned finding substantially matches the discovered issue, do NOT add a duplicate.
+
+3. **Add if new**: If the pattern is genuinely new (no close match in search results):
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/scripts/kb add "<skill>" "<topic>" "<claim>" "<evidence>" "" "" "empirical_test" "medium" "review-discovered"
+   ```
+   Where:
+   - `<skill>`: The most relevant skill (gpu-perf, msl-kernels, simd-wave, etc.)
+   - `<topic>`: Category of the anti-pattern
+   - `<claim>`: The anti-pattern or finding as a clear statement
+   - `<evidence>`: What was observed in the reviewed code (with file name, line range)
+   - `source_type`: Always `empirical_test`
+   - `confidence`: Always `medium` (single observation, not independently verified)
+   - `tags`: Always includes `review-discovered`
+
+4. **Report**: At the end of the review output, note how many new findings were stored (if any):
+   ```
+   ### KB Updates
+   - Stored N new finding(s) from this review (tagged: review-discovered)
+   ```
+
+**Constraints**:
+- Only store genuinely new anti-patterns, NOT every observation
+- Maximum 3 new findings per review (avoid noise)
+- Never store INFO-level issues -- only CRITICAL and WARNING
+
 ## Severity Levels
 
 - **CRITICAL**: Will cause incorrect results, crashes, or severe performance degradation (>10x slowdown)

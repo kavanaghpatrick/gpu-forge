@@ -336,7 +336,7 @@ created: 2026-02-20
 - **Done when**: All kb-cli tests pass, backfill-urls produces output
 - **Commit**: `chore(harness): pass quality checkpoint` (only if fixes needed)
 
-### Task 6.1: Add Step 5 to review.md (Gap 5)
+### Task 6.1: Add Step 5 to review.md (Gap 5) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/commands/review.md`
