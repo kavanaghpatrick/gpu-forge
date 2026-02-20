@@ -27,7 +27,7 @@ created: 2026-02-20
 
 ## Phase 1: Prerequisites
 
-### Task 0.1: Fix hooks.bats for nested object format
+### Task 0.1: Fix hooks.bats for nested object format [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/tests/unit/hooks.bats`
