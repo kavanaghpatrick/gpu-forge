@@ -1,69 +1,111 @@
 # gpu-forge
 
-**Turn Claude into an Apple Silicon GPU systems engineer.**
+**Apple Silicon GPU systems engineering -- knowledge base, compute libraries, and tools.**
 
-gpu-forge is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that gives Claude deep expertise in Apple Silicon GPU programming. It ships a curated knowledge base of **753 research findings** across **11 GPU computing domains**, backed by **94 academic citations** and **24 structured investigations** drawn from Apple documentation, reverse-engineering projects (Asahi Linux), academic papers, and Metal framework internals.
+gpu-forge is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that gives Claude deep expertise in Apple Silicon GPU programming, plus a growing collection of production Metal compute libraries built using that knowledge.
 
-Ask Claude to design a compute pipeline, write a Metal shader, optimize memory access patterns, or architect a GPU-centric system -- and it answers with specific, cited knowledge about M4/M5 hardware rather than generic GPU advice.
+The plugin ships a curated knowledge base of **753 research findings** across **11 GPU computing domains**, backed by **94 academic citations** and **24 structured investigations** drawn from Apple documentation, reverse-engineering projects (Asahi Linux), academic papers, and Metal framework internals.
 
+The compute libraries are real implementations -- a GPU radix sort hitting **4,800+ Mkeys/s**, GPU-accelerated text search, and a real-time sort visualization -- all written in Rust + Metal and tested on Apple Silicon.
+
+## Highlights
+
+| Project | What | Performance |
+|---------|------|-------------|
+| [forge-sort](metal-forge-compute/forge-sort/) | GPU radix sort library | **31x** faster than `sort_unstable()`, **4,800+ Mk/s** zero-copy |
+| [gpu-search](gpu-search/) | GPU-accelerated text search | 110 GB/s content scanning |
+| [sort-demo](sort-demo/) | Real-time sort visualization | 60fps interactive rendering |
+| gpu-forge plugin | Knowledge base + AI agents | 753 findings, 11 domains |
+
+## forge-sort
+
+The fastest GPU radix sort on Apple Silicon. Supports **6 data types**, **argsort**, and **key-value pair sorting**.
+
+```rust
+use forge_sort::GpuSorter;
+
+let mut sorter = GpuSorter::new()?;
+
+// Sort any supported type
+sorter.sort_u32(&mut data_u32)?;
+sorter.sort_i32(&mut data_i32)?;
+sorter.sort_f32(&mut data_f32)?;
+sorter.sort_u64(&mut data_u64)?;
+sorter.sort_i64(&mut data_i64)?;
+sorter.sort_f64(&mut data_f64)?;
+
+// Argsort -- returns index permutation
+let indices = sorter.argsort_f32(&data)?;
+
+// Key-value pair sort -- co-sorts values by key order
+sorter.sort_pairs_u32(&mut keys, &mut values)?;
+
+// Zero-copy -- data stays in GPU memory, no memcpy
+let buf = sorter.alloc_sort_buffer::<u32>(16_000_000);
+sorter.sort_buffer(&buf)?;
 ```
-> /gpu-forge:ask "How should I size threadgroups for maximum occupancy on M4?"
 
-Based on 6 findings from gpu-perf and gpu-silicon:
+### Benchmarks (M4 Pro, 20-core GPU)
 
-Apple M4 GPUs have a SIMD width of 32 threads. For maximum occupancy:
-- Threadgroup size must be a multiple of 32 (Finding #142, verified)
-- Maximum threadgroup size is 1024 threads (Finding #89, verified)
-- Optimal range is 256-512 for compute-bound kernels (Finding #156, high)
-- Each GPU core has 32KB threadgroup memory -- exceeding this kills occupancy (Finding #201, verified)
-...
-```
+| Size | `sort_unstable` | `rayon par_sort` | **forge-sort** | vs CPU | vs Rayon |
+|-----:|----------------:|-----------------:|---------------:|-------:|---------:|
+| 1M | 9.05 ms | 2.61 ms | **0.97 ms** | 9.3x | 2.7x |
+| 4M | 39.71 ms | 10.55 ms | **1.50 ms** | 26.5x | 7.0x |
+| 16M | 172.72 ms | 49.60 ms | **5.67 ms** | 30.5x | 8.7x |
 
-## What's Inside
+Zero-copy throughput (data already in Metal buffer): **4,800+ Mk/s** at sweet-spot sizes.
+
+**Algorithm**: MSD+fused-inner 8-bit radix sort in 4 GPU dispatches within a single command encoder. Atomic scatter (no spin-wait), fused 3-pass inner LSD, per-simdgroup histograms, ~22 KB threadgroup memory.
+
+165 tests covering u32/i32/f32/u64/i64/f64, argsort, sort_pairs, edge cases, and performance.
+
+See [forge-sort/README.md](metal-forge-compute/forge-sort/README.md) for full API docs and benchmarks.
+
+## Repository Structure
 
 ```
 gpu-forge/
-  .claude-plugin/plugin.json     # Plugin manifest
-  skills/                        # 11 domain skills (2,043 lines of distilled expertise)
-    gpu-silicon/                 #   Layer 0: Apple GPU microarchitecture
-    unified-memory/              #   Layer 0: Unified memory, SLC, storage modes
-    metal-compute/               #   Layer 1: Metal compute pipeline
-    msl-kernels/                 #   Layer 1: Metal Shading Language
-    gpu-io/                      #   Layer 2: GPU I/O, fast resource loading
-    gpu-perf/                    #   Layer 2: Performance, profiling, occupancy
-    simd-wave/                   #   Layer 2: SIMD/wave ops, simdgroup_matrix
-    mlx-compute/                 #   Layer 3: MLX framework, custom kernels
-    metal4-api/                  #   Layer 3: Metal 4, MTLTensor, cooperative tensors
-    gpu-distributed/             #   Layer 3: RDMA, Thunderbolt 5, multi-Mac clusters
-    gpu-centric-arch/            #   Layer 4: GPU-as-CPU, persistent kernels, GPU OS
+  metal-forge-compute/           # Rust + Metal compute workspace
+    forge-sort/                  #   GPU radix sort library (v0.2.0)
+    forge-primitives/            #   Metal device, buffer, PSO utilities
+    forge-bench/                 #   Benchmark harness CLI
+  gpu-search/                    # GPU-accelerated text search (Rust + Metal)
+  sort-demo/                     # Real-time sort visualization (Rust + winit)
+  .claude-plugin/plugin.json     # Claude Code plugin manifest
+  skills/                        # 11 domain skills (2,043 lines of expertise)
   agents/                        # 3 specialized AI agents
   commands/                      # 6 slash commands
   hooks/                         # Auto-loading context system
   templates/                     # 9 code templates + 5 scaffold specs
-  data/gpu_knowledge.db          # SQLite DB with FTS5 full-text search
-  scripts/kb                     # Knowledge base CLI (BM25-ranked search)
+  data/gpu_knowledge.db          # SQLite FTS5 knowledge base
+  scripts/kb                     # Knowledge base CLI
   tests/                         # 212 BATS tests
+  .github/workflows/             # CI/CD (3 workflows)
 ```
 
 ## Numbers
 
 | Metric | Value |
 |--------|-------|
-| Knowledge findings | 753 |
+| **Compute** | |
+| forge-sort throughput | 4,800+ Mk/s zero-copy |
+| forge-sort data types | u32, i32, f32, u64, i64, f64 |
+| forge-sort tests | 165 (+ 40 forge-primitives) |
+| **Knowledge** | |
+| Research findings | 753 |
 | Verified findings | 448 (59%) |
 | Academic citations | 94 |
-| Structured investigations | 24 |
+| Investigations | 24 |
 | Domain skills | 11 (5 layers) |
+| **Plugin** | |
 | Specialized agents | 3 (Haiku, Sonnet, Opus) |
 | Slash commands | 6 |
-| Metal shader templates | 5 (all compile with `xcrun`) |
-| Swift/MLX templates | 4 |
-| Project scaffold specs | 5 |
 | BATS tests | 212 (100% pass) |
-| Golden search queries | 72 |
 | Knowledge DB size | 1.3 MB |
 
 ## Installation
+
+### Plugin only
 
 ```bash
 git clone https://github.com/kavanaghpatrick/gpu-forge.git
@@ -71,6 +113,16 @@ claude --plugin-dir ./gpu-forge
 ```
 
 Requirements: `sqlite3` (pre-installed on macOS), `bash` 4.0+. Optional: `jq` (hooks), Xcode Command Line Tools (Metal compilation tests).
+
+### Compute libraries
+
+```bash
+cd metal-forge-compute
+cargo build --workspace --release
+cargo test -p forge-sort -- --test-threads=1
+```
+
+Requirements: Rust 1.70+, macOS with Apple Silicon (M1+), Xcode Command Line Tools.
 
 ## Commands
 
@@ -235,6 +287,18 @@ cd gpu-forge && bats tests/
 | **metal4-api** | MTLTensor, cooperative tensors, unified encoder, residency sets | "Metal 4 replaces command buffer model with unified encoder + command bundles" |
 | **gpu-distributed** | RDMA over Thunderbolt 5, MLX distributed, ring allreduce | "Thunderbolt 5 RDMA enables ~10 GB/s inter-Mac GPU communication" |
 | **gpu-centric-arch** | Persistent kernels, megakernels, GPU scheduling, reverse offloading | "LithOS (SOSP 2025) demonstrates GPU-centric OS with CPU as I/O coprocessor" |
+
+## CI/CD
+
+Three GitHub Actions workflows on `macos-14` (Apple Silicon) runners:
+
+| Workflow | Triggers | What it does |
+|----------|----------|-------------|
+| `forge-ci.yml` | Push/PR to `metal-forge-compute/**` | Clippy + check + 205 tests + perf tests (main only) + release build + artifact upload |
+| `gpu-search-ci.yml` | Push/PR to `gpu-search/**` | 5-stage pipeline: lint, build, unit, integration, bench |
+| `test.yml` | Push/PR | 212 BATS plugin tests |
+
+All workflows run with `MTL_SHADER_VALIDATION=1` and `RUSTFLAGS=-D warnings`.
 
 ## Contributing
 

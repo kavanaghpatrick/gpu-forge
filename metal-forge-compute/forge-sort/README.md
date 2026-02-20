@@ -136,31 +136,44 @@ fn main() -> Result<(), SortError> {
 
 ```rust
 pub struct GpuSorter { /* ... */ }
-pub struct SortBuffer { /* ... */ }
+pub struct SortBuffer<T> { /* ... */ }
 
 impl GpuSorter {
-    /// Create a new sorter. Initializes Metal device, compiles 4 GPU kernels.
     pub fn new() -> Result<Self, SortError>;
 
-    /// Sort a u32 slice in-place on GPU (copies data to/from GPU buffer).
+    // Sort slices in-place (copies data to/from GPU)
     pub fn sort_u32(&mut self, data: &mut [u32]) -> Result<(), SortError>;
+    pub fn sort_i32(&mut self, data: &mut [i32]) -> Result<(), SortError>;
+    pub fn sort_f32(&mut self, data: &mut [f32]) -> Result<(), SortError>;
+    pub fn sort_u64(&mut self, data: &mut [u64]) -> Result<(), SortError>;
+    pub fn sort_i64(&mut self, data: &mut [i64]) -> Result<(), SortError>;
+    pub fn sort_f64(&mut self, data: &mut [f64]) -> Result<(), SortError>;
 
-    /// Allocate a GPU buffer for zero-copy sorting (unified memory).
-    pub fn alloc_sort_buffer(&self, capacity: usize) -> SortBuffer;
+    // Zero-copy sort (data stays in GPU memory)
+    pub fn sort_buffer(&mut self, buf: &SortBuffer<u32>) -> Result<(), SortError>;
+    pub fn sort_f32_buffer(&mut self, buf: &SortBuffer<f32>) -> Result<(), SortError>;
+    pub fn sort_i32_buffer(&mut self, buf: &SortBuffer<i32>) -> Result<(), SortError>;
+    pub fn sort_u64_buffer(&mut self, buf: &SortBuffer<u64>) -> Result<(), SortError>;
+    pub fn sort_i64_buffer(&mut self, buf: &SortBuffer<i64>) -> Result<(), SortError>;
+    pub fn sort_f64_buffer(&mut self, buf: &SortBuffer<f64>) -> Result<(), SortError>;
 
-    /// Sort a SortBuffer in-place on GPU. Zero memcpy — pure GPU speed.
-    pub fn sort_buffer(&mut self, buf: &SortBuffer) -> Result<(), SortError>;
-}
+    // Argsort -- returns index permutation
+    pub fn argsort_u32(&mut self, data: &[u32]) -> Result<Vec<u32>, SortError>;
+    pub fn argsort_i32(&mut self, data: &[i32]) -> Result<Vec<u32>, SortError>;
+    pub fn argsort_f32(&mut self, data: &[f32]) -> Result<Vec<u32>, SortError>;
+    pub fn argsort_u64(&mut self, data: &[u64]) -> Result<Vec<u32>, SortError>;
+    pub fn argsort_i64(&mut self, data: &[i64]) -> Result<Vec<u32>, SortError>;
+    pub fn argsort_f64(&mut self, data: &[f64]) -> Result<Vec<u32>, SortError>;
 
-impl SortBuffer {
-    pub fn as_slice(&self) -> &[u32];       // read sorted results
-    pub fn as_mut_slice(&mut self) -> &mut [u32]; // write data directly
-    pub fn copy_from_slice(&mut self, data: &[u32]); // bulk copy in
-    pub fn copy_to_slice(&self, dest: &mut [u32]);   // bulk copy out
-    pub fn set_len(&mut self, len: usize);   // set valid element count
-    pub fn len(&self) -> usize;
-    pub fn capacity(&self) -> usize;
-    pub fn metal_buffer(&self) -> &MTLBuffer; // access underlying Metal buffer
+    // Key-value pair sort -- co-sorts values by key order
+    pub fn sort_pairs_u32(&mut self, keys: &mut [u32], values: &mut [u32]) -> Result<(), SortError>;
+    pub fn sort_pairs_i32(&mut self, keys: &mut [i32], values: &mut [u32]) -> Result<(), SortError>;
+    pub fn sort_pairs_f32(&mut self, keys: &mut [f32], values: &mut [u32]) -> Result<(), SortError>;
+    pub fn sort_pairs_u64(&mut self, keys: &mut [u64], values: &mut [u32]) -> Result<(), SortError>;
+    pub fn sort_pairs_i64(&mut self, keys: &mut [i64], values: &mut [u32]) -> Result<(), SortError>;
+
+    // Buffer allocation
+    pub fn alloc_sort_buffer<T>(&self, capacity: usize) -> SortBuffer<T>;
 }
 ```
 
@@ -173,21 +186,21 @@ cargo bench -p forge-sort
 ## Running tests
 
 ```bash
-cargo test -p forge-sort                    # all 28 tests
-cargo test -p forge-sort --release          # faster (0.3s vs 12s)
-cargo test -p forge-sort -- --nocapture     # see output
+cargo test -p forge-sort -- --test-threads=1      # all 165 tests (serial for GPU)
+cargo test -p forge-sort --release -- --test-threads=1  # faster
+cargo test -p forge-sort -- --nocapture --test-threads=1  # see output
 ```
 
-Tests cover 8 sizes (100 to 16M), edge cases (empty, single, all-same, pre-sorted, reverse, non-aligned), buffer reuse, zero-copy SortBuffer API, interleaved usage, and performance sanity.
+165 tests covering all 6 data types (u32/i32/f32/u64/i64/f64), argsort, sort_pairs, 8 sizes (100 to 16M), edge cases (empty, single, all-same, pre-sorted, reverse, non-aligned), buffer reuse, zero-copy SortBuffer API, interleaved usage, and performance sanity.
 
 ## Architecture
 
 ```
 forge-sort/
   build.rs              # compiles sort.metal with -std=metal3.2
-  shaders/sort.metal    # 4 Metal compute kernels (~350 lines)
-  src/lib.rs            # GpuSorter + SortBuffer (~340 lines)
-  tests/correctness.rs  # 25 integration tests
+  shaders/sort.metal    # 4 Metal compute kernels (~870 lines)
+  src/lib.rs            # GpuSorter + SortBuffer (~3,300 lines)
+  tests/correctness.rs  # 165 integration tests
   benches/sort_benchmark.rs
 ```
 
@@ -205,9 +218,9 @@ Buffers are allocated via Apple Silicon unified memory (shared CPU/GPU). They gr
 
 ## Limitations
 
-- **u32 keys only** -- no key-value pairs, no signed integers, no floats (planned for v2)
-- **Synchronous** -- `sort_u32()` and `sort_buffer()` block until the GPU completes
+- **Synchronous** -- all sort methods block until the GPU completes
 - **Apple Silicon only** -- requires Metal 3.2 (M1+)
+- **u32 values for sort_pairs** -- value array is always u32 (use argsort for arbitrary reordering)
 
 ## License
 
