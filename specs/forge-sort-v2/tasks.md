@@ -330,7 +330,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: AC-4.1, AC-4.2, AC-4.3, AC-4.4, AC-4.6, FR-16, FR-18_
   - _Design: sort_pairs Strategy B_
 
-- [ ] 2.7 Add argsort and sort_pairs correctness tests
+- [x] 2.7 Add argsort and sort_pairs correctness tests
   - **Do**:
     1. Create `tests/correctness_argsort.rs` with ~15 tests:
        - `test_argsort_u32_basic`: small known input, verify permutation
