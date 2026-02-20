@@ -69,7 +69,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-1, FR-2, AC-1.3, AC-1.5_
   - _Design: Section 3 — GpuFilter Methods_
 
-- [ ] 1.4 [VERIFY] Quality checkpoint: all v0.1 tests pass with bitmap pipeline
+- [x] 1.4 [VERIFY] Quality checkpoint: all v0.1 tests pass with bitmap pipeline
   - **Do**:
     1. Run full test suite — all 47 tests must pass
     2. Run `cargo clippy -- -D warnings`
