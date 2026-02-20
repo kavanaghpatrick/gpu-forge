@@ -4,12 +4,13 @@ using namespace metal;
 // =================================================================
 // forge-filter: GPU filter + compact kernels
 //
-// 5 kernels:
+// 6 kernels:
 //   1. filter_predicate_scan — fused predicate eval + local scan + partials
 //   2. filter_scan_partials  — single-TG exclusive scan of partials array
 //   3. filter_scatter        — re-eval + local scan + global prefix scatter
 //   4. filter_atomic_scatter — unordered single-dispatch atomic scatter
 //   5. filter_bitmap_scan    — predicate eval + bitmap write + partials
+//   6. filter_bitmap_scatter — bitmap read + local scan + global prefix scatter
 //
 // Supports 32-bit (uint/int/float) and 64-bit (ulong/long/double) types
 // via IS_64BIT function constant. Predicate type eliminated at PSO
@@ -791,5 +792,142 @@ kernel void filter_bitmap_scan(
     if (lid == FILTER_THREADS - 1u) {
         uint tg_total = simd_prefix + thread_match_count + simd_totals[simd_idx];
         partials[tg_idx] = tg_total;
+    }
+}
+
+// =================================================================
+// Kernel 6: filter_bitmap_scatter
+//
+// Reads pre-computed bitmap from filter_bitmap_scan (no predicate
+// re-evaluation). Extracts per-thread match flag from bitmap word,
+// then does round-by-round SIMD prefix sum + cross-SG aggregation
+// to compute ordered scatter positions. Reads global prefix from
+// scanned partials[tg_idx].
+//
+// Buffer layout:
+//   buffer(0) = src data (const uint or const ulong)
+//   buffer(1) = bitmap (const uint, ceil(N/32) words, from bitmap_scan)
+//   buffer(2) = out_vals (output values)
+//   buffer(3) = out_idx  (output indices)
+//   buffer(4) = partials (scanned, one uint per threadgroup)
+//   buffer(5) = params   (FilterParams or FilterParams64)
+//
+// Dispatch: ceil(N / TILE_SIZE) threadgroups x 256 threads
+// TG memory: 32 bytes (simd_totals[8])
+// =================================================================
+
+kernel void filter_bitmap_scatter(
+    device const uint*       input        [[buffer(0)]],
+    device const uint*       bitmap       [[buffer(1)]],
+    device uint*             out_vals     [[buffer(2)]],
+    device uint*             out_idx      [[buffer(3)]],
+    device const uint*       partials     [[buffer(4)]],
+    constant void*           params_raw   [[buffer(5)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint tg_idx    [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_idx  [[simdgroup_index_in_threadgroup]]
+)
+{
+    threadgroup uint simd_totals[FILTER_NUM_SGS];
+    threadgroup uint round_total_tg;
+
+    // Read global prefix for this TG
+    uint global_prefix = partials[tg_idx];
+
+    // Running write offset — accumulates across element rounds
+    uint running_offset = global_prefix;
+
+    if (is_64bit) {
+        // --- 64-bit scatter path (ordered, round-by-round) ---
+        constant FilterParams64& params = *reinterpret_cast<constant FilterParams64*>(params_raw);
+        uint n = params.element_count;
+        uint base = tg_idx * FILTER_TILE_64;
+
+        device const ulong* input64 = reinterpret_cast<device const ulong*>(input);
+        device ulong* out_vals64 = reinterpret_cast<device ulong*>(out_vals);
+
+        for (uint e = 0u; e < FILTER_ELEMS_64; e++) {
+            uint idx = base + e * FILTER_THREADS + lid;
+            bool valid = idx < n;
+
+            // Read match flag from pre-computed bitmap
+            bool match_flag = false;
+            if (valid) {
+                uint bitmap_word = bitmap[idx / 32u];
+                match_flag = (bitmap_word >> (idx % 32u)) & 1u;
+            }
+            uint flag = uint(match_flag);
+
+            // TG-wide prefix sum of the per-element flag
+            uint simd_prefix = simd_prefix_exclusive_sum(flag);
+            if (simd_lane == 31u) {
+                simd_totals[simd_idx] = simd_prefix + flag;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (lid < FILTER_NUM_SGS) {
+                simd_totals[lid] = simd_prefix_exclusive_sum(simd_totals[lid]);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            uint write_pos = running_offset + simd_prefix + simd_totals[simd_idx];
+
+            if (match_flag) {
+                ulong raw = input64[idx];
+                if (output_vals) out_vals64[write_pos] = raw;
+                if (output_idx)  out_idx[write_pos] = idx;
+            }
+
+            // Last thread computes round total
+            if (lid == FILTER_THREADS - 1u) {
+                round_total_tg = write_pos + flag - running_offset;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            running_offset += round_total_tg;
+        }
+    } else {
+        // --- 32-bit scatter path (ordered, round-by-round) ---
+        constant FilterParams& params = *reinterpret_cast<constant FilterParams*>(params_raw);
+        uint n = params.element_count;
+        uint base = tg_idx * FILTER_TILE_32;
+
+        for (uint e = 0u; e < FILTER_ELEMS_32; e++) {
+            uint idx = base + e * FILTER_THREADS + lid;
+            bool valid = idx < n;
+
+            // Read match flag from pre-computed bitmap
+            bool match_flag = false;
+            if (valid) {
+                uint bitmap_word = bitmap[idx / 32u];
+                match_flag = (bitmap_word >> (idx % 32u)) & 1u;
+            }
+            uint flag = uint(match_flag);
+
+            // TG-wide prefix sum of the per-element flag
+            uint simd_prefix = simd_prefix_exclusive_sum(flag);
+            if (simd_lane == 31u) {
+                simd_totals[simd_idx] = simd_prefix + flag;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (lid < FILTER_NUM_SGS) {
+                simd_totals[lid] = simd_prefix_exclusive_sum(simd_totals[lid]);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            uint write_pos = running_offset + simd_prefix + simd_totals[simd_idx];
+
+            if (match_flag) {
+                uint raw = input[idx];
+                if (output_vals) out_vals[write_pos] = raw;
+                if (output_idx)  out_idx[write_pos] = idx;
+            }
+
+            // Last thread computes round total
+            if (lid == FILTER_THREADS - 1u) {
+                round_total_tg = write_pos + flag - running_offset;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            running_offset += round_total_tg;
+        }
     }
 }

@@ -31,7 +31,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-1, AC-1.1, AC-1.3_
   - _Design: Section 1 — New Metal Kernels_
 
-- [ ] 1.2 Add `filter_bitmap_scatter` kernel to filter.metal
+- [x] 1.2 Add `filter_bitmap_scatter` kernel to filter.metal
   - **Do**:
     1. Add `filter_bitmap_scatter` kernel that:
        - Reads cached bitmap word `bitmap[idx / 32]`, extracts bit `(idx % 32)`
