@@ -275,6 +275,8 @@ kernel void sort_inner_fused(
     device uint*                buf_b         [[buffer(1)]],
     device const BucketDesc*    bucket_descs  [[buffer(2)]],
     constant InnerParams&       inner_params  [[buffer(3)]],
+    device uint*                vals_a        [[buffer(4)]],
+    device uint*                vals_b        [[buffer(5)]],
     uint lid       [[thread_position_in_threadgroup]],
     uint gid       [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
@@ -311,6 +313,10 @@ kernel void sort_inner_fused(
         // Alternate buffers: pass 0: b->a, pass 1: a->b, pass 2: b->a
         device uint* src = (pass % 2u == 0u) ? buf_b : buf_a;
         device uint* dst = (pass % 2u == 0u) ? buf_a : buf_b;
+
+        // Values follow same ping-pong as keys
+        device uint* src_vals = (pass % 2u == 0u) ? vals_b : vals_a;
+        device uint* dst_vals = (pass % 2u == 0u) ? vals_a : vals_b;
 
         // ═══ Load histogram ═══
         if (pass == 0u) {
@@ -396,6 +402,7 @@ kernel void sort_inner_fused(
             uint tile_base = desc.offset + t * SORT_TILE_SIZE;
 
             uint keys[SORT_ELEMS];
+            uint vals[SORT_ELEMS];
             uint digits[SORT_ELEMS];
             bool valid[SORT_ELEMS];
             for (uint e = 0u; e < SORT_ELEMS; e++) {
@@ -405,6 +412,9 @@ kernel void sort_inner_fused(
                 uint idx = tile_base + simd_id * (SORT_ELEMS * 32u) + e * 32u + simd_lane;
                 keys[e] = valid[e] ? src[idx] : 0xFFFFFFFFu;
                 digits[e] = valid[e] ? ((keys[e] >> shift) & 0xFFu) : 0xFFu;
+                if (has_values) {
+                    vals[e] = valid[e] ? src_vals[idx] : 0u;
+                }
             }
 
             for (uint i = lid; i < SORT_NUM_SGS * SORT_NUM_BINS; i += SORT_THREADS) {
@@ -452,6 +462,9 @@ kernel void sort_inner_fused(
                                  + sg_pfx[simd_id * SORT_NUM_BINS + d]
                                  + within_sg;
                     dst[dst_idx] = keys[e];
+                    if (has_values) {
+                        dst_vals[dst_idx] = vals[e];
+                    }
                 }
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);

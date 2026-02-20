@@ -225,7 +225,7 @@ Focus: Add value tracking through sort pipeline. sort_init_indices, HAS_VALUES b
   - _Requirements: FR-4_
   - _Design: sort_msd_atomic_scatter HAS_VALUES_
 
-- [ ] 2.3 Add HAS_VALUES branches to sort_inner_fused
+- [x] 2.3 Add HAS_VALUES branches to sort_inner_fused
   - **Do**:
     1. Add value buffer bindings: `device uint* vals_a [[buffer(4)]]`, `device uint* vals_b [[buffer(5)]]`
     2. Guard all value ops with `if (has_values)`
