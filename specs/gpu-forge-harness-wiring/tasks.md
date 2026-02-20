@@ -374,7 +374,7 @@ created: 2026-02-20
 - _Requirements: FR-6 (AC-3.1, AC-3.2)_
 - _Design: Gap 2: Citation Enforcement, investigation-agent.md restructured Phase 3_
 
-### Task 7.2: Add citation coverage check to `kb verify` (Gap 2)
+### Task 7.2: Add citation coverage check to `kb verify` (Gap 2) [x]
 
 - **Do**:
   1. Read `/Users/patrickkavanagh/gpu_kernel/scripts/kb`, locate verify) case

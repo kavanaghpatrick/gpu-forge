@@ -358,6 +358,19 @@ case "${1}" in
       echo "OK: No stale investigations"
     fi
 
+    # Check 7: Academic findings without citations
+    count=$(run_sql "$DB" \
+      "SELECT COUNT(*) FROM findings f
+       WHERE f.source_type='academic_paper'
+         AND NOT EXISTS (SELECT 1 FROM citations c WHERE c.finding_id=f.id);")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+      total=$(run_sql "$DB" "SELECT COUNT(*) FROM findings WHERE source_type='academic_paper';")
+      echo "WARNING: $count of $total academic paper findings have no citation record"
+      issues=$((issues + count))
+    else
+      echo "OK: All academic paper findings have citations"
+    fi
+
     echo ""
     if [ "$issues" -gt 0 ]; then
       echo "TOTAL: $issues issue(s) found"
