@@ -36,7 +36,7 @@ Virtual address translation on the GPU uses the UAT (Unified Address Translator)
 
 ## Key Knowledge Areas
 
-The unified-memory skill contains 76 findings across these domains:
+The unified-memory skill contains 104 findings across these domains:
 
 - **Storage Modes**: MTLStorageModeShared vs .private vs .managed behavior on UMA, lossless compression for private textures, storage mode selection guidelines (Findings #73-77)
 - **SLC Architecture**: SLC sizes per chip generation (M1-M5), exclusive/inclusive policy, 128-byte cache lines, pseudo-random replacement, set indexing behavior (Findings #84-88, #96-98, #122)
@@ -54,6 +54,15 @@ The unified-memory skill contains 76 findings across these domains:
 - **Memory Ordering**: TSO on CPU cores, memory ordering guarantees across CPU-GPU boundary (Finding #129)
 - **Neural Accelerator Memory**: M5 per-core neural accelerators accessing unified memory via SLC (Finding #53)
 - **Academic Research**: GPU-driven virtual memory (GPUVM), SVM prefetching/thrashing, GMLake virtual memory stitching, unified physical memory characterization on AMD MI300A (Findings #482-492, #505-525)
+- **GPU Memory Model**: Weakly-ordered memory model, relaxed atomics only (no acquire/release/seq_cst), TSO vs ARM weak ordering (8.94% performance difference), no didModifyRange needed on Apple Silicon (Findings #632-#635, #637)
+- **Device-Scope Coherency**: MSL 3.2 coherent(device) qualifier, GPU memory barriers depth (threadgroup_barrier/simdgroup_barrier mem_flags), device-scope coherency details (Finding #636)
+- **Metal 4 Memory Management**: MTL4CommandAllocator decouples command memory from buffers, MTLResidencySet as exclusive residency mechanism, placement sparse resources, no auto-retain, no auto-hazard tracking (Findings #639-#643)
+- **SLC Architecture Depth**: EXAM paper findings on SLC bit indexing (lowest 13 bits excluded), 128-byte cache line discrepancy with sysctl, M3 Pro bandwidth reduction and M4 Pro restoration (Findings #648-#649)
+- **Physical Memory Architecture**: TechInsights M4 Max die analysis, LPDDR5X interleaving patterns, in-line ECC (Finding #650)
+- **Hardware Compression Limitation**: Lossless compression applies to textures only, NOT general compute buffers; macOS VM compression is separate mechanism (Findings #651-#652)
+- **Virtual Address Translation Depth**: 4-level UAT page tables (L0-L3), TTBR0/TTBR1 split, PTE format divergence from standard ARM64, DART vs UAT separation (DART=IOMMU, UAT=GPU-specific) (Findings #653-#656)
+- **GPU TLB**: Estimated ~2048 entries covering ~32 MB, TLB miss penalty, 16KB page size enables larger VIPT L1 cache (Finding #657)
+- **Zero-Copy Pipeline Depth**: CVPixelBufferPool -> CVMetalTextureCache full pipeline, alignment requirements, Ingonyama 1GB array benchmark showing near-zero overhead (Findings #658-#662, #709)
 
 ## How to Query Knowledge
 
@@ -77,7 +86,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/kb detail <finding-id>
 ${CLAUDE_PLUGIN_ROOT}/scripts/kb stats
 ```
 
-The `search` command uses BM25-weighted FTS5 ranking, prioritizing claim text over evidence. The `skill` command returns all 76 unified-memory findings in table format.
+The `search` command uses BM25-weighted FTS5 ranking, prioritizing claim text over evidence. The `skill` command returns all 104 unified-memory findings in table format.
 
 ## Common Patterns & Quick Answers
 
@@ -110,6 +119,21 @@ A: Apple Fabric is the on-chip interconnect connecting CPU, GPU, Neural Engine, 
 
 **Q: How does M5 Neural Accelerator access memory?**
 A: M5 Neural Accelerators (one per GPU core) operate on data from unified memory via the SLC, same as regular GPU compute. No separate memory pool — they share the unified memory hierarchy with full coherency. (Finding #53)
+
+**Q: What is the GPU memory ordering model on Apple Silicon?**
+A: Apple GPUs use a weakly-ordered memory model with relaxed atomics only — no acquire/release/seq_cst ordering. CPU cores use TSO (Total Store Order) while GPU uses ARM-style weak ordering. The TSO vs weak ordering gap shows an 8.94% performance difference. No explicit didModifyRange is needed for shared storage on Apple Silicon UMA. (Findings #632, #633, #637)
+
+**Q: What changed in Metal 4 memory management?**
+A: Metal 4 introduces: (1) MTL4CommandAllocator decouples command memory from buffer lifecycle, (2) MTLResidencySet is now the EXCLUSIVE mechanism for GPU residency — setBuffer/setTexture no longer auto-retain, (3) Placement sparse resources for fine-grained memory control, (4) No automatic hazard tracking — explicit barriers required. (Findings #639-#643)
+
+**Q: How does UAT page table translation work in detail?**
+A: Apple GPU uses 4-level page tables (L0-L3) with TTBR0/TTBR1 split for user/kernel spaces. PTE format diverges from standard ARM64. The DART (Device Address Resolution Table) is the IOMMU for general device memory mapping, while UAT (Unified Address Translator) is GPU-specific with constant CPU-GPU virtual address offset. (Findings #653-#656)
+
+**Q: What is the difference between DART and UAT?**
+A: DART is Apple's IOMMU for general device address resolution across all I/O devices. UAT is the GPU-specific address translator with ARM64-identical page tables. DART provides system-wide address translation; UAT provides the GPU's own virtual address space with the constant offset from CPU virtual addresses that enables pointer sharing. (Finding #656)
+
+**Q: Does hardware compression apply to compute buffers?**
+A: No. Apple Silicon's lossless hardware compression applies to textures only (private storage mode), NOT to general compute buffers. This is a common misconception. The measured >100% bandwidth efficiency on some chips comes from texture compression, not buffer compression. macOS virtual memory compression is a separate OS-level mechanism. (Findings #651, #652)
 
 ## Cross-Skill Integration
 
@@ -154,6 +178,26 @@ Use `/gpu-forge:investigate unified-memory "<specific-topic>"` to research new a
 - Philip Turner's metal-benchmarks: Bandwidth and latency measurements
 - Chips and Cheese: SLC architecture analysis, memory controller deep dives
 
+## Finding ID Reference
+
+Key findings by topic area (investigation #22):
+- **GPU memory model & ordering**: #632, #633, #634, #635, #637
+- **Device-scope coherency**: #636
+- **Synchronization primitives**: #638
+- **Metal 4 memory management**: #639, #640, #641, #642, #643
+- **SLC architecture depth**: #644, #645, #646, #647, #648, #649
+- **Physical memory architecture**: #650
+- **Hardware compression**: #651, #652
+- **Virtual address translation (UAT)**: #653, #654, #655
+- **DART vs UAT**: #656
+- **GPU TLB**: #657
+- **Zero-copy pipeline depth**: #658, #659, #660, #661, #662
+- **Memory limits & pressure**: #663
+- **Zero-copy transfer benchmark**: #709
+
+Use `kb detail <id>` to retrieve full finding details including source URLs and confidence levels.
+
 ## Version History
 
+- 2026-02-10: Updated with 28 new findings from investigation #22 (104 total)
 - 2026-02-09: Initial skill creation with 76 findings from knowledge base

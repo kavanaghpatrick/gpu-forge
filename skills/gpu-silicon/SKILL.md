@@ -20,7 +20,7 @@ The M5 generation represents a paradigm shift with Neural Accelerators embedded 
 
 ## Key Knowledge Areas
 
-The gpu-silicon skill contains 57 findings across these domains:
+The gpu-silicon skill contains 86 findings across these domains:
 
 - **Chip Specifications**: Complete specs for M1-M5 families including GPU core counts, TFLOPS, memory bandwidth, and process nodes
 - **Core Architecture**: ALU organization (128 ALUs, 16 EUs), SIMD groups (32 threads), register cache, scalar execution, instruction cache limits
@@ -35,6 +35,14 @@ The gpu-silicon skill contains 57 findings across these domains:
 - **GPU TLB and Address Translation**: Academic research on LATPC, Avatar, Revelator, Heliostat, FS-HPT, Marching Page Walks
 - **Out-of-Order Execution**: GhOST minimal OoO technique for GPUs
 - **Memory Controller Optimizations**: Compression-aware controllers, DRAM cache bypass, SCM-aware techniques
+- **Register File Occupancy Model**: Complete occupancy table (registers-to-max-threads mapping), formula for calculating occupancy from register count, register allocation granularity in discrete "blocks" (Findings #603-#605)
+- **Uniform Registers**: Separate 256-entry uniform register file (u0-u255) for descriptor tables, constants, and kernel arguments; GPU-specific ISA encoding in operand bits (Findings #606-#608)
+- **Register Cache & Dependency**: Register discard hint (undefined reads optimize cache), back-to-back FP32 dependency latency penalties, register file is 208KB (smallest among major GPU vendors) (Findings #609-#610, #623-#624)
+- **Register Spill Behavior**: Spills use stack_load/stack_store ISA instructions to device memory (not threadgroup), Braun & Hack's algorithm in Mesa AGX compiler, 4 trigger patterns (dynamic-indexed arrays, excessive live variables, complex control flow, large threadgroups) (Findings #611-#613, #619)
+- **Dynamic Register Allocation (M3+)**: Unified SRAM pool replacing fixed partitions, hardware occupancy manager, Apple patent US20220206841, dramatically improves register-heavy kernel occupancy (Findings #614-#617, #631)
+- **Register Pressure Optimization**: Half/short types for 2x register savings, preloading to uniform registers, maxTotalThreadsPerThreadgroup hint, simdgroup_matrix register savings (Findings #618, #620-#621, #630)
+- **Register Diagnostics & Real-World**: Xcode 15+ profiler register pressure metrics, llama.cpp iOS A14 failure from register pressure, PR #12569 achieving 8-19% speedups, MLX Steel tiling register strategy (Findings #622, #625-#627)
+- **Special Registers & Compiler**: sr0-sr255 read-only special registers (thread_position, etc.), Mesa AGX compiler pipeline for register allocation strategy (Findings #628-#629)
 
 ## How to Query
 
@@ -105,6 +113,21 @@ Replace `${CLAUDE_PLUGIN_ROOT}` with the actual path to the gpu-forge plugin dir
 ### Q: How does divergent branching work?
 **A**: Divergent branches use execution mask stack tracked in register r0l. if_*cmp/else_*cmp/endif instructions manipulate the mask stack. When threads diverge, both paths execute serially with inactive threads masked out. Cost: 2x execution time for fully divergent 50/50 branch. [Finding #39]
 
+### Q: How does register count affect occupancy on Apple GPUs?
+**A**: Apple GPU allocates registers in discrete blocks. At 104 registers/thread: 1024 max threads (full occupancy). At 128 regs: ~896 threads. At 256 regs: ~448 threads. The occupancy formula depends on the register file size (~208KB per core) divided by per-thread register usage. Use half/short types to halve register pressure. [Findings #603, #604, #605]
+
+### Q: Where do register spills go on Apple GPUs?
+**A**: Register spills go to device memory (NOT threadgroup memory) via stack_load/stack_store ISA instructions. This is extremely expensive compared to register access. Spills are triggered by: (1) dynamically-indexed local arrays, (2) excessive live variables, (3) complex control flow, (4) large threadgroups reducing per-thread registers. [Findings #611, #612, #619]
+
+### Q: How does Dynamic Caching (M3+) change register allocation?
+**A**: M3+ introduced a unified SRAM pool that dynamically allocates register file, L1 cache, and tile memory per workload instead of static partitions. A hardware occupancy manager reallocates register blocks on-the-fly. This dramatically improves occupancy for register-heavy kernels that would have been limited on M1/M2. Covered by Apple patent US20220206841. [Findings #614, #615, #616]
+
+### Q: What coding patterns cause register spills?
+**A**: Four main patterns: (1) Dynamically indexed thread-local arrays (compiler can't keep in registers), (2) Too many live variables across long code paths, (3) Complex control flow (phi nodes at merge points), (4) Large threadgroups that force low per-thread register allocation. llama.cpp on iOS A14 failed entirely due to register pressure. [Findings #619, #625, #626]
+
+### Q: How do I diagnose register pressure on Apple GPUs?
+**A**: Xcode 15+ GPU profiler reports register pressure metrics per kernel. Check the "Shader Profiler" pane for register count, spill count, and occupancy. For optimization: use half/short types (2x register savings), preload values to uniform registers, set maxTotalThreadsPerThreadgroup occupancy hint, and use simdgroup_matrix to reduce register usage for matrix ops. [Findings #622, #618, #620, #630]
+
 ## Cross-References
 
 ### Related Skills
@@ -142,4 +165,21 @@ Key findings by topic area:
 - **Scheduling**: #8
 - **Generation evolution**: #1, #2, #11, #12, #13
 
+- **Register occupancy model**: #603, #604, #605
+- **Uniform registers**: #606, #607, #608
+- **Register cache mechanism**: #609, #610
+- **Register spill behavior**: #611, #612, #613, #619, #625, #626
+- **Dynamic register allocation (M3+)**: #614, #615, #616, #617, #631
+- **Register pressure optimization**: #618, #620, #621, #630
+- **Register diagnostics**: #622
+- **Register file architecture**: #623
+- **Register dependency latency**: #624
+- **Real-world register pressure**: #625, #626, #627
+- **Special registers**: #628
+- **Compiler register strategy**: #629
+
 Use `kb detail <id>` to retrieve full finding details including source URLs and confidence levels.
+
+## Version History
+
+- 2026-02-10: Updated with 29 new findings from investigation #21 (86 total)

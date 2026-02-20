@@ -1,4 +1,4 @@
-# metal4-api — All Findings (66)
+# metal4-api — All Findings (70)
 
 ## Finding 567: Three-stage AOT pipeline workflow: (1) HARVEST: MTL4PipelineDataSetSerializer in CaptureDescriptors mode records pipeline descriptors, serializes to .mtl4-json. (2) BUILD: metal-tt CLI compiles .mtl4-json + Metal IR libraries into .mtl4a binary archives. (3) LOAD: MTL4Archive provides O(1) pipeline state lookup, falls back to on-device compilation on miss. MTL4Archive replaces older MTLBinaryArchive.
 **Confidence**: verified
@@ -131,6 +131,30 @@
 **Source**: Discover Metal 4 - WWDC25
 **Evidence**: WWDC 2025 Session 205: "Mix Metal and Metal 4 using MTLEvent synchronization." MoltenVK #2560 and Low End Mac confirm M1+/A14+ requirement.
 **Tags**: metal4-api,migration,coexistence,mtlevent,backward-compatible
+
+## Finding 644: Metal 4 intentionally aligns with Vulkan/DirectX 12: MTL4CommandAllocator ≈ VkCommandPool, argument tables ≈ descriptor sets, explicit barriers map directly to Vulkan/DX12 barriers, manual resource lifetime management. This reaches feature parity while maintaining Apple Silicon optimizations. Metal 4 is explicitly low-level, unlike prior Metal versions which were higher-level with automatic management.
+**Confidence**: verified
+**Source**: New features available in Metal 4 (MoltenVK)
+**Evidence**: MoltenVK #2560: MTL4CommandAllocator is "similarly to VkCommandPool." Metal 4 "brings Apple's GPU API to feature parity with DirectX 12 and Vulkan." Barriers "intentionally map to DirectX 12 and Vulkan concepts."
+**Tags**: metal-4,vulkan,directx-12,feature-parity,VkCommandPool,descriptor-set
+
+## Finding 645: Metal 4 supports gradual adoption — apps can mix MTLCommandQueue with MTL4CommandQueue. Metal events synchronize between Metal 3 and 4 queues. Metal 4 command generation benefits work without adopting MTL4Compiler. Protocol types do NOT inherit from Metal 3 predecessors, creating maintenance complexity for frameworks like MoltenVK.
+**Confidence**: verified
+**Source**: Discover Metal 4 - WWDC25
+**Evidence**: Apple: "Metal 4 allows gradual adoption where you can mix traditional Metal command queues with MTL4CommandQueues." MoltenVK: "new protocol types that don't inherit from predecessors."
+**Tags**: metal-4,gradual-adoption,migration,compatibility,metal-3-coexistence
+
+## Finding 646: Metal 4 introduces MTL4ArgumentTable as a first-class bindless resource binding object. Resources bind via GPU identifiers: textures use setTexture(gpuResourceID), buffers use setAddress(gpuAddress). Scales to thousands of resources. Replaces traditional per-draw binding. Typically only one buffer binding needed for bindless rendering.
+**Confidence**: high
+**Source**: Getting Started with Metal 4 - Metal by Example
+**Evidence**: Metal by Example: "Metal 4 elevates argument tables to first-class objects." "Resources bind via their GPU identifiers." Apple: "Argument tables and residency sets allow you to scale your resource binding to thousands of resources."
+**Tags**: metal-4,argument-table,bindless,gpu-resource-id,gpu-address,resource-binding
+
+## Finding 647: Metal 4 unifies specialized encoders: MTL4ComputeCommandEncoder subsumes MTLBlitCommandEncoder and MTLAccelerationStructureCommandEncoder. This reduces complexity, memory overhead, and enables native parallel encoding across encoder types within the same command buffer.
+**Confidence**: verified
+**Source**: New features available in Metal 4 (MoltenVK)
+**Evidence**: MoltenVK #2560: "Metal 4 unifies specialized encoders into a single MTL4ComputeCommandEncoder." Dev.to: "Unified Encoders consolidate operations previously requiring separate encoders."
+**Tags**: metal-4,unified-encoder,MTL4ComputeCommandEncoder,blit,parallel-encoding
 
 ## Finding 564: MPP is a new high-performance shader-embeddable kernel collection for MTLTensor. Includes matmul2d and convolution2d. Lives in tensor_ops namespace. Distinct from older MPS library (command-buffer level). MPP maps to hardware via opaque Apple implementations — disassembly shows calls to proprietary code. On M5: routes to Neural Accelerator hardware. On M1-M4: shader-based fallback with no regression.
 **Confidence**: verified

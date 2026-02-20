@@ -19,7 +19,3 @@ tests/test_helper/bats-assert/
 # Lock files
 .tasks.lock
 .git-commit.lock
-
-# Ralph spec state files
-specs/.current-spec
-**/.progress.md

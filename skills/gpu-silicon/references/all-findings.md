@@ -1,4 +1,4 @@
-# gpu-silicon — All Findings (57)
+# gpu-silicon — All Findings (86)
 
 ## Finding 548: On-chip memory controllers with lossless block compression (LZ4/ZSTD) of model weights and KV cache achieve 25.2% memory footprint reduction for weights and 46.9% for KV cache; hardware prototype delivers 8 TB/s throughput at 4 GHz with under 3.8 mm2 area
 **Confidence**: high
@@ -78,6 +78,12 @@
 **Evidence**: If confirmed, M5 Ultra with 80+ GPU cores x Neural Accelerators would be the most powerful Apple Silicon for AI inference. Ultra uses die-to-die stitching like M1/M2 Ultra.
 **Tags**: m5-ultra,leaked,specs,gpu-cores,bandwidth,tops
 
+## Finding 629: Mesa AGX compiler pipeline: SSA IR → instruction combining → schedule to minimize register pressure → register allocate (going out of SSA) → schedule again to maximize ILP → pack to binary. Two register classes: RA_GPR (general purpose, 256 half-regs) and RA_MEM (stack slots). Design prioritizes minimizing register pressure because the 128-reg file makes running out of registers rare. Compiler avoids optimizing for spilling — prevention over cure.
+**Confidence**: high
+**Source**: Dissecting the Apple M1 GPU, part III (Alyssa Rosenzweig)
+**Evidence**: Rosenzweig: "optimized by instruction combining passes, scheduled to minimize register pressure, register allocated while going out of SSA, scheduled again to maximize instruction-level parallelism." AGX compiler defines AGX_NUM_REGS=256 (half-regs), AGX_NUM_UNIFORMS=512.
+**Tags**: mesa,AGX,compiler,register-allocation,SSA,register-pressure,Asahi
+
 ## Finding 3: Each Apple GPU shader core contains 128 ALUs organized with 4 schedulers per core. Each scheduler dispatches one instruction from one SIMD group (32 threads) per cycle.
 **Confidence**: high
 **Source**: Philip Turner - metal-benchmarks
@@ -143,6 +149,36 @@
 **Source**: Apple Developer - GPU advancements in M3 and A17 Pro
 **Evidence**: Previously registers were statically allocated for a shader's entire lifetime. Now the hardware dynamically monitors and adjusts occupancy to prevent spilling. This is an industry first for GPU register management.
 **Tags**: m3,m4,dynamic-caching,registers,unified-sram,family9
+
+## Finding 614: On M3/M4 (Family 9+), on-chip SRAM is a unified pool dynamically serving ALL memory types: register file, threadgroup memory, tile cache, stack, and buffer L1 cache. No fixed partitioning — a kernel using heavy threadgroup memory frees space for buffer caching; one using many registers reduces threadgroup capacity. This replaces the pre-M3 fixed-segment architecture where register, threadgroup, and tile memory had separate allocations.
+**Confidence**: verified
+**Source**: Explore GPU advancements in M3 and A17 Pro (Apple Tech Talk)
+**Evidence**: Apple Tech Talk 111375: "register, threadgroup, tile, stack, and buffer data are all cached on chip...we redesigned the on-chip memories into fewer larger caches that service all these memory types." Pre-M3: "fixed memory allocation for register, threadgroup, and tile memory with a buffer cache."
+**Tags**: dynamic-caching,M3,M4,unified-SRAM,on-chip-memory,threadgroup,tile-cache
+
+## Finding 615: Family 9 GPUs have a hardware "occupancy manager" that dynamically monitors shader memory behavior and adjusts SIMD group count to prevent cache thrashing. When memory access patterns would evict register/threadgroup/tile/stack data from L1, occupancy is reduced. Xcode's "Occupancy Manager Target Counter" shows when active: values below 100% mean the GPU is self-limiting occupancy to keep data on-chip.
+**Confidence**: verified
+**Source**: Discover new Metal profiling tools for M3 and A17 Pro (Apple Tech Talk)
+**Evidence**: Apple Tech Talk 111374: "The shader cores balance thread occupancy and cache utilization to prevent memory cache thrashing...The Occupancy Manager Target Counter indicates whether the GPU is restricting occupancy to keep shader data on-chip."
+**Tags**: dynamic-caching,occupancy-manager,M3,A17-Pro,cache-thrashing,profiling,Xcode
+
+## Finding 616: Apple patent US20220206841 describes the M3+ dynamic register mechanism: the control unit manages the physical register file as a cache, dynamically allocating registers to wavefronts at call boundaries. When a new wavefront needs more registers than available, registers from stack frames at the bottom of the call stack are spilled (least likely needed soon). The control unit can prefetch register fills without software involvement. Younger workgroups can be descheduled to free registers for older ones.
+**Confidence**: verified
+**Source**: Dynamic Graphical Processing Unit Register Allocation (Apple Patent US20220206841)
+**Evidence**: Patent US20220206841: "The control unit manages the physical register file as a cache...If a new wavefront requests more registers than are currently available, the control unit spills registers associated with stack frames at the bottom of a stack."
+**Tags**: dynamic-caching,patent,register-allocation,spilling,cache,M3,M4
+
+## Finding 617: Empirical validation: on M1 Max, a shader with register-heavy conditional paths (rarely taken branches using many registers) reduced occupancy from 1024 to 448 threads. On A17 Pro (same GPU cores as M3), the identical shader maintained 1024 threads — no penalty from worst-case register usage. This proves dynamic allocation eliminates the static penalty for branchy, register-heavy code.
+**Confidence**: high
+**Source**: Apple Dynamic Caching on M3 GPU (Beyond3D Forum)
+**Evidence**: Beyond3D forum community testing: "On an M1 Max, a shader with unused register-heavy conditional paths reduced thread occupancy from 1024 to 448, but on A17 Pro there was no difference — always 1024 threads."
+**Tags**: M1-Max,A17-Pro,M3,dynamic-caching,occupancy,empirical,branchy-code
+
+## Finding 631: Baldur's Gate 3 on M3 vs M2 demonstrated significant performance improvements from dynamic register allocation: the same Metal shaders achieved higher thread occupancy on M3 without any developer code changes. Apple cited this as a flagship real-world example of Dynamic Caching's benefit.
+**Confidence**: verified
+**Source**: Explore GPU advancements in M3 and A17 Pro (Apple Tech Talk)
+**Evidence**: Apple Tech Talk 111375: "The M3 Macs is able to deliver significant performance improvements, thanks to the next-generation shader core's ability to run the game's Metal shaders with higher thread occupancy."
+**Tags**: dynamic-caching,M3,Baldur-Gate-3,real-world,occupancy,performance
 
 ## Finding 27: Apple GPU is firmware-mediated: an ARM64 ASC coprocessor running RTKit firmware brokers ALL GPU operations. The macOS kernel driver never talks directly to GPU hardware. 12 work channels (4 groups x 3 types: TA/3D/CP).
 **Confidence**: verified
@@ -312,11 +348,125 @@
 **Evidence**: CPU and GPU on separate dies allows independent optimization and more flexible configurations. Supply chain leaks suggest this, not Apple-confirmed. M5 Pro/Max expected spring 2026.
 **Tags**: m5-pro,m5-max,m5-ultra,soic,chiplet,2.5d,packaging
 
+## Finding 605: Registers are allocated to kernels in discrete "register blocks." To see an occupancy increase, register usage must be reduced by at least the block size. The occupancy table shows transitions at ~8 half-word register intervals (104→112→120→128 etc.), with each step changing thread count by 64 threads. This means small register savings may not improve occupancy.
+**Confidence**: verified
+**Source**: Metal Compute on MacBook Pro (Apple Tech Talk)
+**Evidence**: Apple Tech Talk: "Registers are allocated to a kernel in register blocks, and you'll need to reduce the usage by up to the block size to see a potential increase in occupancy." Rosenzweig table shows 8-register step transitions.
+**Tags**: register-blocks,allocation-granularity,occupancy,step-function
+
+## Finding 609: The register cache discard hint makes future reads of the discarded register UNDEFINED (not just slow). Discard must NOT be used within conditional execution because inactive threads in the SIMD-group may have data in the register cache that has not been written back to the register file — discarding would corrupt that data when threads become active again.
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference (Dougall Johnson)
+**Evidence**: Dougall Johnson: "While the cache hint should only change performance, the discard hint will make future reads undefined...discard should probably not be used within conditional execution, as inactive threads within the SIMD-group may contain data that has not been written back."
+**Tags**: register-cache,discard-hint,conditional-execution,correctness,exec-mask
+
+## Finding 610: Register cache/discard hints are encoded in the low 2 bits of the operand type field: 0b10 = cache hint, 0b11 = discard hint. Either hint may be used multiple times even if the same operand appears twice. Discard on a source can be combined with cache on a destination in the same instruction. Assembler syntax uses .cache and .discard suffixes on register names.
+**Confidence**: verified
+**Source**: applegpu disassembler/emulator source (Dougall Johnson)
+**Evidence**: From applegpu.py: "flags & 0b11 == 0b10 -> cache flag" and "flags & 0b11 == 0b11 -> discard flag". Docs: "Either hint may be used multiple times even if the same operand appears twice."
+**Tags**: register-cache,cache-hint,discard-hint,instruction-encoding,ISA
+
+## Finding 624: At minimum occupancy (88 SIMDs/core), back-to-back dependent FP32 FMUL incurs 0.84-cycle throughput penalty (1.84 total). FP16 penalty is 0.56 cycles (1.56 total). At very low occupancy (4 SIMDs/core), FP32 FMUL takes 6.60 cycles; at 8 SIMDs 3.44 cycles. This demonstrates: (1) low occupancy from register pressure amplifies dependency stalls, (2) FP16 suffers less than FP32 at identical occupancy, (3) minimum ~24 SIMDs needed to fully hide register latency.
+**Confidence**: verified
+**Source**: Apple GPU microarchitecture (metal-benchmarks, Philip Turner)
+**Evidence**: Philip Turner metal-benchmarks: "for back-to-back dependent FMUL, there's a 0.84-cycle throughput penalty for a 32-bit register dependency (1.84 total), while for 16-bit, 0.56-cycle penalty (1.56 total)." Low occupancy measurements at 4 and 8 simds/core.
+**Tags**: register-dependency,latency,fp16,fp32,occupancy,benchmark,latency-hiding
+
+## Finding 622: Xcode 15+ Metal profiler provides register pressure diagnostics: (1) Total Occupancy Counter — concurrent SIMD-groups on shader cores, (2) Occupancy Manager Target — GPU's self-imposed max occupancy to prevent thrashing (< 100% = active limiting), (3) L1 Eviction Rate — on-chip memory spills, (4) L1 Residency — breakdown among register, threadgroup, tile, stack. Pipeline Statistics shows spilled bytes and temp register count. Warning icon appears on draws/dispatches with stack spills.
+**Confidence**: verified
+**Source**: Discover new Metal profiling tools for M3 and A17 Pro
+**Evidence**: Apple Tech Talk 111374: "L1 Residency Counter Track shows breakdown of L1 cache allocations among on-chip memories." Tech Talk 10580: "Looking at the compiler statistics shows the spilled bytes."
+**Tags**: metal-profiler,Xcode,occupancy,L1-cache,register-diagnostics,pipeline-statistics
+
 ## Finding 6: Apple GPU register file is ~208 KB per core. At 104 registers: max 1024 threads. Between 104-256 registers: decreases in 64-thread steps. At 256 registers: minimum 384 threads.
 **Confidence**: verified
 **Source**: Alyssa Rosenzweig - Dissecting the M1 GPU Part III
 **Evidence**: Using 256 half-word registers, the machine still supports 384 threads. To support 1024 threads at 104 registers requires exactly 208 KiB. Register blocks are allocated in granular chunks (believed 8 registers).
 **Tags**: registers,occupancy,register-file,208kb
+
+## Finding 623: Apple GPU register file at ~208 KB per core is the SMALLEST among major GPU vendors: Intel Gen9 = 224 KB, AMD Vega/RDNA = 256 KB, NVIDIA Pascal/Turing/Ampere = 256 KB per SM. Apple compensates by using 16-bit registers as the native ISA width (others use 32-bit), effectively doubling register slots per byte. This is why 16-bit types are so important on Apple GPUs.
+**Confidence**: verified
+**Source**: Apple GPU microarchitecture (metal-benchmarks, Philip Turner)
+**Evidence**: Philip Turner metal-benchmarks: "Register File: ~208 KB" vs "224 KB" (Intel Gen9) vs "256 KB" (AMD/NVIDIA). "Apple actually has the smallest register file of any vendor, not the largest, which is why their ISA has 16-bit registers."
+**Tags**: register-file,comparison,208KB,16-bit,Intel,AMD,NVIDIA,cross-architecture
+
+## Finding 603: Complete register-to-occupancy table for pre-M3 Apple GPUs (G13/G14): <=104 regs → 1024 threads (32 SIMDs), 112 → 896, 120-128 → 832, 136 → 768, 144 → 704, 152-160 → 640, 168-184 → 576, 192-208 → 512, 216-232 → 448, 240-256 → 384 threads (12 SIMDs). Register counts are in 16-bit half-words. Thread count decreases in increments of 64 threads between 112 and 256 registers.
+**Confidence**: verified
+**Source**: Dissecting the Apple M1 GPU, part III (Alyssa Rosenzweig)
+**Evidence**: Rosenzweig reverse-engineering: "Between 112 and 256 registers, the number of threads decreases in an almost linear fashion, in increments of 64 threads." Full table derived from register file sizing constraints.
+**Tags**: register-file,occupancy,occupancy-table,M1,M2,G13,G14,threads
+
+## Finding 604: Occupancy formula for pre-Family 9 Apple GPUs: max_threads = floor(208 KiB / (N_registers * 2 bytes)), rounded down to nearest multiple of 64. SIMD groups = max_threads / 32. At 104 regs: 208*1024/(104*2) = 1024 threads = 32 SIMDs. At 128 regs: 832 threads = 26 SIMDs. At 256 regs: 416 → rounded to 384 = 12 SIMDs. Maximum is 1024 threads per core.
+**Confidence**: high
+**Source**: Dissecting the Apple M1 GPU, part III (Alyssa Rosenzweig)
+**Evidence**: Derived from Rosenzweig occupancy data: upper bound 104*2*1024=208KiB, lower bound 256*2*384=192KiB, register file must be exactly 208KiB.
+**Tags**: register-file,occupancy,formula,calculation,M1,M2
+
+## Finding 618: Using half/short (16-bit) instead of float/int (32-bit) halves register consumption — the single most impactful register pressure optimization on Apple GPUs. Conversions between half and float are free (zero cost). CRITICAL: the 'h' suffix must be used on literals in half-precision expressions (e.g., -2.0h not -2.0) to prevent implicit promotion to float per MSL rules. At low occupancy, F16 dramatically outperforms F32: 3.9 vs 11.3 cycles for FMA.
+**Confidence**: verified
+**Source**: Optimize Metal Performance for Apple silicon Macs (WWDC20)
+**Evidence**: WWDC20 10632: "Apple GPUs are optimized for 16-bit data types. Conversions are free." "Learn performance best practices for Metal shaders": half literals need h suffix. metal-benchmarks: F16 vs F32 gap widens at low occupancy.
+**Tags**: fp16,register-pressure,optimization,half-precision,occupancy,type-conversion
+
+## Finding 620: Metal compiler can preload buffer data into uniform registers (shared across SIMD-group) before shader execution, reducing GPR pressure. Requirements: (1) buffer must use constant address space, (2) offset within buffer must be determinable at compile time, (3) for arrays, size must be known at compile time. Passing a struct by reference with constant address space enables preloading; using device address space does not.
+**Confidence**: verified
+**Source**: Optimize Metal Performance for Apple silicon Macs (WWDC20)
+**Evidence**: WWDC20 10632: "The shader compiler is now able to preload the lights array into uniform registers." Requirements: constant address space, compile-time determinable offset, known array size.
+**Tags**: uniform-registers,constant-preloading,register-pressure,compiler-optimization
+
+## Finding 621: Setting maxTotalThreadsPerThreadgroup on MTLComputePipelineDescriptor (or [[max_total_threads_per_threadgroup(N)]] in MSL) enables the compiler to spill registers more efficiently. When max thread count is known at compile time, the compiler can better optimize register allocation. Apple recommends "the smallest multiple of thread execution width that works for your algorithm." There is NO direct max-register flag equivalent to CUDA's --maxrregcount.
+**Confidence**: verified
+**Source**: Metal Compute on MacBook Pro (Apple Tech Talk)
+**Evidence**: Apple Tech Talk 10580: "There is scope for the compiler to spill registers more efficiently when the maximum thread count in a thread group is known at pipeline state creation time."
+**Tags**: maxTotalThreadsPerThreadgroup,compiler-optimization,register-spill,occupancy
+
+## Finding 630: simdgroup_matrix instructions reduce register pressure compared to explicit per-thread FP32 accumulation. Because the matrix is distributed cooperatively across 32 threads in the SIMD-group, each thread holds fewer accumulator elements. This is a key reason high-performance GEMM kernels on Apple GPUs use simdgroup_matrix rather than explicit register-tiled approaches — better register efficiency AND better ALU utilization simultaneously.
+**Confidence**: verified
+**Source**: Apple GPU microarchitecture (metal-benchmarks, Philip Turner)
+**Evidence**: Philip Turner metal-benchmarks: Apple's "tensor core" is simdgroup_matrix, "which decreases register pressure and improves ALU utilization in existing FP32 pipelines."
+**Tags**: simdgroup-matrix,register-pressure,tensor-core,gemm,ALU-utilization
+
+## Finding 625: llama.cpp flash_attn_ext_f16_h256 kernel (Flash Attention, head_dim=256) exceeded register limits on iOS A14 devices (iPhone 12/14), failing with "Compute function exceeds available temporary registers" (AGXMetalA14 Code=3). Same kernel compiled successfully on Mac M2. Fix: disable HS=256 kernel on iOS entirely (PR #7556). Demonstrates mobile A-series GPUs have stricter register constraints than M-series.
+**Confidence**: verified
+**Source**: Metal (iOS): Compute function exceeds available temporary registers
+**Evidence**: GitHub issue #7261: error on iPhone 12 Pro Max and iPhone 14. M2 Mac unaffected. Maintainer noted hardware-specific register constraints on A-series.
+**Tags**: llama-cpp,flash-attention,register-overflow,iOS,A14,head-dim-256
+
+## Finding 626: In llama.cpp PR #12569, iterative register pressure reduction in Metal mat-vec kernels yielded 8-19% speedups on prompt processing. Q5_K models: 1.08-1.15x speedup. IQ4_NL models: 1.14-1.19x speedup. Example: llama 7B Q5_K_M prompt processing from 99.89 to 114.76 t/s (1.15x). Two commits explicitly titled "metal: reduce register pressure." Described as "precursor for dynamic threadgroup allocation."
+**Confidence**: verified
+**Source**: metal: refactor mat-vec code (PR #12569)
+**Evidence**: PR #12569 benchmark data shows consistent speedups across quantization formats. Commit history includes two "reduce register pressure" commits.
+**Tags**: llama-cpp,register-pressure,mat-vec,quantization,speedup,optimization
+
+## Finding 627: MLX Steel GEMM manages register pressure through parameterized tile sizes: BM, BN, BK (threadgroup block) and WM, WN (simdgroup). Accumulator uses simdgroup_matrix<T,8,8> fragments; each thread holds TM*TN*2 accumulator registers. Tile selection varies by device and precision: desktop half-precision uses BM=64,BN=64,BK=16; float32 uses BM=32,BN=64 (half the tiles) reflecting 2x register footprint. Mobile devices get smaller tiles.
+**Confidence**: verified
+**Source**: MLX Steel GEMM MMA Kernel
+**Evidence**: MLX mma.h: MMATile with kNumFrags = kTileRows*kTileCols, kElemsPerFrag = 2. matmul.cpp dispatch branches on device type ('g'/'p' for small, 'd' for large) and precision.
+**Tags**: mlx,gemm,tiling,accumulator,register-pressure,simdgroup-matrix,tile-selection
+
+## Finding 611: On Apple GPUs, register spills go to device memory via dedicated stack_load and stack_store ISA instructions. Each SIMD-group has its own stack pointer (sp). Four stack instructions exist: stack_load (load from stack to GPRs), stack_store (write GPRs to stack), stack_get_ptr (retrieve stack pointer into register), stack_adjust (modify stack allocation). These are separate from device_load/device_store.
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference (Dougall Johnson)
+**Evidence**: Dougall Johnson ISA docs document all four stack instructions with encoding formats. SIMD-group state includes "a stack pointer (sp), program counter (pc), 32-bit execution mask." Stack operations use per-SIMD-group addressing.
+**Tags**: register-spill,stack-memory,ISA,stack_load,stack_store,device-memory
+
+## Finding 612: ALU utilization maxes out at 24 SIMDs/core, which is also the LOWEST occupancy achievable by over-allocating registers (256 half-word regs → 384 threads = 12 SIMDs per threadgroup, but multiple threadgroups can coexist). Apple's hardware enforces a floor: it will spill registers to device memory rather than allow occupancy to drop below the ALU saturation threshold. This is a fundamental design choice — throughput over register retention.
+**Confidence**: verified
+**Source**: Apple GPU microarchitecture (metal-benchmarks, Philip Turner)
+**Evidence**: Philip Turner metal-benchmarks: "ALU utilization maxes out at 24 simds/core. This is also the lowest occupancy you can create by over-allocating registers. Apple would rather you spill to device memory than create chances to decrease ALU utilization."
+**Tags**: ALU-utilization,occupancy-floor,register-spill,design-philosophy,24-simds
+
+## Finding 613: The Asahi Mesa AGX compiler implements register spilling based on Braun & Hack's SSA-form algorithm using Belady's furthest-first heuristic: values with the most distant next-use are spilled first. Rematerialization is preferred over spilling for cheap-to-recompute values (MOV_IMM, GET_SR). The allocator reserves 8 registers for spill/parallel-copy temporaries. Spill slots use a scratch buffer in device memory.
+**Confidence**: verified
+**Source**: Mesa AGX compiler spill implementation (Asahi Linux)
+**Evidence**: agx_spill.c header references "Register Spilling and Live-Range Splitting for SSA-Form Programs" by Braun and Hack. min_algorithm() implements Belady. limit() reserves 8 regs. Rematerializable opcodes: AGX_OPCODE_MOV_IMM, AGX_OPCODE_GET_SR.
+**Tags**: compiler-internals,spill-algorithm,Belady,rematerialization,Asahi,Mesa
+
+## Finding 619: Four main coding patterns cause register spills: (1) Dynamically-indexed stack arrays — if the index is not compile-time constant, the array spills to memory; (2) Large structs/arrays on the stack; (3) Using 32-bit types when 16-bit suffices; (4) Failing to use the constant address space for read-only data (prevents preloading into uniform registers). Fix: move constant arrays to constant address space, ensure indices are compile-time known, use half/short types.
+**Confidence**: verified
+**Source**: Optimize Metal Performance for Apple silicon Macs (WWDC20)
+**Evidence**: WWDC20 10632: "Avoid indexing into arrays stored on the stack with a dynamic index. If index is not known to the compiler at compile time, the array will likely spill to memory." "Reducing the data stored on the stack can consume a large number of registers."
+**Tags**: register-spill,dynamic-indexing,constant-address-space,stack-spill,optimization
 
 ## Finding 535: Heliostat repurposes underutilized ray tracing accelerators (RTAs) to accelerate GPU page table walks by exploiting operational similarities between ray-BVH traversal and page table tree walking. Achieves 1.93x speedup over baseline GPU MMU while using only 1.53% of the area and 5.8% of the power of equivalent dedicated hardware. Heliostat+ adds further 1.23x improvement. The key insight: RT cores are tree traversal engines, and page tables are trees.
 **Confidence**: high
@@ -330,6 +480,12 @@
 **Evidence**: Dual-dispatching is preferred at low occupancy and required to fully utilize FP16/I16. The complex pipeline runs one 32-wide instruction/simd every 4 cycles. Before M1, F32 could only execute at 2 IPC.
 **Tags**: scheduling,dispatch,dual-dispatch,powervr,simd
 
+## Finding 628: Read-only special registers (sr0-sr255) accessed via get_sr instruction. Key IDs: sr0-2 (threadgroup_position_in_grid.xyz), sr4-6 (threads_per_threadgroup.xyz), sr20 (core_index), sr48-50 (thread_position_in_threadgroup.xyz), sr51 (thread_index_in_threadgroup), sr52 (thread_index_in_simdgroup), sr53 (simdgroup_index_in_threadgroup), sr58 (active_thread_index_in_simdgroup), sr63 (is_active_thread), sr80-82 (thread_position_in_grid.xyz).
+**Confidence**: verified
+**Source**: applegpu disassembler/emulator source (Dougall Johnson)
+**Evidence**: Complete SR_NAMES dictionary from applegpu.py mapping numeric IDs to semantic names. get_sr encodes SR operand using 6-bit value + 2-bit extension (values 0-255).
+**Tags**: special-registers,get_sr,ISA,thread-position,threadgroup,compute,G13
+
 ## Finding 536: Avatar achieves 90.3% speculation accuracy for GPU address translation by monitoring physical page contiguity. CAST (Contiguity-Aware Speculative Translation) predicts PA from VA based on observed contiguous page mappings. CAVA (In-Cache Validation) embeds page mapping info in each 32B sector of cache lines for rapid validation of speculated addresses. Combined, improves GPU performance by 37.2% average by hiding TLB miss latency.
 **Confidence**: high
 **Source**: A Case for Speculative Address Translation with Rapid Validation for GPUs
@@ -341,4 +497,22 @@
 **Source**: Revelator: Rapid Data Fetching via OS-Driven Hash-based Speculative Address Translation
 **Evidence**: MICRO 2025 paper. Hardware-OS cooperative scheme. Tiered allocation: first try hash-based placement, fall back to conventional if needed. Prediction accuracy high enough to justify speculative data fetch. Outperforms Avatar (prior speculative translation) by 5%. Reduces energy by 9%.
 **Tags**: address-translation,speculative,hash-allocation,TLB,OS-cooperative,page-table
+
+## Finding 606: 256 32-bit uniform registers (u0-u255) form a SEPARATE register file from GPRs. They store values identical across all 32 threads in a SIMD-group (buffer addresses, threads_per_grid). Accessible as 16-bit halves (u0l-u255h). Uniform registers do NOT consume space in the per-thread GPR register file and do NOT affect occupancy. This is critical: moving constant values to uniform registers frees GPR space.
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference (Dougall Johnson)
+**Evidence**: Dougall Johnson: "256 32-bit uniform registers named u0 to u255 and similarly accessible as their 16-bit halves...used for values that are the same across all threads, such as threads_per_grid, or addresses of buffers."
+**Tags**: uniform-registers,register-file,occupancy,G13,ISA
+
+## Finding 607: Uniform registers are initialized via the uniform_store ISA instruction, which writes from GPRs to the uniform register file. The offset is in 16-bit units. Can move one 16-bit register to initialize a 16-bit uniform, or two consecutive 16-bit registers for a 32-bit uniform. This instruction is encoded like (and possibly is) a store to device memory.
+**Confidence**: verified
+**Source**: Apple G13 GPU Architecture Reference (Dougall Johnson)
+**Evidence**: Dougall Johnson: "uniform_store is used to initialise uniform registers. R is stored to offset O, which is typically an index in 16-bit units into the uniform registers. This is encoded like (and possibly is) a store to device memory."
+**Tags**: uniform-registers,uniform_store,ISA,instruction-encoding
+
+## Finding 608: Uniform registers store base addresses for texture/buffer descriptor tables. A descriptor is located by adding a dynamic 32-bit offset (from GPR) to a 64-bit table base address (from uniform register pair like u0_u1). The 256 uniform register pool is shared by all threads in a thread group, making it a limited resource for binding resources.
+**Confidence**: high
+**Source**: GPU resource descriptors on Apple GPUs (TechBoards Forum)
+**Evidence**: "Apple GPU expect the texture descriptors to be stored in a large continuous array, and specific descriptor is located by adding a dynamic offset (32-bit, specified by a shader register) to a table base address (64-bit, specified by the shared uniform register)."
+**Tags**: uniform-registers,resource-descriptors,textures,buffers,descriptor-tables
 

@@ -2,9 +2,7 @@
   "name": "gpu-forge",
   "version": "1.0.0-dev",
   "description": "Apple Silicon GPU computing expertise for Claude Code - 11 domain skills, 601 findings, knowledge database, investigation tools, and code templates for Metal, MLX, and Swift GPU programming",
-  "author": {
-    "name": "Patrick Kavanagh"
-  },
+  "author": "Patrick Kavanagh",
   "license": "MIT",
   "keywords": [
     "apple-silicon",

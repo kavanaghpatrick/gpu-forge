@@ -2,7 +2,7 @@
 
 **Turn Claude into an Apple Silicon GPU systems engineer.**
 
-gpu-forge is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that gives Claude deep expertise in Apple Silicon GPU programming. It ships a curated knowledge base of **601 research findings** across **11 GPU computing domains**, backed by **92 academic citations** and **20 structured investigations** drawn from Apple documentation, reverse-engineering projects (Asahi Linux), academic papers, and Metal framework internals.
+gpu-forge is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that gives Claude deep expertise in Apple Silicon GPU programming. It ships a curated knowledge base of **753 research findings** across **11 GPU computing domains**, backed by **94 academic citations** and **24 structured investigations** drawn from Apple documentation, reverse-engineering projects (Asahi Linux), academic papers, and Metal framework internals.
 
 Ask Claude to design a compute pipeline, write a Metal shader, optimize memory access patterns, or architect a GPU-centric system -- and it answers with specific, cited knowledge about M4/M5 hardware rather than generic GPU advice.
 
@@ -24,7 +24,7 @@ Apple M4 GPUs have a SIMD width of 32 threads. For maximum occupancy:
 ```
 gpu-forge/
   .claude-plugin/plugin.json     # Plugin manifest
-  skills/                        # 11 domain skills (1,828 lines of distilled expertise)
+  skills/                        # 11 domain skills (2,043 lines of distilled expertise)
     gpu-silicon/                 #   Layer 0: Apple GPU microarchitecture
     unified-memory/              #   Layer 0: Unified memory, SLC, storage modes
     metal-compute/               #   Layer 1: Metal compute pipeline
@@ -42,26 +42,26 @@ gpu-forge/
   templates/                     # 9 code templates + 5 scaffold specs
   data/gpu_knowledge.db          # SQLite DB with FTS5 full-text search
   scripts/kb                     # Knowledge base CLI (BM25-ranked search)
-  tests/                         # 194 BATS tests
+  tests/                         # 212 BATS tests
 ```
 
 ## Numbers
 
 | Metric | Value |
 |--------|-------|
-| Knowledge findings | 601 |
-| Verified findings | 322 (54%) |
-| Academic citations | 92 |
-| Structured investigations | 20 |
+| Knowledge findings | 753 |
+| Verified findings | 448 (59%) |
+| Academic citations | 94 |
+| Structured investigations | 24 |
 | Domain skills | 11 (5 layers) |
 | Specialized agents | 3 (Haiku, Sonnet, Opus) |
 | Slash commands | 6 |
 | Metal shader templates | 5 (all compile with `xcrun`) |
 | Swift/MLX templates | 4 |
 | Project scaffold specs | 5 |
-| BATS tests | 194 (100% pass) |
-| Golden search queries | 54 |
-| Knowledge DB size | 1.1 MB |
+| BATS tests | 212 (100% pass) |
+| Golden search queries | 72 |
+| Knowledge DB size | 1.3 MB |
 
 ## Installation
 
@@ -148,20 +148,20 @@ gpu-forge organizes GPU expertise into **5 layers** of progressive depth. Each s
 Layer 4:  gpu-centric-arch (71 findings)
           GPU-as-CPU paradigm, persistent kernels, GPU OS, reverse offloading
 
-Layer 3:  mlx-compute (49)  |  metal4-api (66)  |  gpu-distributed (51)
+Layer 3:  mlx-compute (49)  |  metal4-api (70)  |  gpu-distributed (51)
           MLX custom kernels |  Metal 4 tensors   |  RDMA, Thunderbolt 5
 
 Layer 2:  gpu-io (38)  |  gpu-perf (49)  |  simd-wave (56)
           Fast I/O, mmap |  Profiling, occupancy |  SIMD ops, reductions
 
-Layer 1:  metal-compute (40)  |  msl-kernels (49)
+Layer 1:  metal-compute (84)  |  msl-kernels (95)
           Metal pipeline, sync |  MSL language, atomics
 
-Layer 0:  gpu-silicon (57)  |  unified-memory (75)
+Layer 0:  gpu-silicon (86)  |  unified-memory (104)
           Hardware architecture |  Memory system, SLC, storage modes
 ```
 
-**Progressive disclosure**: Claude gets ~100 tokens of metadata per skill at session start. When a relevant topic comes up, the full SKILL.md body loads (~150-200 lines of domain expertise). For deep dives, the `references/` directory provides all 601 individual findings with evidence and citations.
+**Progressive disclosure**: Claude gets ~100 tokens of metadata per skill at session start. When a relevant topic comes up, the full SKILL.md body loads (~150-200 lines of domain expertise). For deep dives, the `references/` directory provides all 753 individual findings with evidence and citations.
 
 ## Agents
 
@@ -201,16 +201,16 @@ Every finding has:
 - **Source URL** and title
 - **Confidence ceiling**: blog/forum sources can never be marked "verified"
 
-The database is self-contained at 1.1 MB and ships with the plugin.
+The database is self-contained at 1.3 MB and ships with the plugin.
 
 ## Testing
 
-194 BATS tests across 4 categories:
+212 BATS tests across 4 categories:
 
 | Category | Tests | What it covers |
 |----------|-------|---------------|
 | Unit | 118 | Plugin structure, skills validation, commands, agents, hooks, templates, KB CLI, DB integrity, FTS5 search |
-| Golden queries | 54 | FTS5 search relevance -- ~5 queries per domain, verifying the right skill surfaces for natural-language questions |
+| Golden queries | 72 | FTS5 search relevance -- ~5-10 queries per domain, verifying the right skill surfaces for natural-language questions |
 | Integration | 13 | End-to-end workflows, hook execution, SQL injection prevention, concurrent DB access |
 | Performance | 9 | Response time thresholds (search < 1s, detail < 500ms), size budgets (DB < 5MB, descriptions < 16KB) |
 
