@@ -108,7 +108,7 @@ created: 2026-02-20
 - _Requirements: FR-19 (AC-1.6)_
 - _Design: Gap 8, verify) modification_
 
-### Task 1.3: [VERIFY] Quality checkpoint after core kb changes
+### Task 1.3: [VERIFY] Quality checkpoint after core kb changes [x]
 
 - **Do**: Run hooks and kb-cli unit tests to ensure no regressions from tasks 0.1-1.2
 - **Verify**: `bats /Users/patrickkavanagh/gpu_kernel/tests/unit/hooks.bats && bats /Users/patrickkavanagh/gpu_kernel/tests/unit/kb-cli.bats`
