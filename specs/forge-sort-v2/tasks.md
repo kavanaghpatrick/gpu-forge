@@ -90,7 +90,7 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: FR-1, FR-3_
   - _Design: Function Constants, sort_transform_32_
 
-- [ ] 1.5 Implement sort_i32 and sort_i32_buffer methods
+- [x] 1.5 Implement sort_i32 and sort_i32_buffer methods
   - **Do**:
     1. Pre-compile transform PSOs at `GpuSorter::new()`:
        - `sort_transform_32` with TRANSFORM_MODE=0 (i32 XOR)

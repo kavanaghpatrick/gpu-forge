@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
+use forge_primitives::pso_cache::FnConstant;
 use forge_primitives::{alloc_buffer, MetalContext, PsoCache};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -347,6 +348,147 @@ fn dispatch_sort(
     Ok(())
 }
 
+/// Encode a single sort_transform_32 dispatch onto an existing encoder.
+fn encode_transform_32(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    library: &ProtocolObject<dyn MTLLibrary>,
+    pso_cache: &mut PsoCache,
+    buf: &ProtocolObject<dyn MTLBuffer>,
+    n: usize,
+    mode: u32,
+) {
+    let pso = pso_cache.get_or_create_specialized(
+        library,
+        "sort_transform_32",
+        &[(2, FnConstant::U32(mode))],
+    );
+    encoder.setComputePipelineState(pso);
+    let count = n as u32;
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf), 0, 0);
+        encoder.setBytes_length_atIndex(
+            NonNull::new(&count as *const u32 as *mut _).unwrap(),
+            4,
+            1,
+        );
+    }
+    let grid = MTLSize {
+        width: n.div_ceil(THREADS_PER_TG) * THREADS_PER_TG,
+        height: 1,
+        depth: 1,
+    };
+    let tg = MTLSize {
+        width: THREADS_PER_TG,
+        height: 1,
+        depth: 1,
+    };
+    encoder.dispatchThreads_threadsPerThreadgroup(grid, tg);
+}
+
+/// Encode the 4-dispatch sort pipeline onto an existing encoder.
+/// Like `dispatch_sort` but takes an encoder instead of creating its own command buffer.
+fn encode_sort_pipeline(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    library: &ProtocolObject<dyn MTLLibrary>,
+    pso_cache: &mut PsoCache,
+    buf_a: &ProtocolObject<dyn MTLBuffer>,
+    buf_b: &ProtocolObject<dyn MTLBuffer>,
+    buf_msd_hist: &ProtocolObject<dyn MTLBuffer>,
+    buf_counters: &ProtocolObject<dyn MTLBuffer>,
+    buf_bucket_descs: &ProtocolObject<dyn MTLBuffer>,
+    n: usize,
+    num_tiles: usize,
+) {
+    let params = SortParams {
+        element_count: n as u32,
+        num_tiles: num_tiles as u32,
+        shift: 24,
+        pass: 0,
+    };
+    let tile_size_u32 = TILE_SIZE as u32;
+
+    let tg_size = MTLSize {
+        width: THREADS_PER_TG,
+        height: 1,
+        depth: 1,
+    };
+    let hist_grid = MTLSize {
+        width: num_tiles,
+        height: 1,
+        depth: 1,
+    };
+    let one_tg_grid = MTLSize {
+        width: 1,
+        height: 1,
+        depth: 1,
+    };
+    let fused_grid = MTLSize {
+        width: 256,
+        height: 1,
+        depth: 1,
+    };
+
+    // Dispatch 1: MSD histogram
+    let pso = pso_cache.get_or_create(library, "sort_msd_histogram");
+    encoder.setComputePipelineState(pso);
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+        encoder.setBuffer_offset_atIndex(Some(buf_msd_hist), 0, 1);
+        encoder.setBytes_length_atIndex(
+            NonNull::new(&params as *const SortParams as *mut _).unwrap(),
+            std::mem::size_of::<SortParams>(),
+            2,
+        );
+    }
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+    // Dispatch 2: MSD prep
+    let pso = pso_cache.get_or_create(library, "sort_msd_prep");
+    encoder.setComputePipelineState(pso);
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf_msd_hist), 0, 0);
+        encoder.setBuffer_offset_atIndex(Some(buf_counters), 0, 1);
+        encoder.setBuffer_offset_atIndex(Some(buf_bucket_descs), 0, 2);
+        encoder.setBytes_length_atIndex(
+            NonNull::new(&tile_size_u32 as *const u32 as *mut _).unwrap(),
+            4,
+            3,
+        );
+    }
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(one_tg_grid, tg_size);
+
+    // Dispatch 3: Atomic MSD scatter (buf_a → buf_b)
+    let pso = pso_cache.get_or_create(library, "sort_msd_atomic_scatter");
+    encoder.setComputePipelineState(pso);
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+        encoder.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
+        encoder.setBuffer_offset_atIndex(Some(buf_counters), 0, 2);
+        encoder.setBytes_length_atIndex(
+            NonNull::new(&params as *const SortParams as *mut _).unwrap(),
+            std::mem::size_of::<SortParams>(),
+            3,
+        );
+    }
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(hist_grid, tg_size);
+
+    // Dispatch 4: Fused inner sort (3-pass LSD, buf_b ↔ buf_a)
+    let batch_start_0 = 0u32;
+    let pso = pso_cache.get_or_create(library, "sort_inner_fused");
+    encoder.setComputePipelineState(pso);
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf_a), 0, 0);
+        encoder.setBuffer_offset_atIndex(Some(buf_b), 0, 1);
+        encoder.setBuffer_offset_atIndex(Some(buf_bucket_descs), 0, 2);
+        encoder.setBytes_length_atIndex(
+            NonNull::new(&batch_start_0 as *const u32 as *mut _).unwrap(),
+            4,
+            3,
+        );
+    }
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(fused_grid, tg_size);
+}
+
 impl GpuSorter {
     /// Initialize Metal device, queue, and compile 4 sort kernel PSOs.
     pub fn new() -> Result<Self, SortError> {
@@ -363,7 +505,7 @@ impl GpuSorter {
 
         let mut pso_cache = PsoCache::new();
 
-        // Pre-compile all 4 PSOs
+        // Pre-compile all 4 sort PSOs
         for name in &[
             "sort_msd_histogram",
             "sort_msd_prep",
@@ -371,6 +513,15 @@ impl GpuSorter {
             "sort_inner_fused",
         ] {
             pso_cache.get_or_create(&library, name);
+        }
+
+        // Pre-compile transform PSOs for i32/f32 (index 2 = TRANSFORM_MODE)
+        for mode in 0u32..=2 {
+            pso_cache.get_or_create_specialized(
+                &library,
+                "sort_transform_32",
+                &[(2, FnConstant::U32(mode))],
+            );
         }
 
         Ok(Self {
@@ -486,6 +637,144 @@ impl GpuSorter {
                 data.as_mut_ptr(),
                 n,
             );
+        }
+
+        Ok(())
+    }
+
+    /// Sort i32 slice in-place on GPU. Uses XOR 0x80000000 transform.
+    pub fn sort_i32(&mut self, data: &mut [i32]) -> Result<(), SortError> {
+        let n = data.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_buffers(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Copy input data to buf_a + zero the MSD histogram
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                n * 4,
+            );
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        // Create single command buffer with: transform → sort → inverse transform
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+
+        // Forward transform: XOR 0x80000000 (mode 0)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, buf_a, n, 0);
+
+        // 4-dispatch sort pipeline
+        encode_sort_pipeline(
+            &enc,
+            &self.library,
+            &mut self.pso_cache,
+            buf_a,
+            buf_b,
+            self.buf_msd_hist.as_ref().unwrap(),
+            self.buf_counters.as_ref().unwrap(),
+            self.buf_bucket_descs.as_ref().unwrap(),
+            n,
+            num_tiles,
+        );
+
+        // Inverse transform: XOR 0x80000000 (mode 0, self-inverse)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, buf_a, n, 0);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Copy result back from buf_a
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buf_a.as_ref().unwrap().contents().as_ptr() as *const i32,
+                data.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sort a [`SortBuffer<i32>`] in-place on GPU. **Zero memcpy**.
+    pub fn sort_i32_buffer(&mut self, buf: &SortBuffer<i32>) -> Result<(), SortError> {
+        let n = buf.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_scratch_buffers(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Zero the MSD histogram
+        unsafe {
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            SortError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            SortError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        // Forward transform: XOR 0x80000000 (mode 0)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 0);
+
+        // 4-dispatch sort pipeline
+        encode_sort_pipeline(
+            &enc,
+            &self.library,
+            &mut self.pso_cache,
+            &buf.buffer,
+            self.buf_b.as_ref().unwrap(),
+            self.buf_msd_hist.as_ref().unwrap(),
+            self.buf_counters.as_ref().unwrap(),
+            self.buf_bucket_descs.as_ref().unwrap(),
+            n,
+            num_tiles,
+        );
+
+        // Inverse transform: XOR 0x80000000 (mode 0, self-inverse)
+        encode_transform_32(&enc, &self.library, &mut self.pso_cache, &buf.buffer, n, 0);
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if cmd.status() == MTLCommandBufferStatus::Error {
+            return Err(SortError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
         }
 
         Ok(())
@@ -614,5 +903,15 @@ mod tests {
         assert!(f64::IS_64BIT);
         assert_eq!(f64::TRANSFORM_MODE_FORWARD, 1);
         assert_eq!(f64::TRANSFORM_MODE_INVERSE, 2);
+    }
+
+    #[test]
+    fn test_sort_i32_basic() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut data = vec![5i32, -3, 0, i32::MIN, i32::MAX, -1, 1];
+        sorter.sort_i32(&mut data).unwrap();
+        let mut expected = vec![5i32, -3, 0, i32::MIN, i32::MAX, -1, 1];
+        expected.sort();
+        assert_eq!(data, expected);
     }
 }
