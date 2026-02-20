@@ -221,7 +221,7 @@ impl GpuSearchApp {
 
         // Start the persistent index daemon (loads global.idx or builds in background)
         let index_store = Arc::new(IndexStore::new());
-        let index_daemon = match IndexDaemon::start(Arc::clone(&index_store)) {
+        let index_daemon = match IndexDaemon::start(Arc::clone(&index_store), search_root.clone()) {
             Ok(daemon) => {
                 eprintln!("[gpu-search] IndexDaemon started");
                 Some(daemon)

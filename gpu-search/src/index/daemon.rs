@@ -18,7 +18,7 @@
 //! 3. Start IndexWriter thread for incremental updates
 //! 4. Handle graceful shutdown of all subsystems
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -62,6 +62,9 @@ pub struct BackgroundBuilder {
     /// Path exclusion filter.
     excludes: Arc<ExcludeTrie>,
 
+    /// Root directory to scan.
+    root: PathBuf,
+
     /// Handle to the background build thread (if spawned).
     build_thread: Option<JoinHandle<()>>,
 }
@@ -71,11 +74,13 @@ impl BackgroundBuilder {
     pub fn new(
         store: Arc<IndexStore>,
         excludes: Arc<ExcludeTrie>,
+        root: PathBuf,
     ) -> Self {
         Self {
             progress: Arc::new(AtomicUsize::new(0)),
             store,
             excludes,
+            root,
             build_thread: None,
         }
     }
@@ -99,11 +104,12 @@ impl BackgroundBuilder {
         let progress = Arc::clone(&self.progress);
         let store = Arc::clone(&self.store);
         let excludes = Arc::clone(&self.excludes);
+        let root = self.root.clone();
 
         let handle = thread::Builder::new()
             .name("index-builder".to_string())
             .spawn(move || {
-                if let Err(e) = build_initial_index(&progress, &store, &excludes) {
+                if let Err(e) = build_initial_index(&progress, &store, &excludes, &root) {
                     eprintln!("BackgroundBuilder: initial build failed: {}", e);
                 }
             })
@@ -148,6 +154,7 @@ fn build_initial_index(
     progress: &Arc<AtomicUsize>,
     store: &Arc<IndexStore>,
     excludes: &Arc<ExcludeTrie>,
+    root: &Path,
 ) -> Result<(), String> {
     // Step 1: Ensure index directory exists
     ensure_index_dir().map_err(|e| format!("ensure_index_dir failed: {}", e))?;
@@ -156,20 +163,16 @@ fn build_initial_index(
     let root_hash = global_cache_key();
     let exclude_hash = compute_exclude_hash(excludes);
 
-    // Step 2: Scan "/" with excludes
-    // The scanner uses the ignore crate for parallel traversal.
-    // We configure it to show hidden files (needed for system-wide index)
-    // and not follow symlinks. The ExcludeTrie handles the filtering of
-    // system directories that the ignore crate doesn't know about.
+    // Step 2: Scan root directory with excludes
     let config = ScannerConfig {
-        skip_hidden: false, // system-wide scan needs hidden files
-        respect_gitignore: false, // global scan should not skip gitignored files
+        skip_hidden: false,
+        respect_gitignore: true,
         ..Default::default()
     };
     let scanner = FilesystemScanner::with_config(config);
 
-    eprintln!("BackgroundBuilder: starting initial scan from /");
-    let entries = scanner.scan(Path::new("/"));
+    eprintln!("BackgroundBuilder: starting initial scan from {}", root.display());
+    let entries = scanner.scan(root);
 
     // Step 3: Filter entries through ExcludeTrie
     let filtered: Vec<GpuPathEntry> = entries
@@ -283,7 +286,7 @@ impl IndexDaemon {
     /// 3. Creates crossbeam channel for `FsChange` events
     /// 4. Starts `FSEventsListener` with sender end
     /// 5. Starts `IndexWriter` thread with receiver end
-    pub fn start(store: Arc<IndexStore>) -> Result<Self, String> {
+    pub fn start(store: Arc<IndexStore>, root: PathBuf) -> Result<Self, String> {
         // Step 1: Build ExcludeTrie from defaults + user config
         let defaults = default_excludes();
         let config = load_config();
@@ -315,7 +318,7 @@ impl IndexDaemon {
                 Err(e) => {
                     eprintln!("IndexDaemon: failed to load existing index: {}, rebuilding", e);
                     // Fall through to background build
-                    let mut bg = BackgroundBuilder::new(Arc::clone(&store), Arc::clone(&excludes));
+                    let mut bg = BackgroundBuilder::new(Arc::clone(&store), Arc::clone(&excludes), root.clone());
                     bg.spawn_build_thread();
                     builder = Some(bg);
                 }
@@ -323,7 +326,7 @@ impl IndexDaemon {
         } else {
             // Cold start: no index exists, start background build
             eprintln!("IndexDaemon: no existing index found, starting background build");
-            let mut bg = BackgroundBuilder::new(Arc::clone(&store), Arc::clone(&excludes));
+            let mut bg = BackgroundBuilder::new(Arc::clone(&store), Arc::clone(&excludes), root);
             bg.spawn_build_thread();
             builder = Some(bg);
         }
