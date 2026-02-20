@@ -246,6 +246,7 @@ impl<T: SortKey> SortBuffer<T> {
 }
 
 /// Encode and execute the 4-dispatch sort pipeline. Shared by sort_u32 and sort_buffer.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_sort(
     queue: &ProtocolObject<dyn MTLCommandQueue>,
     library: &ProtocolObject<dyn MTLLibrary>,
@@ -448,6 +449,7 @@ fn encode_transform_64(
 
 /// Encode the 4-dispatch sort pipeline onto an existing encoder.
 /// Like `dispatch_sort` but takes an encoder instead of creating its own command buffer.
+#[allow(clippy::too_many_arguments)]
 fn encode_sort_pipeline(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     library: &ProtocolObject<dyn MTLLibrary>,
@@ -1197,11 +1199,13 @@ impl GpuSorter {
     ///
     /// Architecture: MSD histogram (byte 7) + MSD prep + MSD scatter (byte 7)
     /// + 3 inner fused dispatches (bytes 4-6, bytes 1-3, byte 0).
+    ///
     /// Final output in buf_a (same as 32-bit).
     ///
     /// When `with_values` is true, uses HAS_VALUES=true + IS_64BIT=true PSOs and binds
     /// value buffers at buffer(4) and buffer(5) for scatter and inner fused kernels.
     /// Values are always u32 (4 bytes) even though keys are 8 bytes.
+    #[allow(clippy::too_many_arguments)]
     fn encode_sort_pipeline_64(
         &mut self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -1419,6 +1423,7 @@ impl GpuSorter {
     ///
     /// When `with_values` is true, uses HAS_VALUES=true PSOs and binds value buffers
     /// at buffer(4) and buffer(5) for scatter and inner fused kernels.
+    #[allow(clippy::too_many_arguments)]
     fn encode_sort_pipeline_full(
         &mut self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,

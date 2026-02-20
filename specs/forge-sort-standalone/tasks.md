@@ -57,7 +57,7 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
   - _Requirements: FR-6, AC-1.1_
   - _Design: Cargo.toml Change_
 
-- [ ] 1.4 [VERIFY] Full test suite: forge-sort + workspace
+- [x] 1.4 [VERIFY] Full test suite: forge-sort + workspace
   - **Do**:
     1. Run `cargo test -p forge-sort -- --test-threads=1` from `metal-forge-compute/` — all 165 tests must pass
     2. Run `cargo build -p forge-bench` — workspace member still compiles
@@ -70,7 +70,7 @@ Focus: Inline ~200 lines, swap imports, delete dep line. Zero API changes.
 
 ## Phase 2: Quality Gates
 
-- [ ] 2.1 [VERIFY] Full local CI
+- [x] 2.1 [VERIFY] Full local CI
   - **Do**:
     1. `cargo clippy -p forge-sort -- -D warnings`
     2. `cargo test -p forge-sort -- --test-threads=1`

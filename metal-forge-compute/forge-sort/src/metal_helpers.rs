@@ -101,7 +101,7 @@ impl PsoCache {
         for (idx, val) in constants {
             match val {
                 FnConstant::Bool(b) => unsafe {
-                    let ptr = NonNull::new(&*b as *const bool as *mut std::ffi::c_void)
+                    let ptr = NonNull::new(b as *const bool as *mut std::ffi::c_void)
                         .expect("constant value pointer is null");
                     constant_values.setConstantValue_type_atIndex(ptr, MTLDataType::Bool, *idx);
                 },
@@ -146,11 +146,13 @@ impl PsoCache {
     }
 
     /// Number of cached PSOs.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.cache.len()
     }
 
     /// Whether the cache is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.cache.is_empty()
     }
@@ -200,6 +202,7 @@ pub fn alloc_buffer(
 }
 
 /// Initialize the default Metal device and command queue.
+#[allow(clippy::type_complexity)]
 pub fn init_device_and_queue() -> (
     Retained<ProtocolObject<dyn MTLDevice>>,
     Retained<ProtocolObject<dyn MTLCommandQueue>>,
