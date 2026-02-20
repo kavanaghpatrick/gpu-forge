@@ -469,7 +469,7 @@ created: 2026-02-20
 - **Done when**: All tests pass (196 original + new tests), verify reports all checks, dedup clean
 - **Commit**: `chore(harness): pass full local CI` (only if fixes needed)
 
-### Task 10.2: Run `kb cleanup` on live DB to close orphaned investigations
+### Task 10.2: Run `kb cleanup` on live DB to close orphaned investigations [x]
 
 - **Do**:
   1. Run `kb cleanup --dry-run` to preview
