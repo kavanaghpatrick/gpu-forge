@@ -133,7 +133,7 @@ Focus: Get sort_i32 and sort_f32 working with GPU-side transforms. Skip argsort/
   - _Requirements: AC-2.1, AC-2.2, AC-2.5, AC-2.6_
   - _Design: 32-bit Key-Only Sort_
 
-- [ ] 1.7 Add i32/f32 correctness tests
+- [x] 1.7 Add i32/f32 correctness tests
   - **Do**:
     1. Create `tests/correctness_i32.rs` with ~15 tests:
        - `test_sort_i32_boundaries`: [MIN, MAX, 0, -1, 1] sorted correctly
