@@ -416,7 +416,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `bench(forge-filter): add v2 benchmarks for bitmap, multi-column, NULL, Arrow`
   - _Requirements: NFR-1 through NFR-6_
 
-- [ ] 4.2 Update README.md with v2 features and benchmarks
+- [x] 4.2 Update README.md with v2 features and benchmarks
   - **Do**:
     1. Update README with:
        - v0.2.0 features list
