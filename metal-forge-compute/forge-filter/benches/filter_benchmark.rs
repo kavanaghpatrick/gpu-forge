@@ -75,14 +75,60 @@
 //     4. 10x ordered target (<=580µs) deferred to later optimization phases
 //     5. Approach validated: bitmap caching is the right architecture for v0.2 features
 //   ─────────────────────────────────────────────────────────────────────────────
+//
+// ── v0.2.0 Full Feature Benchmarks (Task 4.1, 2026-02-21) ──────────────────
+//   All measured on M4 Pro, 2026-02-21.
+//
+//   ── All types @ 16M, 50% selectivity (bitmap-cached ordered) ────────────
+//     u32:  936 µs  ( 6.2x vs Polars)
+//     i32:  962 µs  ( 6.0x vs Polars)
+//     f32:  920 µs  ( 6.3x vs Polars)
+//     u64: 1604 µs  ( 3.6x — 2x bandwidth, expected)
+//     i64: 1646 µs  ( 3.5x — 2x bandwidth, expected)
+//     f64: 1601 µs  ( 3.6x — 2x bandwidth, expected)
+//
+//   ── Multi-column AND @ 16M, 50% per-column ─────────────────────────────
+//     2-col mask only:  1410 µs  (2× per-column scan + CPU bitmap AND)
+//     2-col mask+gather: 1899 µs  (+ scatter pass)
+//     3-col mask only:  1990 µs  (3× per-column scan + CPU bitmap AND)
+//     3-col mask+gather: 2469 µs  (+ scatter pass)
+//     Cost per additional column: ~580 µs (one bitmap_scan dispatch)
+//
+//   ── NULL bitmap overhead @ 16M u32, 50% sel ────────────────────────────
+//     Without NULL bitmap:   952 µs  (baseline)
+//     With NULL bitmap:     1319 µs  (+38.5%, 367 µs overhead)
+//     Overhead from: HAS_NULLS PSO variant + validity buffer read + CPU→GPU copy
+//     Note: higher than expected — validity_to_metal_buffer copies u8→u32 words
+//
+//   ── Arrow end-to-end @ 16M u32, 50% sel ───────────────────────────────
+//     filter_arrow total: 5782 µs  (1.0x vs Polars — includes memcpy + PrimitiveArray alloc)
+//     GPU filter alone:    ~936 µs  (from all-types bench above)
+//     Copy + output overhead: ~4846 µs  (alloc_filter_buffer + copy_from_slice + PrimitiveArray::from_iter)
+//     Arrow is a convenience API — for max perf, use FilterBuffer directly
+//
+//   ── Polars comparison summary ─────────────────────────────────────────
+//     Polars u32 16M baseline: 5,800 µs
+//     Best ordered (u32 50%):     936 µs  ( 6.2x)
+//     Best ordered (u32 1%):      697 µs  ( 8.3x)
+//     Best unordered (u32 50%):   548 µs  (10.6x)  ** exceeds 10x target **
+//     Multi-col 2-AND (u32 50%): 1899 µs  ( 3.1x — vs 2× Polars = 11,600 µs)
+//     Arrow e2e (u32 50%):       5782 µs  ( 1.0x — copy-dominated)
+//   ─────────────────────────────────────────────────────────────────────────────
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use forge_filter::{GpuFilter, Predicate};
+use forge_filter::{FilterBuffer, GpuFilter, LogicOp, Predicate};
 use rand::Rng;
 
 fn gen_u32(n: usize) -> Vec<u32> {
     let mut rng = rand::thread_rng();
     (0..n).map(|_| rng.gen_range(0..1_000_000u32)).collect()
+}
+
+fn gen_i32(n: usize) -> Vec<i32> {
+    let mut rng = rand::thread_rng();
+    (0..n)
+        .map(|_| rng.gen_range(-500_000i32..500_000i32))
+        .collect()
 }
 
 fn gen_f32(n: usize) -> Vec<f32> {
@@ -93,6 +139,30 @@ fn gen_f32(n: usize) -> Vec<f32> {
 fn gen_u64(n: usize) -> Vec<u64> {
     let mut rng = rand::thread_rng();
     (0..n).map(|_| rng.gen_range(0..1_000_000u64)).collect()
+}
+
+fn gen_i64(n: usize) -> Vec<i64> {
+    let mut rng = rand::thread_rng();
+    (0..n)
+        .map(|_| rng.gen_range(-500_000i64..500_000i64))
+        .collect()
+}
+
+fn gen_f64(n: usize) -> Vec<f64> {
+    let mut rng = rand::thread_rng();
+    (0..n).map(|_| rng.gen::<f64>()).collect()
+}
+
+/// Build an Arrow-style validity bitmap where every element is valid (all bits set).
+fn make_all_valid_bitmap(n: usize) -> Vec<u8> {
+    let num_bytes = (n + 7) / 8;
+    let mut bitmap = vec![0xFFu8; num_bytes];
+    // Clear trailing bits beyond n
+    let trailing = n % 8;
+    if trailing > 0 {
+        bitmap[num_bytes - 1] = (1u8 << trailing) - 1;
+    }
+    bitmap
 }
 
 // ── filter_u32_gt: 1M, 4M, 16M at 50% selectivity ──────────────────────────
@@ -277,6 +347,261 @@ fn filter_u32_bitmap_ordered(c: &mut Criterion) {
     group.finish();
 }
 
+// ── v0.2.0 benchmarks ──────────────────────────────────────────────────────
+
+// ── filter_bitmap_all_types: 16M each type at 50% selectivity ──────────────
+//
+// Tests all 6 FilterKey types through the bitmap pipeline at 16M elements.
+// Polars baseline: 5,800us (u32, 16M).
+
+fn filter_bitmap_all_types(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_bitmap_all_types");
+    let n = 16_000_000usize;
+
+    // u32
+    {
+        let mut gpu = GpuFilter::new().unwrap();
+        let data = gen_u32(n);
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(500_000u32);
+        group.bench_function("u32_16M", |b| {
+            b.iter(|| gpu.filter(&buf, &pred).unwrap());
+        });
+    }
+
+    // i32
+    {
+        let mut gpu = GpuFilter::new().unwrap();
+        let data = gen_i32(n);
+        let mut buf = gpu.alloc_filter_buffer::<i32>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(0i32); // ~50% sel (uniform -500K..500K)
+        group.bench_function("i32_16M", |b| {
+            b.iter(|| gpu.filter(&buf, &pred).unwrap());
+        });
+    }
+
+    // f32
+    {
+        let mut gpu = GpuFilter::new().unwrap();
+        let data = gen_f32(n);
+        let mut buf = gpu.alloc_filter_buffer::<f32>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(0.5f32); // ~50% sel (uniform 0..1)
+        group.bench_function("f32_16M", |b| {
+            b.iter(|| gpu.filter(&buf, &pred).unwrap());
+        });
+    }
+
+    // u64
+    {
+        let mut gpu = GpuFilter::new().unwrap();
+        let data = gen_u64(n);
+        let mut buf = gpu.alloc_filter_buffer::<u64>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(500_000u64);
+        group.bench_function("u64_16M", |b| {
+            b.iter(|| gpu.filter(&buf, &pred).unwrap());
+        });
+    }
+
+    // i64
+    {
+        let mut gpu = GpuFilter::new().unwrap();
+        let data = gen_i64(n);
+        let mut buf = gpu.alloc_filter_buffer::<i64>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(0i64);
+        group.bench_function("i64_16M", |b| {
+            b.iter(|| gpu.filter(&buf, &pred).unwrap());
+        });
+    }
+
+    // f64
+    {
+        let mut gpu = GpuFilter::new().unwrap();
+        let data = gen_f64(n);
+        let mut buf = gpu.alloc_filter_buffer::<f64>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(0.5f64);
+        group.bench_function("f64_16M", |b| {
+            b.iter(|| gpu.filter(&buf, &pred).unwrap());
+        });
+    }
+
+    group.finish();
+}
+
+// ── filter_multi_2col_and: 16M rows, 2 columns, AND ────────────────────────
+//
+// Two u32 columns each with ~50% selectivity, AND logic.
+// Expected: ~25% output (50% × 50%).
+
+fn filter_multi_2col_and(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_multi_2col_and");
+    let mut gpu = GpuFilter::new().unwrap();
+    let n = 16_000_000usize;
+
+    let data_a = gen_u32(n);
+    let data_b = gen_u32(n);
+
+    let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+    buf_a.copy_from_slice(&data_a);
+    let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+    buf_b.copy_from_slice(&data_b);
+
+    let pred_a = Predicate::Gt(500_000u32);
+    let pred_b = Predicate::Gt(500_000u32);
+
+    let columns: Vec<(&FilterBuffer<u32>, &Predicate<u32>)> =
+        vec![(&buf_a, &pred_a), (&buf_b, &pred_b)];
+
+    // Benchmark: filter_multi_mask (mask only) + gather
+    group.bench_function("mask_16M", |b| {
+        b.iter(|| {
+            let mask = gpu
+                .filter_multi_mask(columns.as_slice(), LogicOp::And)
+                .unwrap();
+            criterion::black_box(&mask);
+        });
+    });
+
+    // Benchmark: full pipeline (mask + gather from column A)
+    group.bench_function("mask_gather_16M", |b| {
+        b.iter(|| {
+            let mask = gpu
+                .filter_multi_mask(columns.as_slice(), LogicOp::And)
+                .unwrap();
+            let result = gpu.gather(&buf_a, &mask).unwrap();
+            criterion::black_box(&result);
+        });
+    });
+
+    group.finish();
+}
+
+// ── filter_multi_3col_and: 16M rows, 3 columns, AND ────────────────────────
+//
+// Three u32 columns each with ~50% selectivity, AND logic.
+// Expected: ~12.5% output (50% × 50% × 50%).
+
+fn filter_multi_3col_and(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_multi_3col_and");
+    let mut gpu = GpuFilter::new().unwrap();
+    let n = 16_000_000usize;
+
+    let data_a = gen_u32(n);
+    let data_b = gen_u32(n);
+    let data_c = gen_u32(n);
+
+    let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+    buf_a.copy_from_slice(&data_a);
+    let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+    buf_b.copy_from_slice(&data_b);
+    let mut buf_c = gpu.alloc_filter_buffer::<u32>(n);
+    buf_c.copy_from_slice(&data_c);
+
+    let pred_a = Predicate::Gt(500_000u32);
+    let pred_b = Predicate::Gt(500_000u32);
+    let pred_c = Predicate::Gt(500_000u32);
+
+    let columns: Vec<(&FilterBuffer<u32>, &Predicate<u32>)> =
+        vec![(&buf_a, &pred_a), (&buf_b, &pred_b), (&buf_c, &pred_c)];
+
+    group.bench_function("mask_16M", |b| {
+        b.iter(|| {
+            let mask = gpu
+                .filter_multi_mask(columns.as_slice(), LogicOp::And)
+                .unwrap();
+            criterion::black_box(&mask);
+        });
+    });
+
+    group.bench_function("mask_gather_16M", |b| {
+        b.iter(|| {
+            let mask = gpu
+                .filter_multi_mask(columns.as_slice(), LogicOp::And)
+                .unwrap();
+            let result = gpu.gather(&buf_a, &mask).unwrap();
+            criterion::black_box(&result);
+        });
+    });
+
+    group.finish();
+}
+
+// ── filter_nullable_overhead: 16M u32 with/without NULL bitmap ──────────────
+//
+// Measures overhead of NULL bitmap processing (HAS_NULLS=true PSO + validity buffer read).
+// Uses all-valid bitmap so output should be identical — pure overhead comparison.
+
+fn filter_nullable_overhead(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_nullable_overhead");
+    let mut gpu = GpuFilter::new().unwrap();
+    let n = 16_000_000usize;
+
+    let data = gen_u32(n);
+    let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+    buf.copy_from_slice(&data);
+
+    let pred = Predicate::Gt(500_000u32); // ~50% selectivity
+    let validity = make_all_valid_bitmap(n);
+
+    // Baseline: no NULL bitmap
+    group.bench_function("no_null_16M", |b| {
+        b.iter(|| {
+            gpu.filter(&buf, &pred).unwrap();
+        });
+    });
+
+    // With NULL bitmap (all valid — measuring pure overhead)
+    group.bench_function("with_null_16M", |b| {
+        b.iter(|| {
+            gpu.filter_nullable(&buf, &pred, &validity).unwrap();
+        });
+    });
+
+    group.finish();
+}
+
+// ── filter_arrow_e2e: 16M u32 Arrow array end-to-end ───────────────────────
+//
+// NOTE: This benchmark requires --features arrow to compile.
+// Run with: cargo bench --bench filter_benchmark --features arrow -- filter_arrow_e2e
+//
+// Measures complete Arrow pipeline: PrimitiveArray construction + copy to
+// Metal buffer + GPU filter + output PrimitiveArray construction.
+
+#[cfg(feature = "arrow")]
+fn filter_arrow_e2e(c: &mut Criterion) {
+    use arrow_array::types::UInt32Type;
+    use arrow_array::PrimitiveArray;
+
+    let mut group = c.benchmark_group("filter_arrow_e2e");
+    let mut gpu = GpuFilter::new().unwrap();
+    let n = 16_000_000usize;
+
+    let data = gen_u32(n);
+    let arrow_array = PrimitiveArray::<UInt32Type>::from_iter_values(data.iter().copied());
+    let pred = Predicate::Gt(500_000u32); // ~50% selectivity
+
+    group.bench_function("u32_16M", |b| {
+        b.iter(|| {
+            let result = gpu.filter_arrow::<u32>(&arrow_array, &pred).unwrap();
+            criterion::black_box(&result);
+        });
+    });
+
+    group.finish();
+}
+
+// Stub for non-arrow builds so criterion_group compiles
+#[cfg(not(feature = "arrow"))]
+fn filter_arrow_e2e(_c: &mut Criterion) {
+    // Arrow benchmarks require --features arrow
+}
+
 criterion_group!(
     benches,
     filter_u32_gt,
@@ -286,5 +611,11 @@ criterion_group!(
     filter_u32_unordered_vs_ordered,
     filter_u32_indices,
     filter_u32_bitmap_ordered,
+    // v0.2.0 feature benchmarks
+    filter_bitmap_all_types,
+    filter_multi_2col_and,
+    filter_multi_3col_and,
+    filter_nullable_overhead,
+    filter_arrow_e2e,
 );
 criterion_main!(benches);

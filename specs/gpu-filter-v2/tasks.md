@@ -391,7 +391,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `test(forge-filter): add proptest property-based tests`
   - _Requirements: NFR-9_
 
-- [ ] 3.7 [VERIFY] Quality checkpoint: all tests including proptest
+- [x] 3.7 [VERIFY] Quality checkpoint: all tests including proptest
   - **Do**: Run complete test suite
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute/forge-filter && cargo test --features arrow 2>&1 | grep "test result"`
   - **Done when**: All tests pass (target: >=120 total tests)
@@ -399,7 +399,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
 
 ## Phase 4: Quality Gates
 
-- [ ] 4.1 Update benchmarks with all v2 features
+- [x] 4.1 Update benchmarks with all v2 features
   - **Do**:
     1. Add benchmark groups:
        - `filter_bitmap_ordered`: 16M u32 at 1%, 50%, 99% selectivity (bitmap pipeline)
