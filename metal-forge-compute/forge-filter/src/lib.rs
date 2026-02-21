@@ -429,7 +429,18 @@ impl GpuFilter {
     /// filter_scan_partials. Additional PSO variants are compiled lazily.
     pub fn new() -> Result<Self, FilterError> {
         let (device, queue) = init_device_and_queue();
+        Self::with_context(device, queue)
+    }
 
+    /// Create a `GpuFilter` using an externally-provided Metal device and command queue.
+    ///
+    /// This allows sharing a single device/queue across multiple forge crates
+    /// (e.g. via `ForgeContext`). The metallib is loaded and all PSOs are
+    /// pre-compiled, just like [`new()`](Self::new).
+    pub fn with_context(
+        device: Retained<ProtocolObject<dyn MTLDevice>>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ) -> Result<Self, FilterError> {
         // Load the filter metallib (embedded path from build.rs)
         let metallib_path = env!("FILTER_METALLIB_PATH");
         let path_ns = NSString::from_str(metallib_path);

@@ -39,7 +39,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
   - _Requirements: FR-2, FR-11_
   - _Design: with_context() Constructors_
 
-- [ ] 1.3 Add with_context() to GpuFilter
+- [x] 1.3 Add with_context() to GpuFilter
   - **Do**:
     1. In `forge-filter/src/lib.rs`, add `pub fn with_context(device: Retained<ProtocolObject<dyn MTLDevice>>, queue: Retained<ProtocolObject<dyn MTLCommandQueue>>) -> Result<Self, FilterError>`
     2. Implementation: same pattern as GpuSorter -- use provided device/queue, load metallib, pre-compile PSOs
