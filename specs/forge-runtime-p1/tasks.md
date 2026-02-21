@@ -146,7 +146,7 @@ After POC validated, build the pipeline and gather kernel.
   - _Requirements: FR-8_
   - _Design: Pipeline Builder_
 
-- [ ] 2.4 Build Pipeline struct and execute method
+- [x] 2.4 Build Pipeline struct and execute method
   - **Do**:
     1. Create `forge-runtime/src/pipeline.rs` with Pipeline struct
     2. Pipeline::new(ctx: &ForgeContext) -> creates CB + encoder from ctx.queue
