@@ -242,7 +242,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-5, FR-7, AC-3.7_
   - _Design: Section 4 — Arrow Feature Flag_
 
-- [ ] 2.8 Implement filter_arrow and filter_arrow_nullable
+- [x] 2.8 Implement filter_arrow and filter_arrow_nullable
   - **Do**:
     1. In `src/arrow.rs`, implement `GpuFilter::filter_arrow<T: ArrowFilterKey>()`:
        - Extract values buffer from `PrimitiveArray<T::ArrowType>`
