@@ -331,6 +331,17 @@ pub enum FilterError {
     InvalidPredicate(String),
 }
 
+// --- LogicOp ---
+
+/// Logical operator for combining multi-column filter results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogicOp {
+    /// All columns must match (intersection of bitmaps).
+    And,
+    /// Any column must match (union of bitmaps).
+    Or,
+}
+
 // --- FilterParams (repr(C), shared with Metal) ---
 
 /// Parameters for 32-bit filter kernels.
@@ -1902,6 +1913,218 @@ impl GpuFilter {
             _marker: PhantomData,
         })
     }
+
+    /// Evaluate predicates on multiple columns, combining results with a [`LogicOp`].
+    ///
+    /// Dispatches a separate `filter_bitmap_scan` for each column, then combines
+    /// the bitmap words on the CPU with AND or OR. This is the simplest correct
+    /// approach and avoids the complexity of the fused multi-column kernel for
+    /// mixed-type columns.
+    ///
+    /// Accepts 1..=4 `(FilterBuffer, Predicate)` pairs. All buffers must have
+    /// the same length. Returns [`FilterError::InvalidPredicate`] for 0 or >4 columns.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate, LogicOp};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let data_a: Vec<u32> = (0..100_000).collect();
+    /// let data_b: Vec<u32> = (0..100_000).map(|x| x * 2).collect();
+    /// let mut buf_a = gpu.alloc_filter_buffer::<u32>(100_000);
+    /// buf_a.copy_from_slice(&data_a);
+    /// let mut buf_b = gpu.alloc_filter_buffer::<u32>(100_000);
+    /// buf_b.copy_from_slice(&data_b);
+    /// let mask = gpu.filter_multi_mask(
+    ///     &[(&buf_a, &Predicate::Gt(50_000u32)), (&buf_b, &Predicate::Lt(100_000u32))],
+    ///     LogicOp::And,
+    /// ).unwrap();
+    /// ```
+    pub fn filter_multi_mask<T: FilterKey>(
+        &mut self,
+        columns: &[(&FilterBuffer<T>, &Predicate<T>)],
+        logic: LogicOp,
+    ) -> Result<BooleanMask, FilterError> {
+        let n_cols = columns.len();
+        if n_cols == 0 || n_cols > 4 {
+            return Err(FilterError::InvalidPredicate(format!(
+                "filter_multi_mask requires 1..=4 columns, got {}",
+                n_cols,
+            )));
+        }
+
+        // All columns must have the same length
+        let n = columns[0].0.len();
+        for (i, (buf, _)) in columns.iter().enumerate().skip(1) {
+            if buf.len() != n {
+                return Err(FilterError::InvalidPredicate(format!(
+                    "column {} has len {} but column 0 has len {}",
+                    i,
+                    buf.len(),
+                    n,
+                )));
+            }
+        }
+
+        if n == 0 {
+            let empty_buf = alloc_buffer(&self.device, 4);
+            let empty_partials = alloc_buffer(&self.device, 4);
+            return Ok(BooleanMask {
+                buffer: empty_buf,
+                partials: empty_partials,
+                len: 0,
+                count: 0,
+            });
+        }
+
+        // Single column: delegate to filter_mask
+        if n_cols == 1 {
+            return self.filter_mask(columns[0].0, columns[0].1);
+        }
+
+        // Generate per-column masks
+        let mut masks: Vec<BooleanMask> = Vec::with_capacity(n_cols);
+        for &(buf, pred) in columns {
+            masks.push(self.filter_mask(buf, pred)?);
+        }
+
+        // Combine bitmaps on CPU: AND or OR the u32 words
+        let bitmap_words = (n + 31) / 32;
+        let combined_buf = alloc_buffer(&self.device, bitmap_words * 4);
+
+        unsafe {
+            let dst = std::slice::from_raw_parts_mut(
+                combined_buf.contents().as_ptr() as *mut u32,
+                bitmap_words,
+            );
+
+            // Start with first mask's bitmap
+            let src0 = std::slice::from_raw_parts(
+                masks[0].buffer.contents().as_ptr() as *const u32,
+                bitmap_words,
+            );
+            dst.copy_from_slice(src0);
+
+            // Combine remaining masks
+            for mask in masks.iter().skip(1) {
+                let src = std::slice::from_raw_parts(
+                    mask.buffer.contents().as_ptr() as *const u32,
+                    bitmap_words,
+                );
+                match logic {
+                    LogicOp::And => {
+                        for (d, s) in dst.iter_mut().zip(src.iter()) {
+                            *d &= *s;
+                        }
+                    }
+                    LogicOp::Or => {
+                        for (d, s) in dst.iter_mut().zip(src.iter()) {
+                            *d |= *s;
+                        }
+                    }
+                }
+            }
+
+            // Clear trailing bits beyond n in the last word
+            let trailing_bits = n % 32;
+            if trailing_bits != 0 {
+                let last_word_mask = (1u32 << trailing_bits) - 1;
+                dst[bitmap_words - 1] &= last_word_mask;
+            }
+        }
+
+        // Count set bits in combined bitmap
+        let combined_words = unsafe {
+            std::slice::from_raw_parts(
+                combined_buf.contents().as_ptr() as *const u32,
+                bitmap_words,
+            )
+        };
+        let count: usize = combined_words.iter().map(|w| w.count_ones() as usize).sum();
+
+        // Build partials from the combined bitmap for gather compatibility.
+        // Each tile's partial = popcount of bitmap words in that tile.
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+        let words_per_tile = tile_size / 32;
+
+        let partials_buf = alloc_buffer(&self.device, num_tiles * 4);
+
+        // Compute tile counts, then run scan_partials on GPU for the prefix sum
+        unsafe {
+            let partials_ptr = partials_buf.contents().as_ptr() as *mut u32;
+            for t in 0..num_tiles {
+                let word_start = t * words_per_tile;
+                let word_end = std::cmp::min(word_start + words_per_tile, bitmap_words);
+                let mut tile_count = 0u32;
+                for w in word_start..word_end {
+                    tile_count += combined_words[w].count_ones();
+                }
+                std::ptr::write(partials_ptr.add(t), tile_count);
+            }
+        }
+
+        // Run scan_partials on GPU to convert tile counts into exclusive prefix sums
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+
+        // Zero count buffer
+        unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        // Temporarily swap in our partials buffer
+        let saved_partials = self.buf_partials.take();
+        self.buf_partials = Some(partials_buf.clone());
+
+        let saved_block_totals = if num_tiles > Self::SCAN_BLOCK_SIZE {
+            let num_blocks = (num_tiles + Self::SCAN_BLOCK_SIZE - 1) / Self::SCAN_BLOCK_SIZE;
+            let block_totals_buf = alloc_buffer(&self.device, num_blocks * 4);
+            let saved = self.buf_block_totals.take();
+            self.buf_block_totals = Some(block_totals_buf);
+            saved
+        } else {
+            None
+        };
+
+        self.encode_scan_partials(&enc, num_tiles);
+
+        // Restore
+        self.buf_partials = saved_partials;
+        if num_tiles > Self::SCAN_BLOCK_SIZE {
+            self.buf_block_totals = saved_block_totals;
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        Ok(BooleanMask {
+            buffer: combined_buf,
+            partials: partials_buf,
+            len: n,
+            count,
+        })
+    }
 }
 
 // --- FilterBuffer<T> ---
@@ -2078,6 +2301,15 @@ pub struct BooleanMask {
     len: usize,
     /// Number of true bits (matching elements).
     count: usize,
+}
+
+impl std::fmt::Debug for BooleanMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BooleanMask")
+            .field("len", &self.len)
+            .field("count", &self.count)
+            .finish()
+    }
 }
 
 impl BooleanMask {
@@ -4048,5 +4280,306 @@ mod tests {
         assert_eq!(result.to_vec(), cpu_ref);
 
         println!("test_filter_mask_f32: OK ({} matches)", result.len());
+    }
+
+    // --- Multi-column filter tests ---
+
+    #[test]
+    fn test_multi_mask_2col_and_u32() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data_a: Vec<u32> = (0..n as u32).collect();
+        let data_b: Vec<u32> = (0..n as u32).map(|x| x * 2).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Gt(50_000u32);
+        let pred_b = Predicate::Lt(120_000u32);
+
+        let mask = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::And,
+            )
+            .expect("filter_multi_mask failed");
+
+        // CPU reference: a > 50000 AND b < 120000, where b = a*2
+        let cpu_count = data_a
+            .iter()
+            .zip(data_b.iter())
+            .filter(|(&a, &b)| a > 50_000 && b < 120_000)
+            .count();
+
+        println!(
+            "test_multi_mask_2col_and_u32: GPU count={}, CPU count={}",
+            mask.count(),
+            cpu_count
+        );
+        assert_eq!(mask.count(), cpu_count);
+
+        // Verify the bitmap matches element-by-element
+        let bools = mask.to_vec();
+        for i in 0..n {
+            let expected = data_a[i] > 50_000 && data_b[i] < 120_000;
+            assert_eq!(bools[i], expected, "mismatch at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_multi_mask_2col_or_u32() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data_a: Vec<u32> = (0..n as u32).collect();
+        let data_b: Vec<u32> = (0..n as u32).map(|x| n as u32 - x).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Lt(10_000u32); // first 10K match
+        let pred_b = Predicate::Lt(10_000u32); // last 10K match (since b = n - a)
+
+        let mask = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::Or,
+            )
+            .expect("filter_multi_mask failed");
+
+        let cpu_count = data_a
+            .iter()
+            .zip(data_b.iter())
+            .filter(|(&a, &b)| a < 10_000 || b < 10_000)
+            .count();
+
+        println!(
+            "test_multi_mask_2col_or_u32: GPU count={}, CPU count={}",
+            mask.count(),
+            cpu_count
+        );
+        assert_eq!(mask.count(), cpu_count);
+
+        let bools = mask.to_vec();
+        for i in 0..n {
+            let expected = data_a[i] < 10_000 || data_b[i] < 10_000;
+            assert_eq!(bools[i], expected, "mismatch at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_multi_mask_mixed_types() {
+        // Use u32 and i32 columns — different FilterKey types require separate filter_mask calls
+        // then combine via public to_vec() API
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 50_000usize;
+        let data_u32: Vec<u32> = (0..n as u32).collect();
+        let data_i32: Vec<i32> = (0..n as i32).map(|x| x - 25_000).collect();
+
+        let mut buf_u32 = gpu.alloc_filter_buffer::<u32>(n);
+        buf_u32.copy_from_slice(&data_u32);
+        let mut buf_i32 = gpu.alloc_filter_buffer::<i32>(n);
+        buf_i32.copy_from_slice(&data_i32);
+
+        // Get separate masks (mixed types need separate filter_mask calls)
+        let mask_u32 = gpu
+            .filter_mask(&buf_u32, &Predicate::Gt(30_000u32))
+            .expect("filter_mask u32 failed");
+        let mask_i32 = gpu
+            .filter_mask(&buf_i32, &Predicate::Lt(0i32))
+            .expect("filter_mask i32 failed");
+
+        // AND the boolean vectors on CPU (using public API)
+        let bools_u32 = mask_u32.to_vec();
+        let bools_i32 = mask_i32.to_vec();
+        let combined_count = bools_u32
+            .iter()
+            .zip(bools_i32.iter())
+            .filter(|(&a, &b)| a && b)
+            .count();
+
+        // CPU reference: u32 > 30000 AND i32 < 0
+        // u32[i] = i, i32[i] = i - 25000
+        // u32 > 30000 => i > 30000
+        // i32 < 0 => i - 25000 < 0 => i < 25000
+        // AND => impossible (i > 30000 AND i < 25000)
+        let cpu_count = data_u32
+            .iter()
+            .zip(data_i32.iter())
+            .filter(|(&u, &s)| u > 30_000 && s < 0)
+            .count();
+
+        println!(
+            "test_multi_mask_mixed_types: combined count={}, CPU count={}",
+            combined_count, cpu_count
+        );
+        assert_eq!(combined_count, cpu_count);
+        assert_eq!(cpu_count, 0); // impossible intersection
+    }
+
+    #[test]
+    fn test_multi_mask_all_match() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 10_000usize;
+        let data_a: Vec<u32> = (1..=n as u32).collect();
+        let data_b: Vec<u32> = (1..=n as u32).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        // Both predicates match all elements
+        let mask = gpu
+            .filter_multi_mask(
+                &[
+                    (&buf_a, &Predicate::Gt(0u32)),
+                    (&buf_b, &Predicate::Gt(0u32)),
+                ],
+                LogicOp::And,
+            )
+            .expect("filter_multi_mask failed");
+
+        println!("test_multi_mask_all_match: count={}", mask.count());
+        assert_eq!(mask.count(), n);
+    }
+
+    #[test]
+    fn test_multi_mask_zero_match() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 10_000usize;
+        let data_a: Vec<u32> = (0..n as u32).collect();
+        let data_b: Vec<u32> = (0..n as u32).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        // a > 5000 AND b < 5000 => 0 matches (impossible for same values)
+        let mask = gpu
+            .filter_multi_mask(
+                &[
+                    (&buf_a, &Predicate::Gt(5_000u32)),
+                    (&buf_b, &Predicate::Lt(5_000u32)),
+                ],
+                LogicOp::And,
+            )
+            .expect("filter_multi_mask failed");
+
+        println!("test_multi_mask_zero_match: count={}", mask.count());
+        assert_eq!(mask.count(), 0);
+    }
+
+    #[test]
+    fn test_multi_mask_invalid_column_count() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+
+        // 0 columns
+        let result = gpu.filter_multi_mask::<u32>(&[], LogicOp::And);
+        assert!(result.is_err(), "should error on 0 columns");
+        match result.unwrap_err() {
+            FilterError::InvalidPredicate(msg) => {
+                assert!(msg.contains("0"), "error message should mention 0: {}", msg);
+            }
+            other => panic!("expected InvalidPredicate, got {:?}", other),
+        }
+
+        // 5 columns (> 4)
+        let n = 100usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let bufs: Vec<FilterBuffer<u32>> = (0..5)
+            .map(|_| {
+                let mut b = gpu.alloc_filter_buffer::<u32>(n);
+                b.copy_from_slice(&data);
+                b
+            })
+            .collect();
+        let pred = Predicate::Gt(50u32);
+        let cols: Vec<(&FilterBuffer<u32>, &Predicate<u32>)> =
+            bufs.iter().map(|b| (b, &pred)).collect();
+
+        let result = gpu.filter_multi_mask(&cols, LogicOp::And);
+        assert!(result.is_err(), "should error on 5 columns");
+        match result.unwrap_err() {
+            FilterError::InvalidPredicate(msg) => {
+                assert!(msg.contains("5"), "error message should mention 5: {}", msg);
+            }
+            other => panic!("expected InvalidPredicate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_multi_mask_single_column_matches_filter_mask() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 50_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Gt(25_000u32);
+
+        // Single column via filter_multi_mask
+        let mask_multi = gpu
+            .filter_multi_mask(&[(&buf, &pred)], LogicOp::And)
+            .expect("filter_multi_mask single col failed");
+
+        // Direct filter_mask
+        let mask_single = gpu
+            .filter_mask(&buf, &pred)
+            .expect("filter_mask failed");
+
+        assert_eq!(mask_multi.count(), mask_single.count());
+        assert_eq!(mask_multi.to_vec(), mask_single.to_vec());
+        println!(
+            "test_multi_mask_single_column_matches_filter_mask: {} matches",
+            mask_multi.count()
+        );
+    }
+
+    #[test]
+    fn test_multi_mask_gather_roundtrip() {
+        // Verify filter_multi_mask + gather produces correct filtered output
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data_a: Vec<u32> = (0..n as u32).collect();
+        let data_b: Vec<u32> = (0..n as u32).map(|x| x % 1000).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Gt(50_000u32);
+        let pred_b = Predicate::Lt(500u32); // b = a % 1000 < 500
+
+        let mask = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::And,
+            )
+            .expect("filter_multi_mask failed");
+
+        let result = gpu.gather(&buf_a, &mask).expect("gather failed");
+        let gpu_vals = result.to_vec();
+
+        // CPU reference
+        let cpu_vals: Vec<u32> = data_a
+            .iter()
+            .zip(data_b.iter())
+            .filter(|(&a, &b)| a > 50_000 && b < 500)
+            .map(|(&a, _)| a)
+            .collect();
+
+        println!(
+            "test_multi_mask_gather_roundtrip: GPU={}, CPU={}",
+            gpu_vals.len(),
+            cpu_vals.len()
+        );
+        assert_eq!(gpu_vals.len(), cpu_vals.len());
+        assert_eq!(gpu_vals, cpu_vals);
     }
 }

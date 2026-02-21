@@ -161,7 +161,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-3, FR-4_
   - _Design: Section 1 — Multi-Column Pipeline_
 
-- [ ] 2.3 Wire multi-column Rust API
+- [x] 2.3 Wire multi-column Rust API
   - **Do**:
     1. Add `LogicOp` enum: `And`, `Or`
     2. Add `GpuFilter::filter_multi_mask()` method accepting vec of (data_slice, predicate) pairs + LogicOp
