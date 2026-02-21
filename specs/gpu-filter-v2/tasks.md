@@ -313,7 +313,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `test(forge-filter): add comprehensive bitmap ordered mode tests`
   - _Requirements: AC-1.3, AC-1.4, AC-1.6_
 
-- [ ] 3.2 Multi-column filter test matrix
+- [x] 3.2 Multi-column filter test matrix
   - **Do**:
     1. Add parameterized test covering:
        - N_cols in [2, 3, 4]

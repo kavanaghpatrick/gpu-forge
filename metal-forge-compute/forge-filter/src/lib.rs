@@ -5107,6 +5107,643 @@ mod tests {
     }
 
     // ================================================================
+    // Multi-column filter test matrix (Task 3.2)
+    // ================================================================
+    //
+    // Tests same-type multi-column via filter_multi_mask (2/3/4 cols, AND+OR),
+    // mixed-type via separate filter_mask + CPU combine,
+    // plus edge cases (single col, all-match, zero-match, mixed selectivity).
+    // All use 100K rows, ChaCha8Rng seed 42.
+
+    #[test]
+    fn test_multi_matrix_2col_u32_gt_lt_and() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Gt(500_000u32);
+        let pred_b = Predicate::Lt(500_000u32);
+
+        let mask = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::And,
+            )
+            .expect("filter_multi_mask failed");
+
+        let bools = mask.to_vec();
+        for i in 0..n {
+            let expected = pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]);
+            assert_eq!(bools[i], expected, "2col u32 AND Gt/Lt mismatch at {}", i);
+        }
+        let cpu_count = (0..n)
+            .filter(|&i| pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]))
+            .count();
+        assert_eq!(mask.count(), cpu_count);
+        println!("test_multi_matrix_2col_u32_gt_lt_and: count={}", cpu_count);
+    }
+
+    #[test]
+    fn test_multi_matrix_2col_u32_gt_lt_or() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Gt(500_000u32);
+        let pred_b = Predicate::Lt(500_000u32);
+
+        let mask = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::Or,
+            )
+            .expect("filter_multi_mask failed");
+
+        let bools = mask.to_vec();
+        for i in 0..n {
+            let expected = pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]);
+            assert_eq!(bools[i], expected, "2col u32 OR Gt/Lt mismatch at {}", i);
+        }
+        let cpu_count = (0..n)
+            .filter(|&i| pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]))
+            .count();
+        assert_eq!(mask.count(), cpu_count);
+        println!("test_multi_matrix_2col_u32_gt_lt_or: count={}", cpu_count);
+    }
+
+    #[test]
+    fn test_multi_matrix_2col_u32_between_ne_and() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Between(200_000u32, 800_000u32);
+        let pred_b = Predicate::Ne(500_000u32);
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let mask = gpu
+                .filter_multi_mask(
+                    &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                    *logic,
+                )
+                .expect("filter_multi_mask failed");
+
+            let bools = mask.to_vec();
+            for i in 0..n {
+                let expected = match logic {
+                    LogicOp::And => pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]),
+                    LogicOp::Or => pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]),
+                };
+                assert_eq!(bools[i], expected, "2col Between/Ne {:?} mismatch at {}", logic, i);
+            }
+            let cpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]),
+                    LogicOp::Or => pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]),
+                })
+                .count();
+            assert_eq!(mask.count(), cpu_count);
+            println!("test_multi_matrix_2col_u32_between_ne_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    #[test]
+    fn test_multi_matrix_2col_u32_eq_ge_and() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        let pred_a = Predicate::Eq(500_000u32);
+        let pred_b = Predicate::Ge(300_000u32);
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let mask = gpu
+                .filter_multi_mask(
+                    &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                    *logic,
+                )
+                .expect("filter_multi_mask failed");
+
+            let bools = mask.to_vec();
+            for i in 0..n {
+                let expected = match logic {
+                    LogicOp::And => pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]),
+                    LogicOp::Or => pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]),
+                };
+                assert_eq!(bools[i], expected, "2col Eq/Ge {:?} mismatch at {}", logic, i);
+            }
+            let cpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]),
+                    LogicOp::Or => pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]),
+                })
+                .count();
+            assert_eq!(mask.count(), cpu_count);
+            println!("test_multi_matrix_2col_u32_eq_ge_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    #[test]
+    fn test_multi_matrix_3col_u32_and_or() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_c: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+        let mut buf_c = gpu.alloc_filter_buffer::<u32>(n);
+        buf_c.copy_from_slice(&data_c);
+
+        let pred_a = Predicate::Gt(300_000u32);
+        let pred_b = Predicate::Lt(700_000u32);
+        let pred_c = Predicate::Between(200_000u32, 800_000u32);
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let mask = gpu
+                .filter_multi_mask(
+                    &[(&buf_a, &pred_a), (&buf_b, &pred_b), (&buf_c, &pred_c)],
+                    *logic,
+                )
+                .expect("filter_multi_mask 3col failed");
+
+            let bools = mask.to_vec();
+            for i in 0..n {
+                let pa = pred_a.evaluate(&data_a[i]);
+                let pb = pred_b.evaluate(&data_b[i]);
+                let pc = pred_c.evaluate(&data_c[i]);
+                let expected = match logic {
+                    LogicOp::And => pa && pb && pc,
+                    LogicOp::Or => pa || pb || pc,
+                };
+                assert_eq!(bools[i], expected, "3col {:?} mismatch at {}", logic, i);
+            }
+            let cpu_count = (0..n)
+                .filter(|&i| {
+                    let pa = pred_a.evaluate(&data_a[i]);
+                    let pb = pred_b.evaluate(&data_b[i]);
+                    let pc = pred_c.evaluate(&data_c[i]);
+                    match logic {
+                        LogicOp::And => pa && pb && pc,
+                        LogicOp::Or => pa || pb || pc,
+                    }
+                })
+                .count();
+            assert_eq!(mask.count(), cpu_count);
+            println!("test_multi_matrix_3col_u32_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    #[test]
+    fn test_multi_matrix_4col_u32_and_or() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_c: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_d: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+        let mut buf_c = gpu.alloc_filter_buffer::<u32>(n);
+        buf_c.copy_from_slice(&data_c);
+        let mut buf_d = gpu.alloc_filter_buffer::<u32>(n);
+        buf_d.copy_from_slice(&data_d);
+
+        let pred_a = Predicate::Gt(250_000u32);
+        let pred_b = Predicate::Lt(750_000u32);
+        let pred_c = Predicate::Ne(500_000u32);
+        let pred_d = Predicate::Ge(100_000u32);
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let mask = gpu
+                .filter_multi_mask(
+                    &[
+                        (&buf_a, &pred_a),
+                        (&buf_b, &pred_b),
+                        (&buf_c, &pred_c),
+                        (&buf_d, &pred_d),
+                    ],
+                    *logic,
+                )
+                .expect("filter_multi_mask 4col failed");
+
+            let bools = mask.to_vec();
+            for i in 0..n {
+                let pa = pred_a.evaluate(&data_a[i]);
+                let pb = pred_b.evaluate(&data_b[i]);
+                let pc = pred_c.evaluate(&data_c[i]);
+                let pd = pred_d.evaluate(&data_d[i]);
+                let expected = match logic {
+                    LogicOp::And => pa && pb && pc && pd,
+                    LogicOp::Or => pa || pb || pc || pd,
+                };
+                assert_eq!(bools[i], expected, "4col {:?} mismatch at {}", logic, i);
+            }
+            let cpu_count = (0..n)
+                .filter(|&i| {
+                    let pa = pred_a.evaluate(&data_a[i]);
+                    let pb = pred_b.evaluate(&data_b[i]);
+                    let pc = pred_c.evaluate(&data_c[i]);
+                    let pd = pred_d.evaluate(&data_d[i]);
+                    match logic {
+                        LogicOp::And => pa && pb && pc && pd,
+                        LogicOp::Or => pa || pb || pc || pd,
+                    }
+                })
+                .count();
+            assert_eq!(mask.count(), cpu_count);
+            println!("test_multi_matrix_4col_u32_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    // Mixed-type tests: use separate filter_mask per type, combine on CPU
+    #[test]
+    fn test_multi_matrix_mixed_i32_f32_and_or() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_i32: Vec<i32> = (0..n).map(|_| gen_i32(&mut rng)).collect();
+        let data_f32: Vec<f32> = (0..n).map(|_| gen_f32(&mut rng)).collect();
+
+        let mut buf_i32 = gpu.alloc_filter_buffer::<i32>(n);
+        buf_i32.copy_from_slice(&data_i32);
+        let mut buf_f32 = gpu.alloc_filter_buffer::<f32>(n);
+        buf_f32.copy_from_slice(&data_f32);
+
+        let pred_i32 = Predicate::Gt(0i32);
+        let pred_f32 = Predicate::Lt(0.5f32);
+
+        let mask_i32 = gpu
+            .filter_mask(&buf_i32, &pred_i32)
+            .expect("filter_mask i32 failed");
+        let mask_f32 = gpu
+            .filter_mask(&buf_f32, &pred_f32)
+            .expect("filter_mask f32 failed");
+
+        let bools_i32 = mask_i32.to_vec();
+        let bools_f32 = mask_f32.to_vec();
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let gpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => bools_i32[i] && bools_f32[i],
+                    LogicOp::Or => bools_i32[i] || bools_f32[i],
+                })
+                .count();
+            let cpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => pred_i32.evaluate(&data_i32[i]) && pred_f32.evaluate(&data_f32[i]),
+                    LogicOp::Or => pred_i32.evaluate(&data_i32[i]) || pred_f32.evaluate(&data_f32[i]),
+                })
+                .count();
+            assert_eq!(gpu_count, cpu_count, "mixed i32/f32 {:?} count mismatch", logic);
+
+            // Element-wise check
+            for i in 0..n {
+                let gpu_val = match logic {
+                    LogicOp::And => bools_i32[i] && bools_f32[i],
+                    LogicOp::Or => bools_i32[i] || bools_f32[i],
+                };
+                let cpu_val = match logic {
+                    LogicOp::And => pred_i32.evaluate(&data_i32[i]) && pred_f32.evaluate(&data_f32[i]),
+                    LogicOp::Or => pred_i32.evaluate(&data_i32[i]) || pred_f32.evaluate(&data_f32[i]),
+                };
+                assert_eq!(gpu_val, cpu_val, "mixed i32/f32 {:?} mismatch at {}", logic, i);
+            }
+            println!("test_multi_matrix_mixed_i32_f32_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    #[test]
+    fn test_multi_matrix_mixed_u64_f64_and_or() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_u64: Vec<u64> = (0..n).map(|_| gen_u64(&mut rng)).collect();
+        let data_f64: Vec<f64> = (0..n).map(|_| gen_f64(&mut rng)).collect();
+
+        let mut buf_u64 = gpu.alloc_filter_buffer::<u64>(n);
+        buf_u64.copy_from_slice(&data_u64);
+        let mut buf_f64 = gpu.alloc_filter_buffer::<f64>(n);
+        buf_f64.copy_from_slice(&data_f64);
+
+        let pred_u64 = Predicate::Between(200_000u64, 800_000u64);
+        let pred_f64 = Predicate::Ne(0.5f64);
+
+        let mask_u64 = gpu
+            .filter_mask(&buf_u64, &pred_u64)
+            .expect("filter_mask u64 failed");
+        let mask_f64 = gpu
+            .filter_mask(&buf_f64, &pred_f64)
+            .expect("filter_mask f64 failed");
+
+        let bools_u64 = mask_u64.to_vec();
+        let bools_f64 = mask_f64.to_vec();
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let gpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => bools_u64[i] && bools_f64[i],
+                    LogicOp::Or => bools_u64[i] || bools_f64[i],
+                })
+                .count();
+            let cpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => pred_u64.evaluate(&data_u64[i]) && pred_f64.evaluate(&data_f64[i]),
+                    LogicOp::Or => pred_u64.evaluate(&data_u64[i]) || pred_f64.evaluate(&data_f64[i]),
+                })
+                .count();
+            assert_eq!(gpu_count, cpu_count, "mixed u64/f64 {:?} count mismatch", logic);
+
+            for i in 0..n {
+                let gpu_val = match logic {
+                    LogicOp::And => bools_u64[i] && bools_f64[i],
+                    LogicOp::Or => bools_u64[i] || bools_f64[i],
+                };
+                let cpu_val = match logic {
+                    LogicOp::And => pred_u64.evaluate(&data_u64[i]) && pred_f64.evaluate(&data_f64[i]),
+                    LogicOp::Or => pred_u64.evaluate(&data_u64[i]) || pred_f64.evaluate(&data_f64[i]),
+                };
+                assert_eq!(gpu_val, cpu_val, "mixed u64/f64 {:?} mismatch at {}", logic, i);
+            }
+            println!("test_multi_matrix_mixed_u64_f64_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    #[test]
+    fn test_multi_matrix_mixed_u32_i32_f32_and_or() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_u32: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_i32: Vec<i32> = (0..n).map(|_| gen_i32(&mut rng)).collect();
+        let data_f32: Vec<f32> = (0..n).map(|_| gen_f32(&mut rng)).collect();
+
+        let mut buf_u32 = gpu.alloc_filter_buffer::<u32>(n);
+        buf_u32.copy_from_slice(&data_u32);
+        let mut buf_i32 = gpu.alloc_filter_buffer::<i32>(n);
+        buf_i32.copy_from_slice(&data_i32);
+        let mut buf_f32 = gpu.alloc_filter_buffer::<f32>(n);
+        buf_f32.copy_from_slice(&data_f32);
+
+        let pred_u32 = Predicate::Gt(500_000u32);
+        let pred_i32 = Predicate::Lt(0i32);
+        let pred_f32 = Predicate::Ge(0.3f32);
+
+        let mask_u32 = gpu
+            .filter_mask(&buf_u32, &pred_u32)
+            .expect("filter_mask u32 failed");
+        let mask_i32 = gpu
+            .filter_mask(&buf_i32, &pred_i32)
+            .expect("filter_mask i32 failed");
+        let mask_f32 = gpu
+            .filter_mask(&buf_f32, &pred_f32)
+            .expect("filter_mask f32 failed");
+
+        let bools_u32 = mask_u32.to_vec();
+        let bools_i32 = mask_i32.to_vec();
+        let bools_f32 = mask_f32.to_vec();
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let gpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => bools_u32[i] && bools_i32[i] && bools_f32[i],
+                    LogicOp::Or => bools_u32[i] || bools_i32[i] || bools_f32[i],
+                })
+                .count();
+            let cpu_count = (0..n)
+                .filter(|&i| match logic {
+                    LogicOp::And => {
+                        pred_u32.evaluate(&data_u32[i])
+                            && pred_i32.evaluate(&data_i32[i])
+                            && pred_f32.evaluate(&data_f32[i])
+                    }
+                    LogicOp::Or => {
+                        pred_u32.evaluate(&data_u32[i])
+                            || pred_i32.evaluate(&data_i32[i])
+                            || pred_f32.evaluate(&data_f32[i])
+                    }
+                })
+                .count();
+            assert_eq!(gpu_count, cpu_count, "mixed u32/i32/f32 {:?} count mismatch", logic);
+
+            for i in 0..n {
+                let gpu_val = match logic {
+                    LogicOp::And => bools_u32[i] && bools_i32[i] && bools_f32[i],
+                    LogicOp::Or => bools_u32[i] || bools_i32[i] || bools_f32[i],
+                };
+                let cpu_val = match logic {
+                    LogicOp::And => {
+                        pred_u32.evaluate(&data_u32[i])
+                            && pred_i32.evaluate(&data_i32[i])
+                            && pred_f32.evaluate(&data_f32[i])
+                    }
+                    LogicOp::Or => {
+                        pred_u32.evaluate(&data_u32[i])
+                            || pred_i32.evaluate(&data_i32[i])
+                            || pred_f32.evaluate(&data_f32[i])
+                    }
+                };
+                assert_eq!(gpu_val, cpu_val, "mixed u32/i32/f32 {:?} mismatch at {}", logic, i);
+            }
+            println!("test_multi_matrix_mixed_u32_i32_f32_{:?}: count={}", logic, cpu_count);
+        }
+    }
+
+    // Edge case: single column via multi API matches single-column filter_mask (100K, seed 42)
+    #[test]
+    fn test_multi_matrix_single_col_100k() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+        let pred = Predicate::Between(200_000u32, 800_000u32);
+
+        let mask_multi = gpu
+            .filter_multi_mask(&[(&buf, &pred)], LogicOp::And)
+            .expect("filter_multi_mask single col failed");
+        let mask_single = gpu
+            .filter_mask(&buf, &pred)
+            .expect("filter_mask failed");
+
+        assert_eq!(mask_multi.count(), mask_single.count());
+        assert_eq!(mask_multi.to_vec(), mask_single.to_vec());
+
+        // Also verify vs CPU
+        let cpu_count = data.iter().filter(|v| pred.evaluate(v)).count();
+        assert_eq!(mask_multi.count(), cpu_count);
+        println!("test_multi_matrix_single_col_100k: count={}", cpu_count);
+    }
+
+    // Edge case: all columns all-match (AND should return all, OR should return all)
+    #[test]
+    fn test_multi_matrix_all_match_100k() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        // Data in range [1, 999999] — all values match Gt(0) and Lt(1_000_000)
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng).max(1)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng).max(1)).collect();
+        let data_c: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng).max(1)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+        let mut buf_c = gpu.alloc_filter_buffer::<u32>(n);
+        buf_c.copy_from_slice(&data_c);
+
+        // All predicates match all elements (Gt(0) for [1, 999999])
+        let pred = Predicate::Gt(0u32);
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let mask = gpu
+                .filter_multi_mask(
+                    &[(&buf_a, &pred), (&buf_b, &pred), (&buf_c, &pred)],
+                    *logic,
+                )
+                .expect("filter_multi_mask all-match failed");
+            assert_eq!(mask.count(), n, "all-match {:?}: expected {} got {}", logic, n, mask.count());
+        }
+        println!("test_multi_matrix_all_match_100k: PASSED (AND={}, OR={})", n, n);
+    }
+
+    // Edge case: all columns zero-match (AND should return 0, OR should return 0)
+    #[test]
+    fn test_multi_matrix_zero_match_100k() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        // gen_u32 produces [0, 1_000_000), so Gt(1_000_000) matches nothing
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        // No element can be > 1_000_000 when range is [0, 999_999]
+        let pred = Predicate::Gt(1_000_000u32);
+
+        for logic in &[LogicOp::And, LogicOp::Or] {
+            let mask = gpu
+                .filter_multi_mask(
+                    &[(&buf_a, &pred), (&buf_b, &pred)],
+                    *logic,
+                )
+                .expect("filter_multi_mask zero-match failed");
+            assert_eq!(mask.count(), 0, "zero-match {:?}: expected 0 got {}", logic, mask.count());
+        }
+        println!("test_multi_matrix_zero_match_100k: PASSED (both AND and OR = 0)");
+    }
+
+    // Edge case: mixed selectivity — col A high selectivity (few pass), col B low selectivity (most pass)
+    #[test]
+    fn test_multi_matrix_mixed_selectivity() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data_a: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+        let data_b: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+
+        let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+        buf_a.copy_from_slice(&data_a);
+        let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+        buf_b.copy_from_slice(&data_b);
+
+        // Col A: ~1% selectivity (Gt(990_000) on range [0, 999_999])
+        let pred_a = Predicate::Gt(990_000u32);
+        // Col B: ~99% selectivity (Lt(990_000) on range [0, 999_999])
+        let pred_b = Predicate::Lt(990_000u32);
+
+        // AND: ~1% * 99% ~ 1%
+        let mask_and = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::And,
+            )
+            .expect("filter_multi_mask AND failed");
+
+        let cpu_and = (0..n)
+            .filter(|&i| pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]))
+            .count();
+        assert_eq!(mask_and.count(), cpu_and);
+
+        let bools_and = mask_and.to_vec();
+        for i in 0..n {
+            let expected = pred_a.evaluate(&data_a[i]) && pred_b.evaluate(&data_b[i]);
+            assert_eq!(bools_and[i], expected, "mixed sel AND mismatch at {}", i);
+        }
+
+        // OR: ~1% + 99% - 1%*99% ~ 99%
+        let mask_or = gpu
+            .filter_multi_mask(
+                &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                LogicOp::Or,
+            )
+            .expect("filter_multi_mask OR failed");
+
+        let cpu_or = (0..n)
+            .filter(|&i| pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]))
+            .count();
+        assert_eq!(mask_or.count(), cpu_or);
+
+        let bools_or = mask_or.to_vec();
+        for i in 0..n {
+            let expected = pred_a.evaluate(&data_a[i]) || pred_b.evaluate(&data_b[i]);
+            assert_eq!(bools_or[i], expected, "mixed sel OR mismatch at {}", i);
+        }
+
+        println!(
+            "test_multi_matrix_mixed_selectivity: AND={} (~{:.1}%), OR={} (~{:.1}%)",
+            cpu_and,
+            100.0 * cpu_and as f64 / n as f64,
+            cpu_or,
+            100.0 * cpu_or as f64 / n as f64
+        );
+    }
+
+    // ================================================================
     // NULL bitmap tests
     // ================================================================
 
