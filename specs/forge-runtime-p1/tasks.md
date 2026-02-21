@@ -79,7 +79,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
   - _Requirements: FR-4, FR-5, FR-6_
   - _Design: ForgeBuffer<T> Trait, Buffer Conversions_
 
-- [ ] 1.6 POC: filter-then-sort with shared context (no pipeline builder yet)
+- [x] 1.6 POC: filter-then-sort with shared context (no pipeline builder yet)
   - **Do**:
     1. Create `forge-runtime/tests/poc_test.rs`
     2. Test: create ForgeContext, create GpuSorter::with_context + GpuFilter::with_context
