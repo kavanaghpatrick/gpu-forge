@@ -95,7 +95,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
   - _Requirements: AC-1.2, AC-1.3, AC-2.2_
   - _Design: Data Flow_
 
-- [ ] 1.7 POC Checkpoint
+- [x] 1.7 POC Checkpoint
   - **Do**: Verify shared context + buffer conversion works end-to-end
   - **Done when**: POC test passes, all existing forge-sort + forge-filter tests still pass
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo test -p forge-sort && cargo test -p forge-filter && cargo test -p forge-runtime`
