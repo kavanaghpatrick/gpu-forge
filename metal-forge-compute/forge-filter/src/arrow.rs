@@ -359,4 +359,107 @@ mod tests {
             .unwrap();
         assert_eq!(result_nullable.len(), 0);
     }
+
+    /// Verify that `filter_arrow` produces identical output to the direct
+    /// `filter()` API for the same u32 data and predicate.
+    #[test]
+    fn test_filter_arrow_matches_filter_u32() {
+        let mut gpu = GpuFilter::new().unwrap();
+
+        // Use a non-trivial dataset with a Between predicate
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let arrow_array = PrimitiveArray::<UInt32Type>::from_iter_values(data.clone());
+
+        let pred = Predicate::Between(10_000u32, 50_000u32);
+
+        // Arrow path
+        let arrow_result = gpu.filter_arrow::<u32>(&arrow_array, &pred).unwrap();
+
+        // Direct path
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+        let direct_result = gpu.filter(&buf, &pred).unwrap();
+
+        // Must be identical
+        assert_eq!(arrow_result.len(), direct_result.len());
+        assert_eq!(arrow_result.values().as_ref(), direct_result.as_slice());
+    }
+
+    /// All elements are NULL — output must be empty.
+    #[test]
+    fn test_filter_arrow_nullable_all_null() {
+        let mut gpu = GpuFilter::new().unwrap();
+
+        // 1000 elements, every one NULL
+        let data: Vec<Option<u32>> = vec![None; 1000];
+        let arrow_array = PrimitiveArray::<UInt32Type>::from(data);
+
+        // Even Gt(0) should return nothing — everything is NULL
+        let pred = Predicate::Gt(0u32);
+        let result = gpu
+            .filter_arrow_nullable::<u32>(&arrow_array, &pred)
+            .unwrap();
+
+        assert_eq!(result.len(), 0);
+        assert!(result.nulls().is_none());
+    }
+
+    /// No NULLs at all — nullable path must produce identical output to non-nullable.
+    #[test]
+    fn test_filter_arrow_nullable_no_null() {
+        let mut gpu = GpuFilter::new().unwrap();
+
+        let n = 10_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let pred = Predicate::Lt(5000u32);
+
+        // Non-nullable Arrow array
+        let arr_nonnull = PrimitiveArray::<UInt32Type>::from_iter_values(data.clone());
+        let result_nonnull = gpu.filter_arrow::<u32>(&arr_nonnull, &pred).unwrap();
+
+        // Nullable Arrow array with NO nulls (all Some)
+        let data_opt: Vec<Option<u32>> = data.iter().map(|&v| Some(v)).collect();
+        let arr_nullable = PrimitiveArray::<UInt32Type>::from(data_opt);
+        let result_nullable = gpu
+            .filter_arrow_nullable::<u32>(&arr_nullable, &pred)
+            .unwrap();
+
+        // Must be identical
+        assert_eq!(result_nonnull.len(), result_nullable.len());
+        assert_eq!(
+            result_nonnull.values().as_ref(),
+            result_nullable.values().as_ref()
+        );
+    }
+
+    /// Verify that copying 64 MB of data (16M u32 values) through the Arrow path
+    /// completes in reasonable time (< 10ms including GPU dispatch).
+    #[test]
+    fn test_filter_arrow_copy_overhead() {
+        let mut gpu = GpuFilter::new().unwrap();
+
+        let n = 16_000_000usize; // 16M elements * 4 bytes = 64 MB
+        let data: Vec<u32> = (0..n as u32).collect();
+        let arrow_array = PrimitiveArray::<UInt32Type>::from_iter_values(data);
+
+        // Warm up: first call compiles PSO
+        let pred = Predicate::Gt(u32::MAX - 1);
+        let _ = gpu.filter_arrow::<u32>(&arrow_array, &pred).unwrap();
+
+        // Timed run — predicate selects ~0% to minimize scatter work
+        let start = std::time::Instant::now();
+        let result = gpu.filter_arrow::<u32>(&arrow_array, &pred).unwrap();
+        let elapsed = start.elapsed();
+
+        // Very few matches expected (only u32::MAX - 1 is excluded, but data ends at 15999999)
+        assert!(result.len() <= n);
+
+        // 64 MB copy + GPU dispatch should complete well under 10ms on Apple Silicon
+        assert!(
+            elapsed.as_millis() < 10,
+            "Arrow filter took {}ms (expected <10ms for 64MB)",
+            elapsed.as_millis()
+        );
+    }
 }

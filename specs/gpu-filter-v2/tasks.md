@@ -350,13 +350,13 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `test(forge-filter): add NULL bitmap edge case tests`
   - _Requirements: AC-4.1 through AC-4.8_
 
-- [ ] 3.4 [VERIFY] Quality checkpoint: full test suite
+- [x] 3.4 [VERIFY] Quality checkpoint: full test suite
   - **Do**: Run complete test suite including arrow feature
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute/forge-filter && cargo test 2>&1 | grep "test result" && cargo test --features arrow 2>&1 | grep "test result" && cargo clippy --features arrow -- -D warnings 2>&1 | tail -5`
   - **Done when**: All tests pass, zero clippy warnings
   - **Commit**: `chore(forge-filter): pass quality checkpoint after full test suite` (only if fixes needed)
 
-- [ ] 3.5 Arrow integration tests
+- [x] 3.5 Arrow integration tests
   - **Do**:
     1. Add tests behind `#[cfg(feature = "arrow")]`:
        - `test_filter_arrow_matches_filter_u32`: identical data, verify output matches
