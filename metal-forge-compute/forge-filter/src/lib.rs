@@ -46,6 +46,11 @@ use objc2_metal::{
 mod metal_helpers;
 use metal_helpers::{alloc_buffer, init_device_and_queue, FnConstant, PsoCache};
 
+#[cfg(feature = "arrow")]
+mod arrow;
+#[cfg(feature = "arrow")]
+pub use arrow::ArrowFilterKey;
+
 // --- FilterKey sealed trait ---
 
 mod private {

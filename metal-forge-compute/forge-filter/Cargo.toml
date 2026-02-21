@@ -12,11 +12,18 @@ keywords = ["gpu", "filter", "metal", "compact", "apple-silicon"]
 categories = ["algorithms", "hardware-support"]
 include = ["src/**/*", "shaders/**/*", "build.rs", "README.md", "LICENSE"]
 
+[features]
+default = []
+arrow = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema"]
+
 [dependencies]
 objc2 = "0.6"
 objc2-metal = "0.3"
 objc2-foundation = "0.3"
 thiserror = "2"
+arrow-array = { version = "54", optional = true }
+arrow-buffer = { version = "54", optional = true }
+arrow-schema = { version = "54", optional = true }
 
 [dev-dependencies]
 rand = "0.8"

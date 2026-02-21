@@ -208,7 +208,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-8, AC-4.1 through AC-4.8_
   - _Design: Section 1 — HAS_NULLS constant_
 
-- [ ] 2.6 [VERIFY] Quality checkpoint: NULL + multi-column + v0.1 tests
+- [x] 2.6 [VERIFY] Quality checkpoint: NULL + multi-column + v0.1 tests
   - **Do**: Run full test suite + clippy
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute/forge-filter && cargo test 2>&1 | grep "test result" && cargo clippy -- -D warnings 2>&1 | tail -5`
   - **Done when**: All tests pass, zero clippy warnings
@@ -216,7 +216,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
 
 ### 2C: Arrow Integration
 
-- [ ] 2.7 Add arrow feature flag and ArrowFilterKey trait
+- [x] 2.7 Add arrow feature flag and ArrowFilterKey trait
   - **Do**:
     1. Add to Cargo.toml:
        ```toml
