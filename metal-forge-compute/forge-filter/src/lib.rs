@@ -2062,8 +2062,8 @@ impl GpuFilter {
                 let word_start = t * words_per_tile;
                 let word_end = std::cmp::min(word_start + words_per_tile, bitmap_words);
                 let mut tile_count = 0u32;
-                for w in word_start..word_end {
-                    tile_count += combined_words[w].count_ones();
+                for word in &combined_words[word_start..word_end] {
+                    tile_count += word.count_ones();
                 }
                 std::ptr::write(partials_ptr.add(t), tile_count);
             }
