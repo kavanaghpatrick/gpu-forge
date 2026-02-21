@@ -163,6 +163,7 @@ pub struct ContentSearchEngine {
     current_chunk_count: usize,
     total_data_bytes: usize,
     file_count: usize,
+
 }
 
 impl ContentSearchEngine {
@@ -746,14 +747,7 @@ impl ContentSearchEngine {
             }
         }
 
-        // Sort by file index, then line number
-        results.sort_by(|a, b| {
-            a.file_index
-                .cmp(&b.file_index)
-                .then(a.line_number.cmp(&b.line_number))
-                .then(a.column.cmp(&b.column))
-        });
-
+        gpu_sort_results(&mut results);
         results
     }
 
@@ -844,6 +838,48 @@ pub fn cpu_search(content: &[u8], pattern: &[u8], case_sensitive: bool) -> usize
     }
 
     count
+}
+
+// ============================================================================
+// GPU Sort Helper
+// ============================================================================
+
+/// Sort ContentMatch results by (file_index, byte_offset) using GPU argsort
+/// for batches >64, falling back to CPU sort for small batches or GPU errors.
+fn gpu_sort_results(results: &mut Vec<ContentMatch>) {
+    const GPU_SORT_THRESHOLD: usize = 64;
+
+    let mut gpu_sorted = false;
+
+    if results.len() > GPU_SORT_THRESHOLD {
+        if let Ok(mut sorter) = forge_sort::GpuSorter::new() {
+            let keys: Vec<u64> = results
+                .iter()
+                .map(|r| ((r.file_index as u64) << 32) | (r.byte_offset as u64))
+                .collect();
+            match sorter.argsort_u64(&keys) {
+                Ok(indices) => {
+                    let sorted: Vec<ContentMatch> = indices
+                        .iter()
+                        .map(|&i| results[i as usize].clone())
+                        .collect();
+                    *results = sorted;
+                    gpu_sorted = true;
+                }
+                Err(e) => {
+                    eprintln!("[gpu-search] argsort_u64 failed: {e}, falling back to CPU sort");
+                }
+            }
+        }
+    }
+
+    if !gpu_sorted {
+        results.sort_by(|a, b| {
+            a.file_index
+                .cmp(&b.file_index)
+                .then(a.byte_offset.cmp(&b.byte_offset))
+        });
+    }
 }
 
 // ============================================================================
@@ -2010,5 +2046,55 @@ mod tests {
             let count = results.iter().filter(|m| m.line_number == line_num).count();
             assert_eq!(count, 1, "Line {} should have 1 'MARK' match, got {}", line_num, count);
         }
+    }
+
+    #[test]
+    fn test_gpu_sort_key_encoding() {
+        // Verify composite key (file_index << 32 | byte_offset) sorts correctly
+        let mut results = vec![
+            ContentMatch { file_index: 2, line_number: 1, column: 0, byte_offset: 100, match_length: 3 },
+            ContentMatch { file_index: 0, line_number: 1, column: 0, byte_offset: 50, match_length: 3 },
+            ContentMatch { file_index: 0, line_number: 1, column: 0, byte_offset: 10, match_length: 3 },
+            ContentMatch { file_index: 1, line_number: 1, column: 0, byte_offset: 0, match_length: 3 },
+        ];
+
+        gpu_sort_results(&mut results);
+
+        assert_eq!(results[0].file_index, 0);
+        assert_eq!(results[0].byte_offset, 10);
+        assert_eq!(results[1].file_index, 0);
+        assert_eq!(results[1].byte_offset, 50);
+        assert_eq!(results[2].file_index, 1);
+        assert_eq!(results[2].byte_offset, 0);
+        assert_eq!(results[3].file_index, 2);
+        assert_eq!(results[3].byte_offset, 100);
+    }
+
+    #[test]
+    fn test_gpu_sort_cpu_fallback() {
+        // With <= 64 results, should use CPU sort (same correct ordering)
+        let mut results = vec![
+            ContentMatch { file_index: 1, line_number: 1, column: 0, byte_offset: 20, match_length: 3 },
+            ContentMatch { file_index: 0, line_number: 1, column: 0, byte_offset: 5, match_length: 3 },
+        ];
+
+        gpu_sort_results(&mut results);
+
+        assert_eq!(results[0].file_index, 0);
+        assert_eq!(results[1].file_index, 1);
+    }
+
+    #[test]
+    fn test_gpu_sort_edge_values() {
+        // Test with edge values: max u32 file_index, max u32 byte_offset
+        let mut results = vec![
+            ContentMatch { file_index: usize::MAX & 0xFFFF_FFFF, line_number: 0, column: 0, byte_offset: u32::MAX, match_length: 1 },
+            ContentMatch { file_index: 0, line_number: 0, column: 0, byte_offset: 0, match_length: 1 },
+        ];
+
+        gpu_sort_results(&mut results);
+
+        assert_eq!(results[0].file_index, 0);
+        assert_eq!(results[0].byte_offset, 0);
     }
 }

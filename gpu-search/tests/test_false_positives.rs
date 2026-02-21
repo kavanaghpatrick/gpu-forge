@@ -543,7 +543,7 @@ fn test_stale_buffer_after_reset() {
     println!("\n=== Phase 3: Inspecting metadata buffer for stale data ===");
 
     let meta_after_reload = engine.inspect_metadata_buffer();
-    let chunk_meta_size = 24; // sizeof(ChunkMetadata)
+    let chunk_meta_size = 32; // sizeof(ChunkMetadata) -- 24 base + 8 buffer_offset
 
     let mut stale_chunks_found = 0;
     let mut stale_details = Vec::new();

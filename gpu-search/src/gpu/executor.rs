@@ -75,6 +75,7 @@ struct ChunkMetadata {
     offset_in_file: u64,
     chunk_length: u32,
     flags: u32,
+    buffer_offset: u64,
 }
 
 #[repr(C)]
@@ -101,7 +102,7 @@ struct GpuMatchResult {
 
 const _: () = assert!(std::mem::size_of::<GpuSearchParams>() == 16);
 const _: () = assert!(std::mem::size_of::<GpuMatchResult>() == 32);
-const _: () = assert!(std::mem::size_of::<ChunkMetadata>() == 24);
+const _: () = assert!(std::mem::size_of::<ChunkMetadata>() == 32);
 
 // ============================================================================
 // Engine state
@@ -628,6 +629,7 @@ fn execute_search_on_gpu(
                     offset_in_file: offset as u64,
                     chunk_length: chunk_len as u32,
                     flags,
+                    buffer_offset: 0,
                 };
 
                 chunk_count += 1;

@@ -1347,57 +1347,50 @@ impl SearchOrchestrator {
             }
         }
 
-        // DEFERRED LINE COUNTING: resolve_match() is the sole source of
+        // DEFERRED LINE COUNTING: resolve_from_cache() is the sole source of
         // truth for line numbers.  GPU's m.line_number (local to 64B thread
         // window) is intentionally ignored -- only byte_offset is used.
+        //
+        // FileCache: results are sorted by (file_index, byte_offset), so
+        // consecutive matches are in the same file. We load each file once
+        // and resolve all its matches from the cache.
         let resolve_start = Instant::now();
         let mut content_matches = Vec::new();
-
-        // File-level content validation cache: tracks whether each file
-        // actually contains the search pattern. Defense-in-depth against
-        // byte_offset mapping to the wrong file entirely.
-        let mut file_contains_pattern: std::collections::HashMap<PathBuf, bool> =
-            std::collections::HashMap::new();
-        let pattern_lower = pattern.to_lowercase();
+        let mut file_cache: Option<FileCache> = None;
 
         for m in &gpu_results {
             if content_matches.len() >= remaining_budget {
                 break;
             }
-            if let Some((line_number, line_content, context_before, context_after, match_start)) =
-                resolve_match(&m.file_path, m.byte_offset as usize, pattern, options.case_sensitive)
-            {
-                // FILE-LEVEL VALIDATION GATE: verify the file itself contains
-                // the pattern. resolve_match already confirms the pattern is
-                // in the resolved line, but this catches the hypothetical case
-                // where byte_offset maps to the wrong file entirely.
-                let file_valid = *file_contains_pattern
-                    .entry(m.file_path.clone())
-                    .or_insert_with(|| {
-                        match std::fs::read(&m.file_path) {
-                            Ok(content) => {
-                                let text = String::from_utf8_lossy(&content);
-                                if options.case_sensitive {
-                                    text.contains(pattern)
-                                } else {
-                                    text.to_lowercase().contains(&pattern_lower)
-                                }
-                            }
-                            Err(_) => false,
-                        }
-                    });
 
-                if !file_valid {
+            // Refresh cache when file changes
+            let need_refresh = file_cache
+                .as_ref()
+                .map(|c| c.path != m.file_path)
+                .unwrap_or(true);
+            if need_refresh {
+                file_cache = FileCache::load(&m.file_path, pattern, options.case_sensitive);
+            }
+
+            let cache = match &file_cache {
+                Some(c) if c.contains_pattern => c,
+                Some(c) => {
+                    // File doesn't contain pattern — skip all matches for this file
                     eprintln!(
                         "[gpu-search] FILE-LEVEL REJECTION: file does not contain pattern \
                          file={} pattern='{}' byte_offset={}",
-                        m.file_path.display(),
+                        c.path.display(),
                         pattern,
                         m.byte_offset,
                     );
                     continue;
                 }
+                None => continue, // File unreadable
+            };
 
+            if let Some((line_number, line_content, context_before, context_after, match_start)) =
+                resolve_from_cache(cache, m.byte_offset as usize, pattern, options.case_sensitive)
+            {
                 let match_end = match_start + pattern.len();
                 content_matches.push(ContentMatch {
                     path: m.file_path.clone(),
@@ -1995,8 +1988,113 @@ fn walk_and_filter(
 // Helper: resolve GPU match to line-level content match
 // ============================================================================
 
-/// Resolve a GPU byte offset to line number, line content, and context.
-///
+// ============================================================================
+// FileCache: single-file content cache for the resolve loop
+// ============================================================================
+
+/// Caches one file's content + precomputed line structure for the resolve loop.
+/// Since results are sorted by file_index, consecutive matches hit the same file.
+/// This eliminates redundant fs::read() calls (N reads -> U unique-file reads).
+struct FileCache {
+    path: PathBuf,
+    content: Vec<u8>,
+    lines: Vec<String>,
+    line_offsets: Vec<usize>, // byte offset where each line starts
+    contains_pattern: bool,
+}
+
+impl FileCache {
+    /// Load a file and precompute line structure. Returns None if unreadable.
+    fn load(path: &Path, pattern: &str, case_sensitive: bool) -> Option<Self> {
+        let content = std::fs::read(path).ok()?;
+        let text = String::from_utf8_lossy(&content);
+
+        let contains_pattern = if case_sensitive {
+            text.contains(pattern)
+        } else {
+            text.to_lowercase().contains(&pattern.to_lowercase())
+        };
+
+        // Precompute line offsets and line strings
+        let mut lines = Vec::new();
+        let mut line_offsets = Vec::new();
+        let mut offset = 0usize;
+
+        for line in text.lines() {
+            line_offsets.push(offset);
+            lines.push(line.to_string());
+            // Advance past line content + newline character(s)
+            offset += line.len();
+            // Check for \r\n vs \n
+            if content.get(offset) == Some(&b'\r') {
+                offset += 2; // \r\n
+            } else if offset < content.len() {
+                offset += 1; // \n
+            }
+        }
+
+        Some(FileCache {
+            path: path.to_path_buf(),
+            content,
+            lines,
+            line_offsets,
+            contains_pattern,
+        })
+    }
+}
+
+/// Resolve a match using cached file content instead of re-reading from disk.
+/// Same logic as resolve_match() but operates on precomputed line structure.
+#[allow(clippy::type_complexity)]
+fn resolve_from_cache(
+    cache: &FileCache,
+    byte_offset: usize,
+    pattern: &str,
+    case_sensitive: bool,
+) -> Option<(usize, String, Vec<String>, Vec<String>, usize)> {
+    if byte_offset >= cache.content.len() {
+        return None;
+    }
+
+    // Binary search for the line containing byte_offset
+    let target_line = match cache.line_offsets.binary_search(&byte_offset) {
+        Ok(i) => i,         // Exact match: byte_offset is at line start
+        Err(i) => i.saturating_sub(1), // Between two lines: take the previous one
+    };
+
+    let line_content = cache.lines.get(target_line)?.to_string();
+    let line_start = cache.line_offsets[target_line];
+    let expected_col = byte_offset - line_start;
+
+    // Find the actual pattern match within the line
+    let match_col = if case_sensitive {
+        line_content.find(pattern)?
+    } else {
+        line_content.to_lowercase().find(&pattern.to_lowercase())?
+    };
+
+    // Diagnostic: validate GPU byte_offset against find() position
+    let col_diff = match_col.abs_diff(expected_col);
+    if col_diff > pattern.len() {
+        eprintln!(
+            "[gpu-search] byte_offset discrepancy: file={} byte_offset={} expected_col={} match_col={} diff={} pattern='{}'",
+            cache.path.display(), byte_offset, expected_col, match_col, col_diff, pattern
+        );
+    }
+
+    // Context: 2 lines before and after
+    let context_before: Vec<String> = (target_line.saturating_sub(2)..target_line)
+        .filter_map(|i| cache.lines.get(i).cloned())
+        .collect();
+    let context_after: Vec<String> =
+        (target_line + 1..=(target_line + 2).min(cache.lines.len().saturating_sub(1)))
+            .filter_map(|i| cache.lines.get(i).cloned())
+            .collect();
+
+    // Line number is 1-based
+    Some((target_line + 1, line_content, context_before, context_after, match_col))
+}
+
 /// This is the **deferred line counting** implementation (KB #1320, #1322):
 /// the GPU kernel only records byte offsets; this CPU function reads the file
 /// and counts newlines up to `byte_offset` to derive the authoritative
@@ -3266,5 +3364,163 @@ mod tests {
             response4.content_matches.len(), patrick_match_files.len(), expected_patrick_files);
         println!("  no-match query: 0 matches (correct)");
         println!("  No false positives in any search");
+    }
+
+    // ====================================================================
+    // FileCache + resolve_from_cache unit tests
+    // ====================================================================
+
+    #[test]
+    fn test_file_cache_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "line one\nline two has pattern\nline three\n").unwrap();
+
+        let cache = FileCache::load(&file, "pattern", true).unwrap();
+        assert_eq!(cache.lines.len(), 3);
+        assert_eq!(cache.line_offsets, vec![0, 9, 30]);
+        assert!(cache.contains_pattern);
+
+        // Pattern not in file
+        let cache2 = FileCache::load(&file, "missing", true).unwrap();
+        assert!(!cache2.contains_pattern);
+    }
+
+    #[test]
+    fn test_resolve_from_cache_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        std::fs::write(&file, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+
+        let cache = FileCache::load(&file, "println", true).unwrap();
+
+        // byte_offset for "println" is at position 17 ("fn main() {\n    p")
+        let result = resolve_from_cache(&cache, 17, "println", true);
+        assert!(result.is_some());
+        let (line_num, line_content, ctx_before, ctx_after, match_col) = result.unwrap();
+        assert_eq!(line_num, 2); // 1-based
+        assert!(line_content.contains("println"));
+        assert_eq!(ctx_before.len(), 1); // "fn main() {"
+        assert_eq!(ctx_after.len(), 1);  // "}"
+        assert_eq!(match_col, 4); // "    println" -> col 4
+    }
+
+    #[test]
+    fn test_resolve_from_cache_binary_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("multi.txt");
+        // Build a file with known byte offsets
+        let content = "aaa\nbbb\nccc\nddd\neee\n";
+        std::fs::write(&file, content).unwrap();
+
+        let cache = FileCache::load(&file, "ccc", true).unwrap();
+        assert_eq!(cache.line_offsets, vec![0, 4, 8, 12, 16]);
+
+        // byte_offset 8 -> line "ccc" (line 3, 1-based)
+        let result = resolve_from_cache(&cache, 8, "ccc", true);
+        assert!(result.is_some());
+        let (line_num, line_content, _, _, _) = result.unwrap();
+        assert_eq!(line_num, 3);
+        assert_eq!(line_content, "ccc");
+
+        // byte_offset at exact line boundary (0 -> line 1)
+        let result = resolve_from_cache(&cache, 0, "aaa", true);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, 1);
+
+        // byte_offset out of bounds
+        let result = resolve_from_cache(&cache, 999, "aaa", true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_from_cache_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("case.txt");
+        std::fs::write(&file, "Hello World\nfoo bar\n").unwrap();
+
+        let cache = FileCache::load(&file, "hello", false).unwrap();
+        assert!(cache.contains_pattern);
+
+        let result = resolve_from_cache(&cache, 0, "hello", false);
+        assert!(result.is_some());
+        let (_, line_content, _, _, match_col) = result.unwrap();
+        assert_eq!(line_content, "Hello World");
+        assert_eq!(match_col, 0);
+    }
+
+    #[test]
+    fn test_resolve_benchmark() {
+        // Benchmark: resolve_match (per-call fs::read) vs resolve_from_cache
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 10 files with known patterns
+        let mut files = Vec::new();
+        for i in 0..10 {
+            let file = dir.path().join(format!("file_{}.txt", i));
+            let mut content = String::new();
+            for line in 0..100 {
+                if line % 10 == 0 {
+                    content.push_str(&format!("line {} has pattern_match in file {}\n", line, i));
+                } else {
+                    content.push_str(&format!("filler line {} in file {} with no match\n", line, i));
+                }
+            }
+            std::fs::write(&file, &content).unwrap();
+            files.push(file);
+        }
+
+        // Simulate 100 matches: 10 per file (like real gpu-search batch)
+        let pattern = "pattern_match";
+        let mut offsets = Vec::new();
+        for file in &files {
+            let content = std::fs::read(file).unwrap();
+            let text = String::from_utf8_lossy(&content);
+            let mut pos = 0;
+            while let Some(idx) = text[pos..].find(pattern) {
+                offsets.push((file.clone(), pos + idx));
+                pos += idx + pattern.len();
+            }
+        }
+        assert!(!offsets.is_empty());
+        let total_matches = offsets.len();
+
+        // --- Benchmark: per-match resolve_match ---
+        let start = std::time::Instant::now();
+        let mut old_count = 0;
+        for (path, offset) in &offsets {
+            if resolve_match(path, *offset, pattern, true).is_some() {
+                old_count += 1;
+            }
+        }
+        let old_time = start.elapsed();
+
+        // --- Benchmark: FileCache resolve_from_cache ---
+        let start = std::time::Instant::now();
+        let mut new_count = 0;
+        let mut cache: Option<FileCache> = None;
+        for (path, offset) in &offsets {
+            let need_refresh = cache.as_ref().map(|c| c.path != *path).unwrap_or(true);
+            if need_refresh {
+                cache = FileCache::load(path, pattern, true);
+            }
+            if let Some(c) = &cache {
+                if c.contains_pattern {
+                    if resolve_from_cache(c, *offset, pattern, true).is_some() {
+                        new_count += 1;
+                    }
+                }
+            }
+        }
+        let new_time = start.elapsed();
+
+        assert_eq!(old_count, new_count, "Both paths should find same matches");
+
+        let speedup = old_time.as_secs_f64() / new_time.as_secs_f64();
+        println!("\n=== RESOLVE BENCHMARK ({} matches across {} files) ===", total_matches, files.len());
+        println!("  Old (per-match fs::read): {:?}", old_time);
+        println!("  New (FileCache):          {:?}", new_time);
+        println!("  Speedup:                  {:.1}x", speedup);
+        println!("  Matches resolved:         {}", new_count);
     }
 }

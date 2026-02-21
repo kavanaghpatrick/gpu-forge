@@ -26,6 +26,7 @@ struct ChunkMetadata {
     ulong offset_in_file;
     uint chunk_length;
     uint flags;  // Bit 0: is_text, Bit 1: is_first, Bit 2: is_last
+    ulong buffer_offset;  // Absolute byte offset in contiguous buffer (zero-copy path)
 };
 
 // Search parameters for chunked content search kernels

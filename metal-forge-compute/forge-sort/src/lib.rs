@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-use forge_primitives::pso_cache::FnConstant;
-use forge_primitives::{alloc_buffer, MetalContext, PsoCache};
+mod metal_helpers;
+use metal_helpers::{alloc_buffer, init_device_and_queue, FnConstant, PsoCache};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
@@ -246,6 +246,7 @@ impl<T: SortKey> SortBuffer<T> {
 }
 
 /// Encode and execute the 4-dispatch sort pipeline. Shared by sort_u32 and sort_buffer.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_sort(
     queue: &ProtocolObject<dyn MTLCommandQueue>,
     library: &ProtocolObject<dyn MTLLibrary>,
@@ -448,6 +449,7 @@ fn encode_transform_64(
 
 /// Encode the 4-dispatch sort pipeline onto an existing encoder.
 /// Like `dispatch_sort` but takes an encoder instead of creating its own command buffer.
+#[allow(clippy::too_many_arguments)]
 fn encode_sort_pipeline(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     library: &ProtocolObject<dyn MTLLibrary>,
@@ -557,14 +559,13 @@ fn encode_sort_pipeline(
 impl GpuSorter {
     /// Initialize Metal device, queue, and compile 4 sort kernel PSOs.
     pub fn new() -> Result<Self, SortError> {
-        let ctx = MetalContext::new();
+        let (device, queue) = init_device_and_queue();
 
         // Load our sort-specific metallib (embedded path from build.rs)
         let metallib_path = env!("SORT_METALLIB_PATH");
         let path_ns = NSString::from_str(metallib_path);
         #[allow(deprecated)]
-        let library = ctx
-            .device
+        let library = device
             .newLibraryWithFile_error(&path_ns)
             .map_err(|e| SortError::ShaderCompilation(format!("{:?}", e)))?;
 
@@ -618,8 +619,8 @@ impl GpuSorter {
         );
 
         Ok(Self {
-            device: ctx.device,
-            queue: ctx.queue,
+            device,
+            queue,
             library,
             pso_cache,
             buf_a: None,
@@ -1198,11 +1199,13 @@ impl GpuSorter {
     ///
     /// Architecture: MSD histogram (byte 7) + MSD prep + MSD scatter (byte 7)
     /// + 3 inner fused dispatches (bytes 4-6, bytes 1-3, byte 0).
+    ///
     /// Final output in buf_a (same as 32-bit).
     ///
     /// When `with_values` is true, uses HAS_VALUES=true + IS_64BIT=true PSOs and binds
     /// value buffers at buffer(4) and buffer(5) for scatter and inner fused kernels.
     /// Values are always u32 (4 bytes) even though keys are 8 bytes.
+    #[allow(clippy::too_many_arguments)]
     fn encode_sort_pipeline_64(
         &mut self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -1420,6 +1423,7 @@ impl GpuSorter {
     ///
     /// When `with_values` is true, uses HAS_VALUES=true PSOs and binds value buffers
     /// at buffer(4) and buffer(5) for scatter and inner fused kernels.
+    #[allow(clippy::too_many_arguments)]
     fn encode_sort_pipeline_full(
         &mut self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,

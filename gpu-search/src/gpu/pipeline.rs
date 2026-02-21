@@ -16,6 +16,7 @@ use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLLibrary};
 pub const SEARCH_KERNELS: &[&str] = &[
     "content_search_kernel",
     "turbo_search_kernel",
+    "content_search_zerocopy_kernel",
     "batch_search_kernel",
     "path_filter_kernel",
 ];
@@ -119,12 +120,27 @@ impl PsoCache {
             let build_dir = dir.join("build");
             if build_dir.exists() {
                 if let Ok(entries) = std::fs::read_dir(&build_dir) {
+                    // Prefer gpu-search-* directories to avoid picking up
+                    // metallibs from dependencies (e.g. forge-sort).
+                    let mut fallback_metallib = None;
                     for entry in entries.flatten() {
                         let path = entry.path();
                         let metallib = path.join("out").join("shaders.metallib");
                         if metallib.exists() {
-                            return metallib.to_string_lossy().into_owned();
+                            let dir_name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            if dir_name.starts_with("gpu-search-") {
+                                return metallib.to_string_lossy().into_owned();
+                            }
+                            if fallback_metallib.is_none() {
+                                fallback_metallib = Some(metallib);
+                            }
                         }
+                    }
+                    if let Some(metallib) = fallback_metallib {
+                        return metallib.to_string_lossy().into_owned();
                     }
                 }
             }
@@ -154,8 +170,8 @@ mod tests {
 
         let cache = PsoCache::new(&device);
 
-        // All 4 kernels should be cached
-        assert_eq!(cache.len(), 4, "Expected 4 cached PSOs");
+        // All 5 kernels should be cached
+        assert_eq!(cache.len(), 5, "Expected 5 cached PSOs");
         assert!(!cache.is_empty());
 
         // Each kernel should be retrievable
