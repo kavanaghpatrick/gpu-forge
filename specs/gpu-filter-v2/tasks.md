@@ -145,7 +145,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-3, FR-13, AC-2.4_
   - _Design: Section 2 — BooleanMask_
 
-- [ ] 2.2 Add multi-column predicate bitmap kernel
+- [x] 2.2 Add multi-column predicate bitmap kernel
   - **Do**:
     1. Add `filter_multi_bitmap_scan` kernel to filter.metal that:
        - Accepts up to 4 column buffers via buffer bindings (buffer 0-3)

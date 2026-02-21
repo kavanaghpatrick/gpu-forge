@@ -4,13 +4,14 @@ using namespace metal;
 // =================================================================
 // forge-filter: GPU filter + compact kernels
 //
-// 6 kernels:
-//   1. filter_predicate_scan — fused predicate eval + local scan + partials
-//   2. filter_scan_partials  — single-TG exclusive scan of partials array
-//   3. filter_scatter        — re-eval + local scan + global prefix scatter
-//   4. filter_atomic_scatter — unordered single-dispatch atomic scatter
-//   5. filter_bitmap_scan    — predicate eval + bitmap write + partials
-//   6. filter_bitmap_scatter — bitmap read + local scan + global prefix scatter
+// 7 kernels:
+//   1. filter_predicate_scan      — fused predicate eval + local scan + partials
+//   2. filter_scan_partials       — single-TG exclusive scan of partials array
+//   3. filter_scatter             — re-eval + local scan + global prefix scatter
+//   4. filter_atomic_scatter      — unordered single-dispatch atomic scatter
+//   5. filter_bitmap_scan         — predicate eval + bitmap write + partials
+//   6. filter_bitmap_scatter      — bitmap read + local scan + global prefix scatter
+//   7. filter_multi_bitmap_scan   — multi-column predicate eval + bitmap + partials
 //
 // Supports 32-bit (uint/int/float) and 64-bit (ulong/long/double) types
 // via IS_64BIT function constant. Predicate type eliminated at PSO
@@ -37,6 +38,22 @@ constant bool OUTPUT_VALS [[function_constant(3)]]; // true=write values to outp
 constant uint DATA_TYPE   [[function_constant(4)]]; // 0=uint/ulong, 1=int/long, 2=float/double
 constant bool HAS_NULLS   [[function_constant(5)]]; // true=check validity bitmap for NULLs
 
+// --- Multi-Column Function Constants (indices 6-19) ---
+constant uint N_COLUMNS    [[function_constant(6)]];   // number of active columns (1-4)
+constant uint PRED_TYPE_A  [[function_constant(7)]];   // predicate type for column A
+constant uint PRED_TYPE_B  [[function_constant(8)]];   // predicate type for column B
+constant uint PRED_TYPE_C  [[function_constant(9)]];   // predicate type for column C
+constant uint PRED_TYPE_D  [[function_constant(10)]];  // predicate type for column D
+constant uint DATA_TYPE_A  [[function_constant(11)]];  // data type for column A
+constant uint DATA_TYPE_B  [[function_constant(12)]];  // data type for column B
+constant uint DATA_TYPE_C  [[function_constant(13)]];  // data type for column C
+constant uint DATA_TYPE_D  [[function_constant(14)]];  // data type for column D
+constant bool IS_64BIT_A   [[function_constant(15)]];  // 64-bit flag for column A
+constant bool IS_64BIT_B   [[function_constant(16)]];  // 64-bit flag for column B
+constant bool IS_64BIT_C   [[function_constant(17)]];  // 64-bit flag for column C
+constant bool IS_64BIT_D   [[function_constant(18)]];  // 64-bit flag for column D
+constant bool LOGIC_AND    [[function_constant(19)]];  // true=AND, false=OR
+
 // Resolved with defaults (used when constants not set)
 constant uint pred_type   = is_function_constant_defined(PRED_TYPE)   ? PRED_TYPE   : 0u;
 constant bool is_64bit    = is_function_constant_defined(IS_64BIT)    ? IS_64BIT    : false;
@@ -44,6 +61,22 @@ constant bool output_idx  = is_function_constant_defined(OUTPUT_IDX)  ? OUTPUT_I
 constant bool output_vals = is_function_constant_defined(OUTPUT_VALS) ? OUTPUT_VALS : true;
 constant uint data_type   = is_function_constant_defined(DATA_TYPE)   ? DATA_TYPE   : 0u;
 constant bool has_nulls   = is_function_constant_defined(HAS_NULLS)   ? HAS_NULLS   : false;
+
+// Multi-column resolved with defaults
+constant uint n_columns   = is_function_constant_defined(N_COLUMNS)   ? N_COLUMNS   : 1u;
+constant uint pred_type_a = is_function_constant_defined(PRED_TYPE_A) ? PRED_TYPE_A : 0u;
+constant uint pred_type_b = is_function_constant_defined(PRED_TYPE_B) ? PRED_TYPE_B : 0u;
+constant uint pred_type_c = is_function_constant_defined(PRED_TYPE_C) ? PRED_TYPE_C : 0u;
+constant uint pred_type_d = is_function_constant_defined(PRED_TYPE_D) ? PRED_TYPE_D : 0u;
+constant uint data_type_a = is_function_constant_defined(DATA_TYPE_A) ? DATA_TYPE_A : 0u;
+constant uint data_type_b = is_function_constant_defined(DATA_TYPE_B) ? DATA_TYPE_B : 0u;
+constant uint data_type_c = is_function_constant_defined(DATA_TYPE_C) ? DATA_TYPE_C : 0u;
+constant uint data_type_d = is_function_constant_defined(DATA_TYPE_D) ? DATA_TYPE_D : 0u;
+constant bool is_64bit_a  = is_function_constant_defined(IS_64BIT_A)  ? IS_64BIT_A  : false;
+constant bool is_64bit_b  = is_function_constant_defined(IS_64BIT_B)  ? IS_64BIT_B  : false;
+constant bool is_64bit_c  = is_function_constant_defined(IS_64BIT_C)  ? IS_64BIT_C  : false;
+constant bool is_64bit_d  = is_function_constant_defined(IS_64BIT_D)  ? IS_64BIT_D  : false;
+constant bool logic_and   = is_function_constant_defined(LOGIC_AND)   ? LOGIC_AND   : true;
 
 // --- Parameter Structs (must match Rust repr(C) layout) ---
 
@@ -63,6 +96,25 @@ struct FilterParams64 {
     uint hi_hi;    // high 32 bits of hi threshold
     uint _pad0;
     uint _pad1;
+};
+
+// Multi-column params: thresholds for up to 4 columns.
+// Each column gets 4 uint fields (lo_lo, lo_hi, hi_lo, hi_hi).
+// For 32-bit types, only lo_lo (=lo_bits) and hi_lo (=hi_bits) are used;
+// lo_hi and hi_hi are zero padding.
+struct MultiColumnParams {
+    uint element_count;
+    uint num_tiles;
+    uint _pad0;
+    uint _pad1;
+    // Column A thresholds
+    uint a_lo_lo;  uint a_lo_hi;  uint a_hi_lo;  uint a_hi_hi;
+    // Column B thresholds
+    uint b_lo_lo;  uint b_lo_hi;  uint b_hi_lo;  uint b_hi_hi;
+    // Column C thresholds
+    uint c_lo_lo;  uint c_lo_hi;  uint c_hi_lo;  uint c_hi_hi;
+    // Column D thresholds
+    uint d_lo_lo;  uint d_lo_hi;  uint d_hi_lo;  uint d_hi_hi;
 };
 
 // --- Predicate Evaluation ---
@@ -929,5 +981,295 @@ kernel void filter_bitmap_scatter(
             threadgroup_barrier(mem_flags::mem_threadgroup);
             running_offset += round_total_tg;
         }
+    }
+}
+
+// =================================================================
+// Multi-column predicate evaluation helpers
+//
+// Each column can have its own pred_type (GT/LT/GE/LE/EQ/NE/BETWEEN/TRUE),
+// data_type (0=uint, 1=int, 2=float), and is_64bit flag.
+// These helpers accept the pred/data type as runtime values but are
+// called with function-constant-derived values, so the compiler
+// eliminates dead branches at PSO specialization time.
+// =================================================================
+
+inline bool eval_column_32(
+    device const uint* col,
+    uint idx,
+    uint lo_lo, uint hi_lo,
+    uint p_type, uint d_type
+) {
+    uint raw = col[idx];
+    if (d_type == 1u) {
+        // Signed int
+        int val = as_type<int>(raw);
+        int lo  = as_type<int>(lo_lo);
+        int hi  = as_type<int>(hi_lo);
+        if (p_type == 0u) return val > lo;
+        if (p_type == 1u) return val < lo;
+        if (p_type == 2u) return val >= lo;
+        if (p_type == 3u) return val <= lo;
+        if (p_type == 4u) return val == lo;
+        if (p_type == 5u) return val != lo;
+        if (p_type == 6u) return val >= lo && val <= hi;
+        return true;
+    } else if (d_type == 2u) {
+        // Float
+        float val = as_type<float>(raw);
+        float lo  = as_type<float>(lo_lo);
+        float hi  = as_type<float>(hi_lo);
+        if (p_type == 0u) return val > lo;
+        if (p_type == 1u) return val < lo;
+        if (p_type == 2u) return val >= lo;
+        if (p_type == 3u) return val <= lo;
+        if (p_type == 4u) return val == lo;
+        if (p_type == 5u) return val != lo;
+        if (p_type == 6u) return val >= lo && val <= hi;
+        return true;
+    } else {
+        // Unsigned uint
+        uint val = raw;
+        if (p_type == 0u) return val > lo_lo;
+        if (p_type == 1u) return val < lo_lo;
+        if (p_type == 2u) return val >= lo_lo;
+        if (p_type == 3u) return val <= lo_lo;
+        if (p_type == 4u) return val == lo_lo;
+        if (p_type == 5u) return val != lo_lo;
+        if (p_type == 6u) return val >= lo_lo && val <= hi_lo;
+        return true;
+    }
+}
+
+inline bool eval_column_64(
+    device const uint* col,
+    uint idx,
+    uint lo_lo, uint lo_hi, uint hi_lo, uint hi_hi,
+    uint p_type, uint d_type
+) {
+    device const ulong* col64 = reinterpret_cast<device const ulong*>(col);
+    ulong raw = col64[idx];
+    ulong lo_raw = ulong(lo_lo) | (ulong(lo_hi) << 32u);
+    ulong hi_raw = ulong(hi_lo) | (ulong(hi_hi) << 32u);
+
+    if (d_type == 1u) {
+        // Signed long
+        long val = as_type<long>(raw);
+        long lo  = as_type<long>(lo_raw);
+        long hi  = as_type<long>(hi_raw);
+        if (p_type == 0u) return val > lo;
+        if (p_type == 1u) return val < lo;
+        if (p_type == 2u) return val >= lo;
+        if (p_type == 3u) return val <= lo;
+        if (p_type == 4u) return val == lo;
+        if (p_type == 5u) return val != lo;
+        if (p_type == 6u) return val >= lo && val <= hi;
+        return true;
+    } else if (d_type == 2u) {
+        // f64 via raw bits
+        if (is_f64_nan(raw)) {
+            return p_type == 5u; // NaN != anything = true
+        }
+        if (p_type == 5u) {
+            if (is_f64_nan(lo_raw)) return true;
+            ulong v_abs = raw & 0x7FFFFFFFFFFFFFFFul;
+            ulong l_abs = lo_raw & 0x7FFFFFFFFFFFFFFFul;
+            if (v_abs == 0ul && l_abs == 0ul) return false;
+            return raw != lo_raw;
+        }
+        int cmp_lo = f64_compare(raw, lo_raw);
+        if (cmp_lo == -2) return false;
+        if (p_type == 0u) return cmp_lo > 0;
+        if (p_type == 1u) return cmp_lo < 0;
+        if (p_type == 2u) return cmp_lo >= 0;
+        if (p_type == 3u) return cmp_lo <= 0;
+        if (p_type == 4u) return cmp_lo == 0;
+        if (p_type == 6u) {
+            if (cmp_lo < 0) return false;
+            int cmp_hi = f64_compare(raw, hi_raw);
+            if (cmp_hi == -2) return false;
+            return cmp_hi <= 0;
+        }
+        return true;
+    } else {
+        // Unsigned ulong
+        if (p_type == 0u) return raw > lo_raw;
+        if (p_type == 1u) return raw < lo_raw;
+        if (p_type == 2u) return raw >= lo_raw;
+        if (p_type == 3u) return raw <= lo_raw;
+        if (p_type == 4u) return raw == lo_raw;
+        if (p_type == 5u) return raw != lo_raw;
+        if (p_type == 6u) return raw >= lo_raw && raw <= hi_raw;
+        return true;
+    }
+}
+
+// =================================================================
+// Kernel 7: filter_multi_bitmap_scan
+//
+// Multi-column predicate evaluation + bitmap write + partials.
+// Accepts up to 4 column data buffers. Evaluates each column's
+// predicate independently, then combines results with AND or OR
+// (controlled by LOGIC_AND function constant).
+//
+// Function constants control per-column configuration:
+//   N_COLUMNS (6)          — number of active columns (1-4)
+//   PRED_TYPE_A..D (7-10)  — predicate type per column
+//   DATA_TYPE_A..D (11-14) — data type per column
+//   IS_64BIT_A..D (15-18)  — 64-bit flag per column
+//   LOGIC_AND (19)         — true=AND combine, false=OR combine
+//
+// All columns must have the same element count. Tile size is
+// FILTER_TILE_32 (4096) — all columns indexed identically.
+// For 64-bit columns, the column buffer holds ulong data but
+// element indexing uses the same idx (column buffer is 2x larger).
+//
+// Buffer layout:
+//   buffer(0) = column A data
+//   buffer(1) = column B data
+//   buffer(2) = column C data
+//   buffer(3) = column D data
+//   buffer(4) = bitmap output (atomic_uint)
+//   buffer(5) = partials output (one uint per threadgroup)
+//   buffer(6) = params (MultiColumnParams)
+//
+// Dispatch: ceil(N / FILTER_TILE_32) threadgroups x 256 threads
+// TG memory: 32 bytes (simd_totals[8])
+// =================================================================
+
+kernel void filter_multi_bitmap_scan(
+    device const uint*       col_a        [[buffer(0)]],
+    device const uint*       col_b        [[buffer(1)]],
+    device const uint*       col_c        [[buffer(2)]],
+    device const uint*       col_d        [[buffer(3)]],
+    device atomic_uint*      bitmap       [[buffer(4)]],
+    device uint*             partials     [[buffer(5)]],
+    constant MultiColumnParams& params    [[buffer(6)]],
+    uint lid       [[thread_position_in_threadgroup]],
+    uint tg_idx    [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_idx  [[simdgroup_index_in_threadgroup]]
+)
+{
+    threadgroup uint simd_totals[FILTER_NUM_SGS];
+
+    uint n = params.element_count;
+    uint base = tg_idx * FILTER_TILE_32;
+    uint thread_match_count = 0u;
+
+    for (uint e = 0u; e < FILTER_ELEMS_32; e++) {
+        uint idx = base + e * FILTER_THREADS + lid;
+        bool combined;
+
+        if (idx < n) {
+            // Initialize combined result based on logic mode
+            // AND: start true, any false → false
+            // OR:  start false, any true → true
+            combined = logic_and;
+
+            // --- Column A (always evaluated) ---
+            {
+                bool result_a;
+                if (is_64bit_a) {
+                    result_a = eval_column_64(col_a, idx,
+                        params.a_lo_lo, params.a_lo_hi,
+                        params.a_hi_lo, params.a_hi_hi,
+                        pred_type_a, data_type_a);
+                } else {
+                    result_a = eval_column_32(col_a, idx,
+                        params.a_lo_lo, params.a_hi_lo,
+                        pred_type_a, data_type_a);
+                }
+                if (logic_and) combined = combined && result_a;
+                else           combined = combined || result_a;
+            }
+
+            // --- Column B (if n_columns >= 2) ---
+            if (n_columns >= 2u) {
+                bool result_b;
+                if (is_64bit_b) {
+                    result_b = eval_column_64(col_b, idx,
+                        params.b_lo_lo, params.b_lo_hi,
+                        params.b_hi_lo, params.b_hi_hi,
+                        pred_type_b, data_type_b);
+                } else {
+                    result_b = eval_column_32(col_b, idx,
+                        params.b_lo_lo, params.b_hi_lo,
+                        pred_type_b, data_type_b);
+                }
+                if (logic_and) combined = combined && result_b;
+                else           combined = combined || result_b;
+            }
+
+            // --- Column C (if n_columns >= 3) ---
+            if (n_columns >= 3u) {
+                bool result_c;
+                if (is_64bit_c) {
+                    result_c = eval_column_64(col_c, idx,
+                        params.c_lo_lo, params.c_lo_hi,
+                        params.c_hi_lo, params.c_hi_hi,
+                        pred_type_c, data_type_c);
+                } else {
+                    result_c = eval_column_32(col_c, idx,
+                        params.c_lo_lo, params.c_hi_lo,
+                        pred_type_c, data_type_c);
+                }
+                if (logic_and) combined = combined && result_c;
+                else           combined = combined || result_c;
+            }
+
+            // --- Column D (if n_columns >= 4) ---
+            if (n_columns >= 4u) {
+                bool result_d;
+                if (is_64bit_d) {
+                    result_d = eval_column_64(col_d, idx,
+                        params.d_lo_lo, params.d_lo_hi,
+                        params.d_hi_lo, params.d_hi_hi,
+                        pred_type_d, data_type_d);
+                } else {
+                    result_d = eval_column_32(col_d, idx,
+                        params.d_lo_lo, params.d_hi_lo,
+                        pred_type_d, data_type_d);
+                }
+                if (logic_and) combined = combined && result_d;
+                else           combined = combined || result_d;
+            }
+        } else {
+            combined = false;
+        }
+
+        // Manual ballot: butterfly reduction packs 32 results into one uint
+        uint ballot_bits = manual_ballot(combined, simd_lane);
+
+        // Lane 0 of each simdgroup writes ballot word to bitmap
+        if (simd_lane == 0u) {
+            uint bitmap_word_idx = (base + e * FILTER_THREADS + simd_idx * 32u) / 32u;
+            atomic_store_explicit(&bitmap[bitmap_word_idx],
+                                 ballot_bits, memory_order_relaxed);
+        }
+
+        // Each thread counts its own match
+        thread_match_count += uint(combined);
+    }
+
+    // --- SIMD prefix sum ---
+    uint simd_prefix = simd_prefix_exclusive_sum(thread_match_count);
+
+    // Last lane in each simdgroup writes total to shared memory
+    if (simd_lane == 31u) {
+        simd_totals[simd_idx] = simd_prefix + thread_match_count;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // --- Cross-SG scan (first 8 threads) ---
+    if (lid < FILTER_NUM_SGS) {
+        simd_totals[lid] = simd_prefix_exclusive_sum(simd_totals[lid]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // --- Last thread writes TG total to partials ---
+    if (lid == FILTER_THREADS - 1u) {
+        uint tg_total = simd_prefix + thread_match_count + simd_totals[simd_idx];
+        partials[tg_idx] = tg_total;
     }
 }
