@@ -1,0 +1,13 @@
+[package]
+name = "forge-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Shared GPU context and pipeline builder for forge-sort + forge-filter"
+
+[dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+thiserror = "2"
+forge-sort = { path = "../forge-sort" }
+forge-filter = { path = "../forge-filter" }

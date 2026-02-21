@@ -12,7 +12,7 @@ generated: auto
 
 Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
 
-- [ ] 1.1 Create forge-runtime crate skeleton with ForgeContext
+- [x] 1.1 Create forge-runtime crate skeleton with ForgeContext
   - **Do**:
     1. Add `"forge-runtime"` to workspace members in `metal-forge-compute/Cargo.toml`
     2. Create `forge-runtime/Cargo.toml` with deps: objc2 0.6, objc2-metal 0.3, objc2-foundation 0.3, thiserror 2, forge-sort (path), forge-filter (path)
