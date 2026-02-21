@@ -3082,6 +3082,7 @@ impl<T: FilterKey> FilterResult<T> {
     /// Returns `Some((buffer, len, capacity))` if a values buffer is present,
     /// or `None` for index-only results. Useful for converting filter output
     /// into a `SortBuffer` or other buffer type without copying.
+    #[allow(clippy::type_complexity)]
     pub fn take_values_buffer(self) -> Option<(Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize)> {
         self.values_buf.map(|buf| (buf, self.count, self._capacity))
     }

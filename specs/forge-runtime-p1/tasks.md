@@ -195,7 +195,7 @@ After POC validated, build the pipeline and gather kernel.
 
 ## Phase 4: Quality Gates
 
-- [ ] 4.1 Local quality check
+- [x] 4.1 Local quality check
   - **Do**: Run all quality checks locally
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute && cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo doc --workspace --no-deps`
   - **Done when**: All commands pass with zero warnings

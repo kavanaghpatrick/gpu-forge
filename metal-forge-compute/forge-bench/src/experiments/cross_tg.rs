@@ -22,7 +22,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer, ExploitParams, GpuTimer,
+    alloc_buffer, alloc_buffer_with_data, ExploitParams,
     MetalContext, PsoCache,
 };
 
@@ -132,7 +132,7 @@ impl Experiment for CrossTgExperiment {
             let enc = cmd.computeCommandEncoder().unwrap();
 
             // Manual dispatch with explicit TG size
-            use objc2_metal::{MTLComputeCommandEncoder, MTLComputePipelineState, MTLSize};
+            use objc2_metal::{MTLComputeCommandEncoder, MTLSize};
 
             enc.setComputePipelineState(pso);
             unsafe {

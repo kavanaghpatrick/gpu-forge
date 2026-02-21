@@ -103,7 +103,7 @@ impl GpuGather {
         }
 
         let threads_per_tg = 256usize;
-        let num_tgs = (count as usize + threads_per_tg - 1) / threads_per_tg;
+        let num_tgs = (count as usize).div_ceil(threads_per_tg);
         let grid = MTLSize {
             width: num_tgs,
             height: 1,

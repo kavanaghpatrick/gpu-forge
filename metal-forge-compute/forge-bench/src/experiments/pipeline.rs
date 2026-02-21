@@ -24,7 +24,7 @@ use objc2_metal::{
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, CompactParams, GpuTimer,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, CompactParams,
     GroupByParams, MetalContext, PsoCache, ScanParams, SortParams,
 };
 
@@ -392,6 +392,7 @@ impl Experiment for PipelineExperiment {
         // Compact helper: complete scan + scatter for one array
         // We need to scatter both keys and values using the same flags/scan.
         // compact_scatter works on uint arrays -- values stored as u32 bits.
+        #[allow(clippy::needless_late_init)]
         let compacted_count;
 
         if num_scan_tgs <= MAX_GPU_PARTIALS {

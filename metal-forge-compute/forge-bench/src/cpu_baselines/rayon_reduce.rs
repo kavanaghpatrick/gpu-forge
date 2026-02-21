@@ -6,21 +6,25 @@
 use rayon::prelude::*;
 
 /// Parallel sum of u32 values, returning u64 to avoid overflow.
+#[allow(dead_code)]
 pub fn par_sum_u32(data: &[u32]) -> u64 {
     data.par_iter().map(|&x| x as u64).sum::<u64>()
 }
 
 /// Parallel sum of f32 values, returning f64 for precision.
+#[allow(dead_code)]
 pub fn par_sum_f32(data: &[f32]) -> f64 {
     data.par_iter().map(|&x| x as f64).sum::<f64>()
 }
 
 /// Parallel min of u32 values.
+#[allow(dead_code)]
 pub fn par_min_u32(data: &[u32]) -> u32 {
     data.par_iter().copied().min().unwrap_or(u32::MAX)
 }
 
 /// Parallel max of u32 values.
+#[allow(dead_code)]
 pub fn par_max_u32(data: &[u32]) -> u32 {
     data.par_iter().copied().max().unwrap_or(0)
 }

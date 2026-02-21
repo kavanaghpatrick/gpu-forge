@@ -2,7 +2,7 @@
 //!
 //! Tests gemv_f32 kernel with vectorized float4 loads for bandwidth optimization.
 //! Sizes are interpreted as matrix dimension M (square MxM matrix by default).
-//! y[M] = A[M,N] * x[N] where M=N=size.
+//! `y[M] = A[M,N] * x[N]` where M=N=size.
 
 use std::collections::HashMap;
 

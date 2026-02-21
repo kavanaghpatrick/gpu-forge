@@ -14,7 +14,7 @@ use objc2_metal::{
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GpuTimer, GroupByParams,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, GroupByParams,
     MetalContext, PsoCache, ScanParams, SortParams,
 };
 

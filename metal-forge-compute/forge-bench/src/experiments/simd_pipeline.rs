@@ -178,6 +178,7 @@ impl Experiment for SimdPipelineExperiment {
         let timer = BenchTimer::start();
 
         let mut output = vec![0.0f32; self.data.len()];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..self.data.len() {
             let mut sum = 0.0f32;
             for tap in 0..32u32 {

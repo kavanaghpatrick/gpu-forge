@@ -22,7 +22,7 @@ use objc2_metal::{
 };
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, CompactParams, GpuTimer,
+    alloc_buffer, alloc_buffer_with_data, read_buffer_slice, BenchTimer, CompactParams,
     GroupByParams, MetalContext, PsoCache, ScanParams, SortParams,
 };
 
@@ -398,6 +398,7 @@ impl Experiment for DuckDbExperiment {
             encoder.endEncoding();
         }
 
+        #[allow(clippy::needless_late_init)]
         let compacted_count;
 
         if num_scan_tgs <= MAX_GPU_PARTIALS {

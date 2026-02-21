@@ -151,7 +151,7 @@ impl Experiment for SlcResidencyExperiment {
         }
     }
 
-    fn metrics(&self, elapsed_ms: f64, size: usize) -> HashMap<String, f64> {
+    fn metrics(&self, _elapsed_ms: f64, size: usize) -> HashMap<String, f64> {
         let mut m = HashMap::new();
         let bytes = size as f64 * 16.0; // float4 = 16 bytes (read + write = 32 bytes per element)
 
