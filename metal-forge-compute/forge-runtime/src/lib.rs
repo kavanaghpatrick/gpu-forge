@@ -5,6 +5,8 @@
 
 pub mod buffer;
 pub mod context;
+pub mod gather;
 
 pub use buffer::{filter_result_to_sort_buffer, sort_buffer_to_filter_buffer, ForgeBuffer};
 pub use context::ForgeContext;
+pub use gather::{GatherError, GpuGather};

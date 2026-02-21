@@ -105,7 +105,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
 
 After POC validated, build the pipeline and gather kernel.
 
-- [ ] 2.1 Create GPU Gather kernel and build.rs
+- [x] 2.1 Create GPU Gather kernel and build.rs
   - **Do**:
     1. Create `forge-runtime/shaders/gather.metal` with gather_u32 and gather_u64 kernels
     2. Create `forge-runtime/build.rs` that compiles gather.metal via `xcrun metal` + `xcrun metallib`, sets `GATHER_METALLIB_PATH` env
