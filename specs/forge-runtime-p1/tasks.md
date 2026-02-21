@@ -180,7 +180,7 @@ After POC validated, build the pipeline and gather kernel.
   - _Requirements: AC-3.1 through AC-3.5, AC-4.4_
   - _Design: Data Flow_
 
-- [ ] 3.2 Backward compatibility tests
+- [x] 3.2 Backward compatibility tests
   - **Do**:
     1. Run full forge-sort test suite -- must pass unchanged
     2. Run full forge-filter test suite -- must pass unchanged
