@@ -333,7 +333,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `test(forge-filter): add multi-column filter test matrix`
   - _Requirements: AC-2.1 through AC-2.7_
 
-- [ ] 3.3 NULL bitmap edge case tests
+- [x] 3.3 NULL bitmap edge case tests
   - **Do**:
     1. Add tests:
        - NULL at position 0 (first element)

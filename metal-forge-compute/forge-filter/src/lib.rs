@@ -6256,4 +6256,409 @@ mod tests {
 
         println!("test_bitmap_tile_boundary: all 6 boundary sizes PASSED");
     }
+
+    // ===================================================================
+    // NULL bitmap edge case tests (Task 3.3)
+    // ===================================================================
+
+    #[test]
+    fn test_null_edge_first_element_null() {
+        // NULL at position 0 (first element)
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        let mut valid = vec![true; n];
+        valid[0] = false; // NULL at position 0
+
+        let validity = make_validity_bitmap(&valid);
+        let pred = Predicate::Ge(0u32); // all elements would match, but pos 0 is NULL
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| valid[*i])
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(result.len(), cpu_ref.len());
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+        // Verify element 0 is NOT in output
+        assert_ne!(
+            result.as_slice().first().copied(),
+            Some(0u32),
+            "NULL at position 0 should be excluded"
+        );
+        println!(
+            "test_null_edge_first_element_null: PASSED (GPU={}, CPU={})",
+            result.len(),
+            cpu_ref.len()
+        );
+    }
+
+    #[test]
+    fn test_null_edge_last_element_null() {
+        // NULL at position N-1 (last element)
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        let mut valid = vec![true; n];
+        valid[n - 1] = false; // NULL at last position
+
+        let validity = make_validity_bitmap(&valid);
+        let pred = Predicate::Ge(0u32);
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| valid[*i])
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(result.len(), cpu_ref.len());
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+        // Verify last element is NOT in output
+        let gpu_vals = result.to_vec();
+        assert!(
+            !gpu_vals.contains(&((n - 1) as u32)),
+            "NULL at position N-1 should be excluded"
+        );
+        println!(
+            "test_null_edge_last_element_null: PASSED (GPU={}, CPU={})",
+            result.len(),
+            cpu_ref.len()
+        );
+    }
+
+    #[test]
+    fn test_null_edge_tile_boundaries() {
+        // NULLs at tile boundaries: 4095, 4096, 4097, 8191, 8192
+        // FILTER_TILE_32 = 4096, so these straddle tile edges
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        let null_positions: Vec<usize> = vec![4095, 4096, 4097, 8191, 8192];
+        let mut valid = vec![true; n];
+        for &pos in &null_positions {
+            valid[pos] = false;
+        }
+        let validity = make_validity_bitmap(&valid);
+
+        let pred = Predicate::Ge(0u32); // all match except NULLs
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| valid[*i])
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result.len(),
+            cpu_ref.len(),
+            "tile boundary NULLs: count mismatch GPU={} vs CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+
+        // Verify each null position value is excluded
+        let gpu_vals = result.to_vec();
+        for &pos in &null_positions {
+            assert!(
+                !gpu_vals.contains(&(pos as u32)),
+                "NULL at tile boundary position {} should be excluded",
+                pos
+            );
+        }
+        println!(
+            "test_null_edge_tile_boundaries: PASSED ({} NULLs excluded, GPU={})",
+            null_positions.len(),
+            result.len()
+        );
+    }
+
+    #[test]
+    fn test_null_edge_alternating_pattern() {
+        // Alternating NULL/valid pattern: odd positions valid, even positions NULL
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        let valid: Vec<bool> = (0..n).map(|i| i % 2 != 0).collect(); // odd = valid
+        let validity = make_validity_bitmap(&valid);
+
+        let pred = Predicate::Gt(50_000u32);
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x > 50_000)
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result.len(),
+            cpu_ref.len(),
+            "alternating NULL pattern: count mismatch GPU={} vs CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+
+        // All output values should be odd (only odd-index elements are valid)
+        for &v in result.as_slice() {
+            assert_eq!(v % 2, 1, "output value {} has even index, should be NULL-excluded", v);
+        }
+        println!(
+            "test_null_edge_alternating_pattern: PASSED (GPU={}, CPU={}, 50% NULLs)",
+            result.len(),
+            cpu_ref.len()
+        );
+    }
+
+    #[test]
+    fn test_null_edge_1pct_density_1m() {
+        // 1% NULL density at 1M rows — realistic sparse NULL scenario
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 1_000_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let data: Vec<u32> = (0..n).map(|_| rng.gen::<u32>() % 1_000_000).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // 1% NULLs: every 100th element is NULL (deterministic pattern)
+        let valid: Vec<bool> = (0..n).map(|i| i % 100 != 0).collect();
+        let validity = make_validity_bitmap(&valid);
+
+        let pred = Predicate::Between(250_000u32, 750_000u32);
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x >= 250_000 && x <= 750_000)
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result.len(),
+            cpu_ref.len(),
+            "1% NULL 1M: count mismatch GPU={} vs CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+
+        // Sanity: about 50% selectivity * 99% valid = ~495K matches
+        let null_count = n / 100;
+        println!(
+            "test_null_edge_1pct_density_1m: PASSED (GPU={}, CPU={}, nulls={})",
+            result.len(),
+            cpu_ref.len(),
+            null_count
+        );
+    }
+
+    #[test]
+    fn test_null_edge_nan_and_null_interaction() {
+        // NaN + NULL interaction for f32:
+        // - NaN values are VALID (not NULL) but fail IEEE 754 comparisons
+        // - NULL values are always excluded regardless of their bit pattern
+        // - NaN and NULL are independently treated
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+        let mut data: Vec<f32> = (0..n)
+            .map(|_| (rng.gen::<u32>() % 1_000_000) as f32)
+            .collect();
+
+        // Inject NaN at known positions (valid but fail comparisons)
+        let nan_positions: Vec<usize> = (0..n).step_by(1000).collect(); // every 1000th
+        for &pos in &nan_positions {
+            data[pos] = f32::NAN;
+        }
+
+        // Inject NULLs at different positions (every 500th that isn't a NaN position)
+        let mut valid = vec![true; n];
+        let mut null_positions = Vec::new();
+        for i in (0..n).step_by(500) {
+            if !nan_positions.contains(&i) {
+                valid[i] = false;
+                null_positions.push(i);
+            }
+        }
+        let validity = make_validity_bitmap(&valid);
+
+        let mut buf = gpu.alloc_filter_buffer::<f32>(n);
+        buf.copy_from_slice(&data);
+
+        // Test with Gt predicate — NaN fails (IEEE 754: NaN > x is false)
+        let pred_gt = Predicate::Gt(500_000.0f32);
+        let result_gt = gpu
+            .filter_nullable(&buf, &pred_gt, &validity)
+            .expect("filter_nullable Gt failed");
+
+        let cpu_ref_gt: Vec<f32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x > 500_000.0)
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result_gt.len(),
+            cpu_ref_gt.len(),
+            "NaN+NULL Gt: count mismatch GPU={} vs CPU={}",
+            result_gt.len(),
+            cpu_ref_gt.len()
+        );
+        assert_eq!(result_gt.as_slice(), &cpu_ref_gt[..]);
+
+        // Verify no NaN values in Gt output
+        for &v in result_gt.as_slice() {
+            assert!(!v.is_nan(), "NaN should not pass Gt predicate");
+        }
+
+        // Test with Lt predicate — NaN fails (IEEE 754: NaN < x is false)
+        let pred_lt = Predicate::Lt(500_000.0f32);
+        let result_lt = gpu
+            .filter_nullable(&buf, &pred_lt, &validity)
+            .expect("filter_nullable Lt failed");
+
+        let cpu_ref_lt: Vec<f32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x < 500_000.0)
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result_lt.len(),
+            cpu_ref_lt.len(),
+            "NaN+NULL Lt: count mismatch GPU={} vs CPU={}",
+            result_lt.len(),
+            cpu_ref_lt.len()
+        );
+        assert_eq!(result_lt.as_slice(), &cpu_ref_lt[..]);
+
+        // Verify no NaN values in Lt output
+        for &v in result_lt.as_slice() {
+            assert!(!v.is_nan(), "NaN should not pass Lt predicate");
+        }
+
+        // Test with Between predicate — NaN fails all range checks
+        let pred_btwn = Predicate::Between(100_000.0f32, 900_000.0f32);
+        let result_btwn = gpu
+            .filter_nullable(&buf, &pred_btwn, &validity)
+            .expect("filter_nullable Between failed");
+
+        let cpu_ref_btwn: Vec<f32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x >= 100_000.0 && x <= 900_000.0)
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result_btwn.len(),
+            cpu_ref_btwn.len(),
+            "NaN+NULL Between: count mismatch GPU={} vs CPU={}",
+            result_btwn.len(),
+            cpu_ref_btwn.len()
+        );
+        assert_eq!(result_btwn.as_slice(), &cpu_ref_btwn[..]);
+
+        for &v in result_btwn.as_slice() {
+            assert!(!v.is_nan(), "NaN should not pass Between predicate");
+        }
+
+        // Test with Ne predicate — NaN PASSES Ne per IEEE 754 (NaN != x is true)
+        // But NULL still excluded
+        let pred_ne = Predicate::Ne(500_000.0f32);
+        let result_ne = gpu
+            .filter_nullable(&buf, &pred_ne, &validity)
+            .expect("filter_nullable Ne failed");
+
+        let cpu_ref_ne: Vec<f32> = data
+            .iter()
+            .enumerate()
+            .filter(|&(i, x)| {
+                valid[i] && x.partial_cmp(&500_000.0f32) != Some(std::cmp::Ordering::Equal)
+            })
+            .map(|(_, &x)| x)
+            .collect();
+
+        assert_eq!(
+            result_ne.len(),
+            cpu_ref_ne.len(),
+            "NaN+NULL Ne: count mismatch GPU={} vs CPU={}",
+            result_ne.len(),
+            cpu_ref_ne.len()
+        );
+        // NaN-aware comparison: NaN != NaN per IEEE 754, so assert_eq on f32
+        // slices would fail. Compare element-by-element using to_bits().
+        for (idx, (gpu_val, cpu_val)) in result_ne
+            .as_slice()
+            .iter()
+            .zip(cpu_ref_ne.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                gpu_val.to_bits(),
+                cpu_val.to_bits(),
+                "NaN+NULL Ne: mismatch at idx {} (GPU={}, CPU={})",
+                idx,
+                gpu_val,
+                cpu_val
+            );
+        }
+
+        // Count NaN values in Ne output — NaN should pass Ne (valid NaNs only)
+        let nan_count_in_ne = result_ne.as_slice().iter().filter(|v| v.is_nan()).count();
+        let expected_nan_in_ne = nan_positions.iter().filter(|&&p| valid[p]).count();
+        assert_eq!(
+            nan_count_in_ne, expected_nan_in_ne,
+            "NaN+NULL Ne: valid NaN count mismatch GPU={} vs expected={}",
+            nan_count_in_ne, expected_nan_in_ne
+        );
+
+        println!(
+            "test_null_edge_nan_and_null_interaction: PASSED\n  \
+            Gt: GPU={}, Lt: GPU={}, Between: GPU={}, Ne: GPU={}\n  \
+            NaN positions: {}, NULL positions: {}, valid NaNs in Ne: {}",
+            result_gt.len(),
+            result_lt.len(),
+            result_btwn.len(),
+            result_ne.len(),
+            nan_positions.len(),
+            null_positions.len(),
+            nan_count_in_ne
+        );
+    }
 }
