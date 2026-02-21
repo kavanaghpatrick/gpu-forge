@@ -161,6 +161,7 @@ impl Experiment for TimeSeriesExperiment {
 
         // Sequential sliding window moving average
         let mut window_sum: f64 = 0.0;
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             window_sum += self.prices[i] as f64;
             if i >= w {

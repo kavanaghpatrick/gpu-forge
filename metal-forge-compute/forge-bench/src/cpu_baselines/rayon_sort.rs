@@ -8,6 +8,7 @@ use rayon::prelude::*;
 /// Parallel sort of u32 values using rayon's par_sort_unstable.
 ///
 /// Returns a new sorted vector (does not modify input).
+#[allow(dead_code)]
 pub fn par_sort_u32(data: &[u32]) -> Vec<u32> {
     let mut sorted = data.to_vec();
     sorted.par_sort_unstable();

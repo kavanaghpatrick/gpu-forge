@@ -66,9 +66,11 @@ pub trait Experiment {
     fn name(&self) -> &str;
 
     /// Human-readable description of the experiment.
+    #[allow(dead_code)]
     fn description(&self) -> &str;
 
     /// Supported element counts for this experiment.
+    #[allow(dead_code)]
     fn supported_sizes(&self) -> Vec<usize>;
 
     /// Prepare data and Metal buffers for the given size.

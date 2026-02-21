@@ -243,6 +243,41 @@ impl<T: SortKey> SortBuffer<T> {
     pub fn metal_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
+
+    /// Construct a `SortBuffer` from its raw components.
+    ///
+    /// # Safety (logical)
+    ///
+    /// The caller must ensure:
+    /// - `buffer` is a valid Metal buffer with at least `capacity * size_of::<T>()` bytes.
+    /// - `len <= capacity`.
+    /// - The buffer's contents are valid `T` values for the first `len` elements.
+    pub fn from_raw_parts(
+        buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        len: usize,
+        capacity: usize,
+    ) -> Self {
+        assert!(
+            len <= capacity,
+            "len {} exceeds capacity {}",
+            len,
+            capacity
+        );
+        Self {
+            buffer,
+            len,
+            capacity,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Decompose this `SortBuffer` into its raw components: (buffer, len, capacity).
+    ///
+    /// This consumes the buffer, transferring ownership of the underlying Metal buffer
+    /// to the caller. Useful for converting between buffer types across crate boundaries.
+    pub fn into_raw_parts(self) -> (Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize) {
+        (self.buffer, self.len, self.capacity)
+    }
 }
 
 /// Encode and execute the 4-dispatch sort pipeline. Shared by sort_u32 and sort_buffer.
@@ -560,7 +595,18 @@ impl GpuSorter {
     /// Initialize Metal device, queue, and compile 4 sort kernel PSOs.
     pub fn new() -> Result<Self, SortError> {
         let (device, queue) = init_device_and_queue();
+        Self::with_context(device, queue)
+    }
 
+    /// Create a `GpuSorter` using an externally-provided Metal device and command queue.
+    ///
+    /// This allows sharing a single device/queue across multiple forge crates
+    /// (e.g. via `ForgeContext`). The metallib is loaded and all PSOs are
+    /// pre-compiled, just like [`new()`](Self::new).
+    pub fn with_context(
+        device: Retained<ProtocolObject<dyn MTLDevice>>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ) -> Result<Self, SortError> {
         // Load our sort-specific metallib (embedded path from build.rs)
         let metallib_path = env!("SORT_METALLIB_PATH");
         let path_ns = NSString::from_str(metallib_path);
@@ -689,6 +735,53 @@ impl GpuSorter {
             n,
             num_tiles,
         )
+    }
+
+    /// Encode sort dispatches onto an externally-provided compute command encoder.
+    ///
+    /// Unlike [`sort_buffer()`](Self::sort_buffer), this does **not** create its own
+    /// command buffer or encoder. The caller is responsible for creating, committing,
+    /// and waiting on the command buffer. This enables multi-operation pipelines
+    /// (e.g. filter → sort → gather) within a single command buffer.
+    ///
+    /// The buffer is sorted in-place. Scratch buffers are allocated internally
+    /// (grow-only, reused across calls). The MSD histogram is zeroed before encoding.
+    pub fn encode_sort(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        buf: &SortBuffer<u32>,
+    ) -> Result<(), SortError> {
+        let n = buf.len();
+        if n <= 1 {
+            return Ok(());
+        }
+
+        self.ensure_scratch_buffers(n);
+        let num_tiles = n.div_ceil(TILE_SIZE);
+
+        // Zero the MSD histogram (CPU write to StorageModeShared is visible to GPU)
+        unsafe {
+            std::ptr::write_bytes(
+                self.buf_msd_hist.as_ref().unwrap().contents().as_ptr() as *mut u8,
+                0,
+                256 * 4,
+            );
+        }
+
+        encode_sort_pipeline(
+            encoder,
+            &self.library,
+            &mut self.pso_cache,
+            &buf.buffer,
+            self.buf_b.as_ref().unwrap(),
+            self.buf_msd_hist.as_ref().unwrap(),
+            self.buf_counters.as_ref().unwrap(),
+            self.buf_bucket_descs.as_ref().unwrap(),
+            n,
+            num_tiles,
+        );
+
+        Ok(())
     }
 
     /// Sort u32 slice in-place on GPU. Empty/single-element inputs return immediately.
@@ -3330,5 +3423,75 @@ mod tests {
         let mut keys = vec![1i64, 2, 3];
         let mut vals = vec![10u32, 20];
         assert!(sorter.sort_pairs_i64(&mut keys, &mut vals).is_err());
+    }
+
+    #[test]
+    fn test_encode_sort_external_encoder() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut buf = sorter.alloc_sort_buffer::<u32>(1024);
+        let data = [50u32, 10, 90, 30, 70, 20, 80, 40, 60, 100];
+        buf.copy_from_slice(&data);
+
+        // Create external command buffer + encoder (caller-owned)
+        let cmd = sorter.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+
+        sorter.encode_sort(&enc, &buf).unwrap();
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        assert_eq!(cmd.status(), MTLCommandBufferStatus::Completed);
+        let result = buf.as_slice();
+        let mut expected = data.to_vec();
+        expected.sort();
+        assert_eq!(result, &expected[..]);
+    }
+
+    #[test]
+    fn test_encode_sort_1k_random() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let n = 1000;
+        let mut buf = sorter.alloc_sort_buffer::<u32>(n);
+        // LCG deterministic pseudo-random
+        let mut rng = 42u64;
+        let mut data = Vec::with_capacity(n);
+        for _ in 0..n {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            data.push((rng >> 33) as u32);
+        }
+        buf.copy_from_slice(&data);
+
+        let cmd = sorter.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        sorter.encode_sort(&enc, &buf).unwrap();
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        assert_eq!(cmd.status(), MTLCommandBufferStatus::Completed);
+        let result = buf.as_slice();
+        let mut expected = data.clone();
+        expected.sort();
+        assert_eq!(result, &expected[..]);
+    }
+
+    #[test]
+    fn test_encode_sort_single_element() {
+        let mut sorter = GpuSorter::new().unwrap();
+        let mut buf = sorter.alloc_sort_buffer::<u32>(1);
+        buf.copy_from_slice(&[42u32]);
+
+        let cmd = sorter.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        // n <= 1 returns Ok immediately without encoding any dispatches
+        sorter.encode_sort(&enc, &buf).unwrap();
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        assert_eq!(cmd.status(), MTLCommandBufferStatus::Completed);
+        assert_eq!(buf.as_slice(), &[42u32]);
     }
 }

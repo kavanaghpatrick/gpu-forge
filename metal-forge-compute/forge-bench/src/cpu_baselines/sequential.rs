@@ -5,8 +5,8 @@
 
 /// Sequential exclusive prefix scan of u32 values.
 ///
-/// Returns a vector where output[i] = sum(data[0..i]).
-/// output[0] = 0, output[1] = data[0], output[2] = data[0]+data[1], etc.
+/// Returns a vector where `output[i] = sum(data[0..i])`.
+/// `output[0] = 0`, `output[1] = data[0]`, `output[2] = data[0]+data[1]`, etc.
 pub fn sequential_exclusive_scan(data: &[u32]) -> Vec<u32> {
     let mut result = Vec::with_capacity(data.len());
     let mut acc: u64 = 0;
@@ -20,6 +20,7 @@ pub fn sequential_exclusive_scan(data: &[u32]) -> Vec<u32> {
 /// Sequential histogram of u32 values into `num_bins` bins.
 ///
 /// Each element is assigned to bin `value % num_bins`.
+#[allow(dead_code)]
 pub fn sequential_histogram(data: &[u32], num_bins: usize) -> Vec<u32> {
     let mut bins = vec![0u32; num_bins];
     for &val in data {

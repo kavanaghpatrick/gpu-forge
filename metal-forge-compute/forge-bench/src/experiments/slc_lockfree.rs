@@ -332,7 +332,7 @@ impl Experiment for SlcLockfreeExperiment {
         }
         let mut hits = 0u64;
         for i in 0..self.size {
-            if map.get(&self.input_keys[i]).is_some() {
+            if map.contains_key(&self.input_keys[i]) {
                 hits += 1;
             }
         }

@@ -4,7 +4,7 @@
 //! using simdgroup_float8x8 and simdgroup_half8x8 multiply_accumulate.
 //!
 //! Each simdgroup_multiply_accumulate(c, a, b, c) performs:
-//!   C[8x8] += A[8x8] * B[8x8]  →  512 FMAs  →  1024 FLOPs
+//!   `C[8x8] += A[8x8] * B[8x8]`  →  512 FMAs  →  1024 FLOPs
 //!
 //! Data stays in registers (no memory access after init) to measure
 //! pure matrix unit throughput, not memory bandwidth.

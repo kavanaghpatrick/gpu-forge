@@ -1,6 +1,6 @@
 //! JSON output for benchmark results.
 //!
-//! Serializes Vec<DataPoint> to JSON with a hardware info header.
+//! Serializes `Vec<DataPoint>` to JSON with a hardware info header.
 
 use std::fs;
 use std::path::Path;

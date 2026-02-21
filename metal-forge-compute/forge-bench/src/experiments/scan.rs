@@ -127,7 +127,7 @@ impl Experiment for ScanExperiment {
             4000u32
         };
         for v in &mut self.data {
-            *v = *v % max_val;
+            *v %= max_val;
         }
 
         self.num_threadgroups = size.div_ceil(ELEMENTS_PER_TG);
@@ -254,6 +254,7 @@ impl Experiment for ScanExperiment {
         // --- Pass 2: scan the partials ---
         // After this block, the buffer used for the final scan_add_offsets
         // contains the fully-scanned partials.
+        #[allow(clippy::needless_late_init)]
         let final_partials: &ProtocolObject<dyn MTLBuffer>;
 
         if self.num_threadgroups <= MAX_GPU_PARTIALS {

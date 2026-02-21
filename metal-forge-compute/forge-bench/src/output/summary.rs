@@ -51,8 +51,8 @@ pub fn print_summary(data: &[DataPoint]) {
     println!("  SUMMARY");
     println!("{}", "=".repeat(70));
     println!(
-        "  {:<20} {:>10} {:>10} {:>10}  {}",
-        "Experiment", "Size", "Speedup", "GPU (ms)", "Verdict"
+        "  {:<20} {:>10} {:>10} {:>10}  Verdict",
+        "Experiment", "Size", "Speedup", "GPU (ms)"
     );
     println!("  {}", "-".repeat(66));
 

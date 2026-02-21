@@ -97,7 +97,7 @@ impl Experiment for FsmRuntimeExperiment {
             size * std::mem::size_of::<u32>(),
         ));
 
-        let num_tgs = (size + THREADS_PER_TG - 1) / THREADS_PER_TG;
+        let num_tgs = size.div_ceil(THREADS_PER_TG);
         self.buf_global_states = Some(alloc_buffer(
             &ctx.device,
             num_tgs * std::mem::size_of::<u32>(),
@@ -119,7 +119,7 @@ impl Experiment for FsmRuntimeExperiment {
         let global_states = self.buf_global_states.as_ref().unwrap();
         let total_trans = self.buf_total_trans.as_ref().unwrap();
 
-        let num_tgs = (self.size + THREADS_PER_TG - 1) / THREADS_PER_TG;
+        let num_tgs = self.size.div_ceil(THREADS_PER_TG);
 
         // ── INDEPENDENT FSMs ──
         let params = GpuOsParams {

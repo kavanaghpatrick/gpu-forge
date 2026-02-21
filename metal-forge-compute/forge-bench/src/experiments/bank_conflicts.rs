@@ -121,7 +121,7 @@ impl Experiment for BankConflictsExperiment {
         let mut sum = 0.0f64;
         for p in 0..NUM_PASSES {
             for lane in 0..32u32 {
-                let addr = (lane * 1) as usize & 8191;
+                let addr = lane as usize & 8191;
                 mem[addr] = (lane + p) as f32;
                 sum += mem[addr] as f64;
             }

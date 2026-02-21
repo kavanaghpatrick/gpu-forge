@@ -429,7 +429,18 @@ impl GpuFilter {
     /// filter_scan_partials. Additional PSO variants are compiled lazily.
     pub fn new() -> Result<Self, FilterError> {
         let (device, queue) = init_device_and_queue();
+        Self::with_context(device, queue)
+    }
 
+    /// Create a `GpuFilter` using an externally-provided Metal device and command queue.
+    ///
+    /// This allows sharing a single device/queue across multiple forge crates
+    /// (e.g. via `ForgeContext`). The metallib is loaded and all PSOs are
+    /// pre-compiled, just like [`new()`](Self::new).
+    pub fn with_context(
+        device: Retained<ProtocolObject<dyn MTLDevice>>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ) -> Result<Self, FilterError> {
         // Load the filter metallib (embedded path from build.rs)
         let metallib_path = env!("FILTER_METALLIB_PATH");
         let path_ns = NSString::from_str(metallib_path);
@@ -1295,6 +1306,247 @@ impl GpuFilter {
             count,
             values_buf: self.buf_output.clone(),
             indices_buf: self.buf_output_idx.clone(),
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Encode a filter pipeline onto an externally-provided compute encoder.
+    ///
+    /// Encodes the 3-dispatch bitmap pipeline (bitmap_scan → scan_partials → bitmap_scatter)
+    /// without creating or committing a command buffer. The caller owns the encoder and
+    /// must call `endEncoding()` + `commit()` + `waitUntilCompleted()` after this returns.
+    ///
+    /// Returns a [`PendingFilterResult`] whose [`resolve()`](PendingFilterResult::resolve)
+    /// method reads the match count from the GPU count buffer after execution completes.
+    ///
+    /// This enables composing filter with other GPU dispatches (sort, gather) in a single
+    /// command buffer for optimal pipeline throughput.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let mut buf = gpu.alloc_filter_buffer::<u32>(1000);
+    /// buf.copy_from_slice(&(0..1000).collect::<Vec<u32>>());
+    ///
+    /// // Caller creates command buffer + encoder
+    /// // let cmd = queue.commandBuffer().unwrap();
+    /// // let enc = cmd.computeCommandEncoder().unwrap();
+    /// // let pending = gpu.encode_filter(&enc, buf.metal_buffer(), 1000, &Predicate::Gt(500u32)).unwrap();
+    /// // // ... encode more dispatches on same encoder ...
+    /// // enc.endEncoding();
+    /// // cmd.commit();
+    /// // cmd.waitUntilCompleted();
+    /// // let result = pending.resolve();
+    /// // assert_eq!(result.len(), 499);
+    /// ```
+    pub fn encode_filter<T: FilterKey>(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        input_buf: &ProtocolObject<dyn MTLBuffer>,
+        n: usize,
+        pred: &Predicate<T>,
+    ) -> Result<PendingFilterResult<T>, FilterError> {
+        if n == 0 {
+            // For empty input, ensure count_buf exists so resolve() can read 0
+            if self.buf_count.is_none() {
+                self.buf_count = Some(alloc_buffer(&self.device, 4));
+            }
+            unsafe {
+                let buf_count = self.buf_count.as_ref().unwrap();
+                std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+            }
+            return Ok(PendingFilterResult {
+                values_buf: None,
+                indices_buf: None,
+                count_buf: self.buf_count.clone().unwrap(),
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+
+        let (lo_bits, hi_bits) = pred.to_bits();
+        let pred_type = pred.pred_type_id();
+        let data_type = T::DATA_TYPE_ID;
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        // Zero count buffer (CPU write to StorageModeShared, visible to GPU)
+        unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: lo_bits as u32,
+                lo_hi: (lo_bits >> 32) as u32,
+                hi_lo: hi_bits as u32,
+                hi_hi: (hi_bits >> 32) as u32,
+                _pad: [0, 0],
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(true)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                encoder.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(buf_partials), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 3);
+                    encoder.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        4,
+                    );
+                }
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+
+            // Dispatch 2: scan partials
+            self.encode_scan_partials(encoder, num_tiles);
+
+            // Dispatch 3: filter_bitmap_scatter (values only)
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scatter",
+                    &[
+                        (1, FnConstant::Bool(true)),
+                        (2, FnConstant::Bool(false)), // OUTPUT_IDX
+                        (3, FnConstant::Bool(true)),  // OUTPUT_VALS
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                encoder.setComputePipelineState(pso);
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                    encoder.setBuffer_offset_atIndex(Some(buf_partials), 0, 4);
+                    encoder.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        5,
+                    );
+                }
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: lo_bits as u32,
+                hi_bits: hi_bits as u32,
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(false)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                encoder.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(buf_partials), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 3);
+                    encoder.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        4,
+                    );
+                }
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+
+            // Dispatch 2: scan partials
+            self.encode_scan_partials(encoder, num_tiles);
+
+            // Dispatch 3: filter_bitmap_scatter (values only)
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scatter",
+                    &[
+                        (1, FnConstant::Bool(false)),
+                        (2, FnConstant::Bool(false)), // OUTPUT_IDX
+                        (3, FnConstant::Bool(true)),  // OUTPUT_VALS
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                encoder.setComputePipelineState(pso);
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                    encoder.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                    encoder.setBuffer_offset_atIndex(Some(buf_partials), 0, 4);
+                    encoder.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        5,
+                    );
+                }
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        }
+
+        Ok(PendingFilterResult {
+            values_buf: self.buf_output.clone(),
+            indices_buf: None,
+            count_buf: self.buf_count.clone().unwrap(),
             _capacity: n,
             _marker: PhantomData,
         })
@@ -2730,6 +2982,41 @@ impl<T: FilterKey> FilterBuffer<T> {
     pub fn metal_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
+
+    /// Construct a `FilterBuffer` from its raw components.
+    ///
+    /// # Safety (logical)
+    ///
+    /// The caller must ensure:
+    /// - `buffer` is a valid Metal buffer with at least `capacity * size_of::<T>()` bytes.
+    /// - `len <= capacity`.
+    /// - The buffer's contents are valid `T` values for the first `len` elements.
+    pub fn from_raw_parts(
+        buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        len: usize,
+        capacity: usize,
+    ) -> Self {
+        assert!(
+            len <= capacity,
+            "len {} exceeds capacity {}",
+            len,
+            capacity
+        );
+        Self {
+            buffer,
+            len,
+            capacity,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Decompose this `FilterBuffer` into its raw components: (buffer, len, capacity).
+    ///
+    /// This consumes the buffer, transferring ownership of the underlying Metal buffer
+    /// to the caller. Useful for converting between buffer types across crate boundaries.
+    pub fn into_raw_parts(self) -> (Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize) {
+        (self.buffer, self.len, self.capacity)
+    }
 }
 
 // --- FilterResult<T> ---
@@ -2788,6 +3075,78 @@ impl<T: FilterKey> FilterResult<T> {
     /// Returns `None` if no values buffer is present (index-only mode).
     pub fn metal_buffer(&self) -> Option<&ProtocolObject<dyn MTLBuffer>> {
         self.values_buf.as_deref()
+    }
+
+    /// Consume this result and take ownership of the values buffer.
+    ///
+    /// Returns `Some((buffer, len, capacity))` if a values buffer is present,
+    /// or `None` for index-only results. Useful for converting filter output
+    /// into a `SortBuffer` or other buffer type without copying.
+    #[allow(clippy::type_complexity)]
+    pub fn take_values_buffer(self) -> Option<(Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize)> {
+        self.values_buf.map(|buf| (buf, self.count, self._capacity))
+    }
+
+    /// Consume this result and take ownership of the indices buffer.
+    ///
+    /// Returns `Some((buffer, count))` if an indices buffer is present,
+    /// or `None` if index output was not requested.
+    pub fn take_indices_buffer(self) -> Option<(Retained<ProtocolObject<dyn MTLBuffer>>, usize)> {
+        self.indices_buf.map(|buf| (buf, self.count))
+    }
+}
+
+// --- PendingFilterResult<T> ---
+
+/// A deferred filter result returned by [`GpuFilter::encode_filter`].
+///
+/// Because `encode_filter()` only *encodes* GPU dispatches onto an external encoder
+/// without committing, the match count is not yet available. After the caller commits
+/// the command buffer and waits for completion, call [`resolve()`](Self::resolve) to
+/// read the count from the GPU count buffer and produce a [`FilterResult<T>`].
+///
+/// # Example
+///
+/// ```no_run
+/// use forge_filter::{GpuFilter, Predicate};
+///
+/// let mut gpu = GpuFilter::new().unwrap();
+/// let mut buf = gpu.alloc_filter_buffer::<u32>(1000);
+/// buf.copy_from_slice(&(0..1000).collect::<Vec<u32>>());
+///
+/// // Create external command buffer + encoder
+/// // let cmd = queue.commandBuffer().unwrap();
+/// // let enc = cmd.computeCommandEncoder().unwrap();
+/// // let pending = gpu.encode_filter(&enc, buf.metal_buffer(), 1000, &Predicate::Gt(500u32)).unwrap();
+/// // enc.endEncoding();
+/// // cmd.commit();
+/// // cmd.waitUntilCompleted();
+/// // let result = pending.resolve();
+/// ```
+pub struct PendingFilterResult<T: FilterKey> {
+    values_buf: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    indices_buf: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    count_buf: Retained<ProtocolObject<dyn MTLBuffer>>,
+    _capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T: FilterKey> PendingFilterResult<T> {
+    /// Resolve the deferred filter result after the command buffer has completed.
+    ///
+    /// Reads the match count from the GPU count buffer (StorageModeShared) and
+    /// returns a [`FilterResult<T>`]. The caller **must** have committed and waited
+    /// on the command buffer before calling this method; otherwise the count and
+    /// output buffers contain stale/undefined data.
+    pub fn resolve(self) -> FilterResult<T> {
+        let count = unsafe { *(self.count_buf.contents().as_ptr() as *const u32) } as usize;
+        FilterResult {
+            count,
+            values_buf: self.values_buf,
+            indices_buf: self.indices_buf,
+            _capacity: self._capacity,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -6852,5 +7211,145 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- encode_filter tests ---
+
+    #[test]
+    fn test_encode_filter_external_encoder() {
+        let mut gpu = GpuFilter::new().unwrap();
+        let n = 10_000usize;
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        let data: Vec<u32> = (0..n as u32).collect();
+        buf.copy_from_slice(&data);
+
+        let pred = Predicate::Gt(5_000u32);
+
+        // Create external command buffer + encoder (caller-owned)
+        let cmd = gpu.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+
+        let pending = gpu
+            .encode_filter(&enc, buf.metal_buffer(), n, &pred)
+            .unwrap();
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        assert_eq!(cmd.status(), MTLCommandBufferStatus::Completed);
+
+        let result = pending.resolve();
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 5_000).copied().collect();
+        assert_eq!(result.len(), cpu_ref.len(), "count mismatch");
+        assert_eq!(result.as_slice(), &cpu_ref[..], "contents mismatch");
+    }
+
+    #[test]
+    fn test_encode_filter_1m_random() {
+        let mut gpu = GpuFilter::new().unwrap();
+        let n = 1_000_000usize;
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        // LCG deterministic pseudo-random
+        let mut rng = 42u64;
+        let mut data = Vec::with_capacity(n);
+        for _ in 0..n {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            data.push((rng >> 33) as u32);
+        }
+        buf.copy_from_slice(&data);
+
+        let threshold = 500_000u32;
+        let pred = Predicate::Gt(threshold);
+
+        let cmd = gpu.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        let pending = gpu
+            .encode_filter(&enc, buf.metal_buffer(), n, &pred)
+            .unwrap();
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        assert_eq!(cmd.status(), MTLCommandBufferStatus::Completed);
+
+        let result = pending.resolve();
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .filter(|&&x| x > threshold)
+            .copied()
+            .collect();
+        assert_eq!(result.len(), cpu_ref.len(), "count mismatch at 1M");
+        assert_eq!(result.as_slice(), &cpu_ref[..], "contents mismatch at 1M");
+    }
+
+    #[test]
+    fn test_encode_filter_empty() {
+        let mut gpu = GpuFilter::new().unwrap();
+        let buf = gpu.alloc_filter_buffer::<u32>(1);
+        let pred = Predicate::Gt(0u32);
+
+        let cmd = gpu.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        // n=0 should return immediately without encoding any dispatches
+        let pending = gpu
+            .encode_filter(&enc, buf.metal_buffer(), 0, &pred)
+            .unwrap();
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        assert_eq!(cmd.status(), MTLCommandBufferStatus::Completed);
+        let result = pending.resolve();
+        assert_eq!(result.len(), 0);
+        assert!(result.as_slice().is_empty());
+    }
+
+    #[test]
+    fn test_encode_filter_matches_standalone_filter() {
+        // Verify encode_filter produces identical results to standalone filter()
+        let mut gpu = GpuFilter::new().unwrap();
+        let n = 50_000usize;
+        let mut rng = 123u64;
+        let mut data = Vec::with_capacity(n);
+        for _ in 0..n {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            data.push((rng >> 33) as u32);
+        }
+
+        let pred = Predicate::Lt(200_000u32);
+
+        // Standalone filter
+        let mut buf1 = gpu.alloc_filter_buffer::<u32>(n);
+        buf1.copy_from_slice(&data);
+        let standalone_result = gpu.filter(&buf1, &pred).unwrap();
+
+        // encode_filter via external encoder
+        let mut buf2 = gpu.alloc_filter_buffer::<u32>(n);
+        buf2.copy_from_slice(&data);
+        let cmd = gpu.queue.commandBuffer().unwrap();
+        let enc = cmd.computeCommandEncoder().unwrap();
+        let pending = gpu
+            .encode_filter(&enc, buf2.metal_buffer(), n, &pred)
+            .unwrap();
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        let encode_result = pending.resolve();
+
+        assert_eq!(
+            standalone_result.len(),
+            encode_result.len(),
+            "count differs between filter() and encode_filter()"
+        );
+        assert_eq!(
+            standalone_result.as_slice(),
+            encode_result.as_slice(),
+            "contents differ between filter() and encode_filter()"
+        );
     }
 }

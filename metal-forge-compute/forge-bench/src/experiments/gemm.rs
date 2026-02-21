@@ -2,7 +2,7 @@
 //!
 //! Tests gemm_naive_f32 kernel with shared-memory tiling (16x16 tiles).
 //! Sizes are interpreted as matrix dimension (e.g., 256 = 256x256 square matrices).
-//! C[M,N] = A[M,K] * B[K,N] where M=N=K=size.
+//! `C[M,N] = A[M,K] * B[K,N]` where M=N=K=size.
 
 use std::collections::HashMap;
 
@@ -21,6 +21,7 @@ use crate::data_gen::DataGenerator;
 use super::Experiment;
 
 /// Tile size must match TILE_SIZE in gemm.metal.
+#[allow(dead_code)]
 const TILE_SIZE: usize = 16;
 
 /// GEMM experiment using tiled shared-memory approach.

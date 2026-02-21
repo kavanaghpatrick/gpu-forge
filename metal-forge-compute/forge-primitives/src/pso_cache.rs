@@ -103,7 +103,7 @@ impl PsoCache {
         for (idx, val) in constants {
             match val {
                 FnConstant::Bool(b) => unsafe {
-                    let ptr = NonNull::new(&*b as *const bool as *mut std::ffi::c_void)
+                    let ptr = NonNull::new(b as *const bool as *mut std::ffi::c_void)
                         .expect("constant value pointer is null");
                     constant_values.setConstantValue_type_atIndex(ptr, MTLDataType::Bool, *idx);
                 },

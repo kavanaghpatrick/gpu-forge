@@ -154,7 +154,7 @@ impl Experiment for BranchDivergeExperiment {
         let mut acc = 0.0f64;
         for chunk in self.data_f32.chunks(4) {
             let mut v: [f64; 4] = [
-                chunk.get(0).copied().unwrap_or(0.0) as f64,
+                chunk.first().copied().unwrap_or(0.0) as f64,
                 chunk.get(1).copied().unwrap_or(0.0) as f64,
                 chunk.get(2).copied().unwrap_or(0.0) as f64,
                 chunk.get(3).copied().unwrap_or(0.0) as f64,

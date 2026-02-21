@@ -16,7 +16,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue};
 
 use forge_primitives::{
-    alloc_buffer, alloc_buffer_with_data, dispatch_1d, read_buffer_slice, ExploitParams, GpuTimer,
+    alloc_buffer, alloc_buffer_with_data, dispatch_1d, ExploitParams, GpuTimer,
     MetalContext, PsoCache,
 };
 

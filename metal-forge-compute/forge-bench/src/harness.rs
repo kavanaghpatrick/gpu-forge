@@ -148,9 +148,9 @@ pub fn run_experiment(
 
 /// Format a size number for display (e.g., 1000000 -> "1M").
 pub fn format_size(size: usize) -> String {
-    if size >= 1_000_000 && size % 1_000_000 == 0 {
+    if size >= 1_000_000 && size.is_multiple_of(1_000_000) {
         format!("{}M", size / 1_000_000)
-    } else if size >= 1_000 && size % 1_000 == 0 {
+    } else if size >= 1_000 && size.is_multiple_of(1_000) {
         format!("{}K", size / 1_000)
     } else {
         format!("{}", size)

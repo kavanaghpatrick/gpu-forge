@@ -23,6 +23,7 @@ impl BenchProgress {
     }
 
     /// Update the progress message.
+    #[allow(dead_code)]
     pub fn update(&self, msg: &str) {
         self.bar.set_message(msg.to_string());
     }
