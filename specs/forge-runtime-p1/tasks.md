@@ -164,7 +164,7 @@ After POC validated, build the pipeline and gather kernel.
 
 ## Phase 3: Testing
 
-- [ ] 3.1 Integration tests for full pipeline
+- [x] 3.1 Integration tests for full pipeline
   - **Do**:
     1. Create `forge-runtime/tests/pipeline_tests.rs`
     2. Test filter->sort: 1M random u32, filter Gt(500K), sort result, verify sorted + all > 500K
