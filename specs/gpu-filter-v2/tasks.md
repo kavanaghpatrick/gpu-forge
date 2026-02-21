@@ -126,7 +126,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
 
 ### 2A: BooleanMask Type + Multi-Column Filter
 
-- [ ] 2.1 Add BooleanMask type and filter_mask method
+- [x] 2.1 Add BooleanMask type and filter_mask method
   - **Do**:
     1. Add `BooleanMask` struct to lib.rs:
        - `buffer: Retained<ProtocolObject<dyn MTLBuffer>>` (packed u32 words)

@@ -1534,6 +1534,374 @@ impl GpuFilter {
         let result = self.filter(&buf, pred)?;
         Ok(result.to_vec())
     }
+
+    /// Evaluate a predicate on a [`FilterBuffer`], returning a [`BooleanMask`].
+    ///
+    /// Runs dispatches 1 and 2 of the bitmap pipeline (bitmap_scan + scan_partials)
+    /// but does NOT scatter. The returned mask can be passed to [`gather`](Self::gather)
+    /// to produce filtered output, or combined with other masks for multi-column filtering.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let mut buf = gpu.alloc_filter_buffer::<u32>(1000);
+    /// buf.copy_from_slice(&(0..1000).collect::<Vec<u32>>());
+    /// let mask = gpu.filter_mask(&buf, &Predicate::Gt(500u32)).unwrap();
+    /// assert_eq!(mask.count(), 499);
+    /// ```
+    pub fn filter_mask<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        pred: &Predicate<T>,
+    ) -> Result<BooleanMask, FilterError> {
+        let n = buf.len();
+        if n == 0 {
+            // Return an empty mask with minimal buffer
+            let empty_buf = alloc_buffer(&self.device, 4);
+            let empty_partials = alloc_buffer(&self.device, 4);
+            return Ok(BooleanMask {
+                buffer: empty_buf,
+                partials: empty_partials,
+                len: 0,
+                count: 0,
+            });
+        }
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+
+        let (lo_bits, hi_bits) = pred.to_bits();
+        let pred_type = pred.pred_type_id();
+        let data_type = T::DATA_TYPE_ID;
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        // Allocate dedicated bitmap and partials buffers for the mask (not shared scratch)
+        let num_tiles_t = if T::IS_64BIT {
+            (n + FILTER_TILE_64 as usize - 1) / FILTER_TILE_64 as usize
+        } else {
+            (n + FILTER_TILE_32 as usize - 1) / FILTER_TILE_32 as usize
+        };
+        let bitmap_words = num_tiles_t * (tile_size / 32);
+        let mask_bitmap_buf = alloc_buffer(&self.device, bitmap_words * 4);
+        let mask_partials_buf = alloc_buffer(&self.device, num_tiles * 4);
+
+        // Ensure count buffer exists
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+
+        // Zero count buffer
+        unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: lo_bits as u32,
+                lo_hi: (lo_bits >> 32) as u32,
+                hi_lo: hi_bits as u32,
+                hi_hi: (hi_bits >> 32) as u32,
+                _pad: [0, 0],
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(true)), // IS_64BIT
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(&mask_bitmap_buf), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(&mask_partials_buf), 0, 2);
+                    // buffer(3) = validity — not used, bind bitmap as placeholder
+                    enc.setBuffer_offset_atIndex(Some(&mask_bitmap_buf), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: lo_bits as u32,
+                hi_bits: hi_bits as u32,
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &[
+                        (0, FnConstant::U32(pred_type)),
+                        (1, FnConstant::Bool(false)), // IS_64BIT
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(&mask_bitmap_buf), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(&mask_partials_buf), 0, 2);
+                    // buffer(3) = validity — not used, bind bitmap as placeholder
+                    enc.setBuffer_offset_atIndex(Some(&mask_bitmap_buf), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        }
+
+        // Dispatch 2: scan partials — we need to use the mask's partials buffer
+        // Temporarily swap in the mask's partials buffer for the scan
+        let saved_partials = self.buf_partials.take();
+        self.buf_partials = Some(mask_partials_buf.clone());
+
+        // Need block_totals if hierarchical scan is needed
+        let saved_block_totals = if num_tiles > Self::SCAN_BLOCK_SIZE {
+            let num_blocks = (num_tiles + Self::SCAN_BLOCK_SIZE - 1) / Self::SCAN_BLOCK_SIZE;
+            let block_totals_buf = alloc_buffer(&self.device, num_blocks * 4);
+            let saved = self.buf_block_totals.take();
+            self.buf_block_totals = Some(block_totals_buf);
+            saved
+        } else {
+            None
+        };
+
+        self.encode_scan_partials(&enc, num_tiles);
+
+        // Restore original partials/block_totals
+        self.buf_partials = saved_partials;
+        if num_tiles > Self::SCAN_BLOCK_SIZE {
+            self.buf_block_totals = saved_block_totals;
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read count from count_buf[0]
+        let buf_count = self.buf_count.as_ref().unwrap();
+        let count = unsafe { *(buf_count.contents().as_ptr() as *const u32) } as usize;
+
+        Ok(BooleanMask {
+            buffer: mask_bitmap_buf,
+            partials: mask_partials_buf,
+            len: n,
+            count,
+        })
+    }
+
+    /// Scatter matching elements from a [`FilterBuffer`] using a precomputed [`BooleanMask`].
+    ///
+    /// Runs only dispatch 3 (bitmap_scatter) — the predicate is NOT re-evaluated.
+    /// The mask must have been created from data of the same length.
+    ///
+    /// This is the second half of a split filter: first call [`filter_mask`](Self::filter_mask)
+    /// to get the mask, then call `gather` to produce the filtered output.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let mut buf = gpu.alloc_filter_buffer::<u32>(1000);
+    /// buf.copy_from_slice(&(0..1000).collect::<Vec<u32>>());
+    /// let mask = gpu.filter_mask(&buf, &Predicate::Gt(500u32)).unwrap();
+    /// let result = gpu.gather(&buf, &mask).unwrap();
+    /// assert_eq!(result.len(), 499);
+    /// assert_eq!(result.as_slice()[0], 501);
+    /// ```
+    pub fn gather<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        mask: &BooleanMask,
+    ) -> Result<FilterResult<T>, FilterError> {
+        let n = buf.len();
+        if n == 0 || mask.count == 0 {
+            return Ok(FilterResult {
+                count: 0,
+                values_buf: None,
+                indices_buf: None,
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        assert_eq!(
+            n, mask.len,
+            "gather: buffer len {} != mask len {}",
+            n, mask.len
+        );
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+        let data_type = T::DATA_TYPE_ID;
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        // Ensure output buffers exist
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: 0,
+                lo_hi: 0,
+                hi_lo: 0,
+                hi_hi: 0,
+                _pad: [0, 0],
+            };
+
+            let buf_output = self.buf_output.as_ref().unwrap();
+            let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+            let pso = self.pso_cache.get_or_create_specialized(
+                &self.library,
+                "filter_bitmap_scatter",
+                &[
+                    (1, FnConstant::Bool(true)), // IS_64BIT
+                    (2, FnConstant::Bool(false)), // OUTPUT_IDX
+                    (3, FnConstant::Bool(true)),  // OUTPUT_VALS
+                    (4, FnConstant::U32(data_type)),
+                ],
+            );
+            enc.setComputePipelineState(pso);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(&mask.buffer), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                enc.setBuffer_offset_atIndex(Some(&mask.partials), 0, 4);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                    std::mem::size_of::<FilterParams64>(),
+                    5,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: 0,
+                hi_bits: 0,
+            };
+
+            let buf_output = self.buf_output.as_ref().unwrap();
+            let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+            let pso = self.pso_cache.get_or_create_specialized(
+                &self.library,
+                "filter_bitmap_scatter",
+                &[
+                    (1, FnConstant::Bool(false)), // IS_64BIT
+                    (2, FnConstant::Bool(false)),  // OUTPUT_IDX
+                    (3, FnConstant::Bool(true)),   // OUTPUT_VALS
+                    (4, FnConstant::U32(data_type)),
+                ],
+            );
+            enc.setComputePipelineState(pso);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(&mask.buffer), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                enc.setBuffer_offset_atIndex(Some(&mask.partials), 0, 4);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                    std::mem::size_of::<FilterParams>(),
+                    5,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        Ok(FilterResult {
+            count: mask.count,
+            values_buf: self.buf_output.clone(),
+            indices_buf: None,
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
 }
 
 // --- FilterBuffer<T> ---
@@ -1674,6 +2042,77 @@ impl<T: FilterKey> FilterResult<T> {
     /// Returns `None` if no values buffer is present (index-only mode).
     pub fn metal_buffer(&self) -> Option<&ProtocolObject<dyn MTLBuffer>> {
         self.values_buf.as_deref()
+    }
+}
+
+// --- BooleanMask ---
+
+/// A GPU-resident packed bitmap representing the result of a predicate evaluation.
+///
+/// Each bit corresponds to one input element: 1 = matched, 0 = did not match.
+/// Bits are packed into u32 words (32 elements per word), LSB-first within each word.
+///
+/// Created by [`GpuFilter::filter_mask`]. Can be passed to [`GpuFilter::gather`] to
+/// scatter matching elements without re-evaluating the predicate, or combined with
+/// other masks for multi-column filtering.
+///
+/// # Example
+///
+/// ```no_run
+/// use forge_filter::{GpuFilter, Predicate};
+///
+/// let mut gpu = GpuFilter::new().unwrap();
+/// let mut buf = gpu.alloc_filter_buffer::<u32>(1000);
+/// buf.copy_from_slice(&(0..1000).collect::<Vec<u32>>());
+/// let mask = gpu.filter_mask(&buf, &Predicate::Gt(500u32)).unwrap();
+/// assert_eq!(mask.count(), 499);
+/// let result = gpu.gather(&buf, &mask).unwrap();
+/// assert_eq!(result.len(), 499);
+/// ```
+pub struct BooleanMask {
+    /// Packed u32 words — one bit per element.
+    buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Scanned partials buffer — needed for gather (scatter pass reads global prefix sums).
+    partials: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Number of elements (bits) in the mask.
+    len: usize,
+    /// Number of true bits (matching elements).
+    count: usize,
+}
+
+impl BooleanMask {
+    /// Number of elements (bits) in the mask.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the mask is empty (zero elements).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Number of true bits (matching elements).
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Unpack the bitmap into a `Vec<bool>`.
+    ///
+    /// Returns one `bool` per input element, in order.
+    pub fn to_vec(&self) -> Vec<bool> {
+        let mut result = Vec::with_capacity(self.len);
+        let words = unsafe {
+            std::slice::from_raw_parts(
+                self.buffer.contents().as_ptr() as *const u32,
+                (self.len + 31) / 32,
+            )
+        };
+        for i in 0..self.len {
+            let word = words[i / 32];
+            let bit = (word >> (i % 32)) & 1;
+            result.push(bit != 0);
+        }
+        result
     }
 }
 
@@ -3398,5 +3837,216 @@ mod tests {
         }
 
         println!("test_bitmap_vs_v1_oracle_all_types: all 6 types x 3 predicates passed (bit-identical)");
+    }
+
+    // --- BooleanMask tests ---
+
+    #[test]
+    fn test_filter_mask_u32_basic() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..100_000u32).collect();
+        let pred = Predicate::Gt(50_000u32);
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+
+        let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > 50_000).copied().collect();
+
+        assert_eq!(mask.len(), data.len(), "mask.len() should equal input length");
+        assert_eq!(
+            mask.count(),
+            cpu_ref.len(),
+            "mask.count() should equal CPU ref count"
+        );
+
+        // Verify to_vec produces correct per-element booleans
+        let bools = mask.to_vec();
+        assert_eq!(bools.len(), data.len());
+        let mask_true_count = bools.iter().filter(|&&b| b).count();
+        assert_eq!(mask_true_count, cpu_ref.len(), "to_vec true count mismatch");
+
+        // Spot-check: element 50_001 should be true, element 50_000 should be false
+        assert!(!bools[50_000], "50_000 should NOT match Gt(50_000)");
+        assert!(bools[50_001], "50_001 should match Gt(50_000)");
+
+        println!(
+            "test_filter_mask_u32_basic: mask.len()={}, mask.count()={}",
+            mask.len(),
+            mask.count()
+        );
+    }
+
+    #[test]
+    fn test_filter_mask_gather_matches_filter() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..100_000u32).collect();
+        let pred = Predicate::Gt(50_000u32);
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+
+        // Full filter
+        let filter_result = gpu.filter(&buf, &pred).expect("filter failed");
+        let filter_vec = filter_result.to_vec();
+
+        // Split: filter_mask + gather
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        let gather_result = gpu.gather(&buf, &mask).expect("gather failed");
+        let gather_vec = gather_result.to_vec();
+
+        assert_eq!(
+            filter_vec.len(),
+            gather_vec.len(),
+            "filter vs gather count mismatch"
+        );
+        assert_eq!(
+            filter_vec, gather_vec,
+            "filter vs gather content mismatch"
+        );
+
+        println!(
+            "test_filter_mask_gather_matches_filter: {} elements match",
+            gather_vec.len()
+        );
+    }
+
+    #[test]
+    fn test_filter_mask_gather_1m() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..1_000_000u32).collect();
+        let pred = Predicate::Between(250_000u32, 750_000u32);
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+
+        // CPU reference
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .filter(|&&x| x >= 250_000 && x <= 750_000)
+            .copied()
+            .collect();
+
+        // filter_mask + gather
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        assert_eq!(mask.count(), cpu_ref.len(), "mask count mismatch vs CPU");
+
+        let result = gpu.gather(&buf, &mask).expect("gather failed");
+        assert_eq!(result.len(), cpu_ref.len(), "gather count mismatch");
+
+        // Check first and last 100 elements
+        let check_n = 100.min(result.len());
+        assert_eq!(
+            &result.as_slice()[..check_n],
+            &cpu_ref[..check_n],
+            "first {} elements mismatch",
+            check_n
+        );
+        assert_eq!(
+            &result.as_slice()[result.len() - check_n..],
+            &cpu_ref[cpu_ref.len() - check_n..],
+            "last {} elements mismatch",
+            check_n
+        );
+
+        println!(
+            "test_filter_mask_gather_1m: {} matches (expected {})",
+            result.len(),
+            cpu_ref.len()
+        );
+    }
+
+    #[test]
+    fn test_filter_mask_empty_result() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (0..100_000u32).collect();
+        let pred = Predicate::Gt(200_000u32); // no matches
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        assert_eq!(mask.count(), 0, "expected zero matches");
+        assert_eq!(mask.len(), data.len());
+
+        let result = gpu.gather(&buf, &mask).expect("gather failed");
+        assert_eq!(result.len(), 0, "gather should return empty");
+
+        println!("test_filter_mask_empty_result: OK");
+    }
+
+    #[test]
+    fn test_filter_mask_all_match() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<u32> = (1..100_001u32).collect(); // 1..100_000
+        let pred = Predicate::Gt(0u32); // all match
+
+        let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+        buf.copy_from_slice(&data);
+
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        assert_eq!(mask.count(), data.len(), "all should match");
+
+        let result = gpu.gather(&buf, &mask).expect("gather failed");
+        assert_eq!(result.len(), data.len());
+        assert_eq!(result.as_slice(), &data[..]);
+
+        println!("test_filter_mask_all_match: OK ({} elements)", data.len());
+    }
+
+    #[test]
+    fn test_filter_mask_empty_input() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        // Allocate capacity=1 but set len=0 (alloc_filter_buffer(0) would allocate 0 bytes)
+        let buf = gpu.alloc_filter_buffer::<u32>(1);
+        // len is 0 by default from alloc_filter_buffer
+        let pred = Predicate::Gt(0u32);
+
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        assert_eq!(mask.len(), 0);
+        assert_eq!(mask.count(), 0);
+
+        println!("test_filter_mask_empty_input: OK");
+    }
+
+    #[test]
+    fn test_filter_mask_i32() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<i32> = (-50_000..50_000i32).collect();
+        let pred = Predicate::Lt(0i32);
+
+        let mut buf = gpu.alloc_filter_buffer::<i32>(data.len());
+        buf.copy_from_slice(&data);
+
+        let cpu_ref: Vec<i32> = data.iter().filter(|&&x| x < 0).copied().collect();
+
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        assert_eq!(mask.count(), cpu_ref.len());
+
+        let result = gpu.gather(&buf, &mask).expect("gather failed");
+        assert_eq!(result.to_vec(), cpu_ref);
+
+        println!("test_filter_mask_i32: OK ({} matches)", result.len());
+    }
+
+    #[test]
+    fn test_filter_mask_f32() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let data: Vec<f32> = (0..100_000u32).map(|x| x as f32 * 0.01).collect();
+        let pred = Predicate::Gt(500.0f32);
+
+        let mut buf = gpu.alloc_filter_buffer::<f32>(data.len());
+        buf.copy_from_slice(&data);
+
+        let cpu_ref: Vec<f32> = data.iter().filter(|&&x| x > 500.0).copied().collect();
+
+        let mask = gpu.filter_mask(&buf, &pred).expect("filter_mask failed");
+        assert_eq!(mask.count(), cpu_ref.len());
+
+        let result = gpu.gather(&buf, &mask).expect("gather failed");
+        assert_eq!(result.to_vec(), cpu_ref);
+
+        println!("test_filter_mask_f32: OK ({} matches)", result.len());
     }
 }
