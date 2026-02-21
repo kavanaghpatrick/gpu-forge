@@ -66,7 +66,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
   - _Requirements: FR-12_
   - _Design: Buffer Conversions_
 
-- [ ] 1.5 Add ForgeBuffer trait and conversion functions
+- [x] 1.5 Add ForgeBuffer trait and conversion functions
   - **Do**:
     1. Create `forge-runtime/src/buffer.rs` with `ForgeBuffer<T>` trait: metal_buffer(), len(), capacity(), is_empty()
     2. Add conversion functions: `filter_result_to_sort_buffer<T>(FilterResult<T>) -> SortBuffer<T>` using take_values_buffer + from_raw_parts
