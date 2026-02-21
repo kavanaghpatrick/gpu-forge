@@ -132,7 +132,7 @@ After POC validated, build the pipeline and gather kernel.
   - _Requirements: FR-8_
   - _Design: Pipeline Builder_
 
-- [ ] 2.3 Add encode_filter() public method to GpuFilter
+- [x] 2.3 Add encode_filter() public method to GpuFilter
   - **Do**:
     1. In forge-filter/src/lib.rs, add `pub fn encode_filter<T: FilterKey>(&mut self, encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>, input_buf: &ProtocolObject<dyn MTLBuffer>, n: usize, pred: &Predicate<T>) -> Result<FilterResult<T>, FilterError>`
     2. Implementation: ensure scratch buffers, encode predicate_scan + scan_partials + scatter onto the provided encoder
