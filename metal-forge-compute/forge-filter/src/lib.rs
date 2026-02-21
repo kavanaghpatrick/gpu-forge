@@ -2741,6 +2741,41 @@ impl<T: FilterKey> FilterBuffer<T> {
     pub fn metal_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
+
+    /// Construct a `FilterBuffer` from its raw components.
+    ///
+    /// # Safety (logical)
+    ///
+    /// The caller must ensure:
+    /// - `buffer` is a valid Metal buffer with at least `capacity * size_of::<T>()` bytes.
+    /// - `len <= capacity`.
+    /// - The buffer's contents are valid `T` values for the first `len` elements.
+    pub fn from_raw_parts(
+        buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        len: usize,
+        capacity: usize,
+    ) -> Self {
+        assert!(
+            len <= capacity,
+            "len {} exceeds capacity {}",
+            len,
+            capacity
+        );
+        Self {
+            buffer,
+            len,
+            capacity,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Decompose this `FilterBuffer` into its raw components: (buffer, len, capacity).
+    ///
+    /// This consumes the buffer, transferring ownership of the underlying Metal buffer
+    /// to the caller. Useful for converting between buffer types across crate boundaries.
+    pub fn into_raw_parts(self) -> (Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize) {
+        (self.buffer, self.len, self.capacity)
+    }
 }
 
 // --- FilterResult<T> ---
@@ -2799,6 +2834,23 @@ impl<T: FilterKey> FilterResult<T> {
     /// Returns `None` if no values buffer is present (index-only mode).
     pub fn metal_buffer(&self) -> Option<&ProtocolObject<dyn MTLBuffer>> {
         self.values_buf.as_deref()
+    }
+
+    /// Consume this result and take ownership of the values buffer.
+    ///
+    /// Returns `Some((buffer, len, capacity))` if a values buffer is present,
+    /// or `None` for index-only results. Useful for converting filter output
+    /// into a `SortBuffer` or other buffer type without copying.
+    pub fn take_values_buffer(self) -> Option<(Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize)> {
+        self.values_buf.map(|buf| (buf, self.count, self._capacity))
+    }
+
+    /// Consume this result and take ownership of the indices buffer.
+    ///
+    /// Returns `Some((buffer, count))` if an indices buffer is present,
+    /// or `None` if index output was not requested.
+    pub fn take_indices_buffer(self) -> Option<(Retained<ProtocolObject<dyn MTLBuffer>>, usize)> {
+        self.indices_buf.map(|buf| (buf, self.count))
     }
 }
 

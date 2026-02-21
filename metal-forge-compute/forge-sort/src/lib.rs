@@ -243,6 +243,41 @@ impl<T: SortKey> SortBuffer<T> {
     pub fn metal_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
+
+    /// Construct a `SortBuffer` from its raw components.
+    ///
+    /// # Safety (logical)
+    ///
+    /// The caller must ensure:
+    /// - `buffer` is a valid Metal buffer with at least `capacity * size_of::<T>()` bytes.
+    /// - `len <= capacity`.
+    /// - The buffer's contents are valid `T` values for the first `len` elements.
+    pub fn from_raw_parts(
+        buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+        len: usize,
+        capacity: usize,
+    ) -> Self {
+        assert!(
+            len <= capacity,
+            "len {} exceeds capacity {}",
+            len,
+            capacity
+        );
+        Self {
+            buffer,
+            len,
+            capacity,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Decompose this `SortBuffer` into its raw components: (buffer, len, capacity).
+    ///
+    /// This consumes the buffer, transferring ownership of the underlying Metal buffer
+    /// to the caller. Useful for converting between buffer types across crate boundaries.
+    pub fn into_raw_parts(self) -> (Retained<ProtocolObject<dyn MTLBuffer>>, usize, usize) {
+        (self.buffer, self.len, self.capacity)
+    }
 }
 
 /// Encode and execute the 4-dispatch sort pipeline. Shared by sort_u32 and sort_buffer.

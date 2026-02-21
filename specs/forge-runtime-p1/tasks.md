@@ -51,7 +51,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
   - _Requirements: FR-3, FR-11_
   - _Design: with_context() Constructors_
 
-- [ ] 1.4 Add from_raw_parts / into_raw_parts to SortBuffer and FilterBuffer
+- [x] 1.4 Add from_raw_parts / into_raw_parts to SortBuffer and FilterBuffer
   - **Do**:
     1. Add `SortBuffer::from_raw_parts(buffer, len, capacity) -> Self` to forge-sort/src/lib.rs
     2. Add `SortBuffer::into_raw_parts(self) -> (Retained<MTLBuffer>, usize, usize)` to forge-sort/src/lib.rs
