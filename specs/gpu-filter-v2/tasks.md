@@ -268,7 +268,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-5, FR-6, AC-3.1 through AC-3.6, AC-3.8_
   - _Design: Section 3 — Arrow integration_
 
-- [ ] 2.9 [VERIFY] Quality checkpoint: Arrow + NULL + multi-column + v0.1
+- [x] 2.9 [VERIFY] Quality checkpoint: Arrow + NULL + multi-column + v0.1
   - **Do**: Run full test suite with and without arrow feature + clippy
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute/forge-filter && cargo test 2>&1 | grep "test result" && cargo test --features arrow 2>&1 | grep "test result" && cargo clippy --features arrow -- -D warnings 2>&1 | tail -5`
   - **Done when**: All tests pass both ways, zero clippy warnings
@@ -276,7 +276,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
 
 ### 2D: API Cleanup and Version Bump
 
-- [ ] 2.10 Version bump to 0.2.0 and API audit
+- [x] 2.10 Version bump to 0.2.0 and API audit
   - **Do**:
     1. Bump version in Cargo.toml: `version = "0.2.0"`
     2. Audit all new public types are documented (`#![warn(missing_docs)]` already set)
