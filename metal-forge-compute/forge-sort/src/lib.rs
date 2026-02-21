@@ -560,7 +560,18 @@ impl GpuSorter {
     /// Initialize Metal device, queue, and compile 4 sort kernel PSOs.
     pub fn new() -> Result<Self, SortError> {
         let (device, queue) = init_device_and_queue();
+        Self::with_context(device, queue)
+    }
 
+    /// Create a `GpuSorter` using an externally-provided Metal device and command queue.
+    ///
+    /// This allows sharing a single device/queue across multiple forge crates
+    /// (e.g. via `ForgeContext`). The metallib is loaded and all PSOs are
+    /// pre-compiled, just like [`new()`](Self::new).
+    pub fn with_context(
+        device: Retained<ProtocolObject<dyn MTLDevice>>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ) -> Result<Self, SortError> {
         // Load our sort-specific metallib (embedded path from build.rs)
         let metallib_path = env!("SORT_METALLIB_PATH");
         let path_ns = NSString::from_str(metallib_path);

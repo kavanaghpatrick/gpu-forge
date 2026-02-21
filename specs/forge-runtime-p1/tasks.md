@@ -27,7 +27,7 @@ Focus: Prove shared context + buffer flow + single-CB pipeline works end-to-end.
   - _Requirements: FR-1_
   - _Design: ForgeContext_
 
-- [ ] 1.2 Add with_context() to GpuSorter
+- [x] 1.2 Add with_context() to GpuSorter
   - **Do**:
     1. In `forge-sort/src/lib.rs`, add `pub fn with_context(device: Retained<ProtocolObject<dyn MTLDevice>>, queue: Retained<ProtocolObject<dyn MTLCommandQueue>>) -> Result<Self, SortError>`
     2. Implementation: use provided device/queue instead of calling init_device_and_queue(), load metallib + pre-compile PSOs same as new()
