@@ -55,6 +55,26 @@
 //   - Throughput @ 16M ordered 50%: 18.1 Grows/s (vs Polars 2.78 Grows/s)
 //   - Target 10x ordered (<=580 µs) NOT yet achieved — needs further optimization
 //     in later phases (SLC residency hints, tile size tuning, fused kernel)
+//
+// ── POC Checkpoint (Task 1.7, 2026-02-21) ────────────────────────────────────
+//   Status: VALIDATED — bitmap-cached ordered mode is the active pipeline
+//
+//   Test results: 49 passed, 0 failed (47 original + 2 oracle tests), 3 doc-tests pass
+//   10K-iteration correctness oracle: zero mismatches (u32, 100K elements, ChaCha8Rng)
+//   All-types oracle: 18/18 pass (u32/i32/f32/u64/i64/f64 × 3 predicates each)
+//
+//   Benchmark (confirmed 2026-02-21, M4 Pro):
+//     filter_u32_gt/ordered/1M:  144 µs
+//     filter_u32_gt/ordered/4M:  295 µs
+//     filter_u32_gt/ordered/16M: 883 µs  (6.6x vs Polars 5.8ms)
+//
+//   POC conclusions:
+//     1. Bitmap pipeline proven CORRECT: 10K iterations, all types, all predicates
+//     2. Bitmap adds ~4% overhead vs v0.1 (34µs for 2MB bitmap write) — acceptable
+//     3. Bitmap enables multi-column AND/OR in Phase 2 (single scan per column + bitmap combine)
+//     4. 10x ordered target (<=580µs) deferred to later optimization phases
+//     5. Approach validated: bitmap caching is the right architecture for v0.2 features
+//   ─────────────────────────────────────────────────────────────────────────────
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use forge_filter::{GpuFilter, Predicate};

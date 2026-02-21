@@ -111,7 +111,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `test(forge-filter): add 10K-iteration bitmap correctness oracle`
   - _Requirements: AC-1.3, AC-1.6_
 
-- [ ] 1.7 POC Checkpoint: bitmap-cached ordered mode validated
+- [x] 1.7 POC Checkpoint: bitmap-cached ordered mode validated
   - **Do**:
     1. Run full test suite (47 existing + new bitmap tests)
     2. Run benchmark and record ordered mode speedup ratio
