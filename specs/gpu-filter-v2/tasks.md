@@ -177,7 +177,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - _Requirements: FR-3, AC-2.1, AC-2.2, AC-2.5, AC-2.6, AC-2.7_
   - _Design: Section 3 — filter_multi_mask_
 
-- [ ] 2.4 [VERIFY] Quality checkpoint: multi-column correctness + all v0.1 tests
+- [x] 2.4 [VERIFY] Quality checkpoint: multi-column correctness + all v0.1 tests
   - **Do**: Run full test suite + clippy
   - **Verify**: `cd /Users/patrickkavanagh/gpu_kernel/metal-forge-compute/forge-filter && cargo test 2>&1 | grep "test result" && cargo clippy -- -D warnings 2>&1 | tail -5`
   - **Done when**: All tests pass, zero clippy warnings
@@ -185,7 +185,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
 
 ### 2B: NULL Bitmap Support
 
-- [ ] 2.5 Add NULL bitmap handling to bitmap kernels
+- [x] 2.5 Add NULL bitmap handling to bitmap kernels
   - **Do**:
     1. Ensure `HAS_NULLS` function constant (index 5) already defined from task 1.1
     2. In `filter_bitmap_scan`: when `has_nulls=true`, read validity bitmap from buffer(3), extract bit for each element, AND with predicate result before ballot

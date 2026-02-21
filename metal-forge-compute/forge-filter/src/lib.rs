@@ -2125,6 +2125,524 @@ impl GpuFilter {
             count,
         })
     }
+
+    /// Convert a validity bitmap from Arrow format (`&[u8]`, LSB-first) to
+    /// packed `u32` words in a Metal buffer for the GPU.
+    ///
+    /// Arrow validity bitmaps are byte-packed LSB-first: byte 0 bit 0 = element 0,
+    /// byte 0 bit 7 = element 7, byte 1 bit 0 = element 8, etc.
+    /// We pack 4 consecutive bytes into each u32 word (little-endian) so the GPU
+    /// can read `uint` words directly with the same LSB-first convention.
+    fn validity_to_metal_buffer(
+        &self,
+        validity: &[u8],
+        n: usize,
+    ) -> Retained<ProtocolObject<dyn MTLBuffer>> {
+        // Number of u32 words needed: ceil(n / 32)
+        let num_words = (n + 31) / 32;
+        let buf_size = std::cmp::max(num_words * 4, 4); // at least 4 bytes
+        let buf = alloc_buffer(&self.device, buf_size);
+        let dst = buf.contents().as_ptr() as *mut u32;
+
+        // Pack u8 bytes into u32 words (little-endian: bytes 0-3 -> word 0, etc.)
+        for w in 0..num_words {
+            let byte_offset = w * 4;
+            let mut word: u32 = 0;
+            for b in 0..4 {
+                if byte_offset + b < validity.len() {
+                    word |= (validity[byte_offset + b] as u32) << (b * 8);
+                }
+            }
+            unsafe {
+                std::ptr::write(dst.add(w), word);
+            }
+        }
+
+        buf
+    }
+
+    /// Internal: bitmap-cached filter pipeline with optional validity bitmap for NULLs.
+    ///
+    /// When `validity_buf` is Some, sets HAS_NULLS=true function constant so the
+    /// GPU kernel ANDs predicate results with the validity bitmap (NULLs excluded).
+    fn dispatch_filter_bitmap_nullable<T: FilterKey>(
+        &mut self,
+        input_buf: &ProtocolObject<dyn MTLBuffer>,
+        n: usize,
+        pred: &Predicate<T>,
+        output_vals: bool,
+        output_idx: bool,
+        validity_buf: Option<&ProtocolObject<dyn MTLBuffer>>,
+    ) -> Result<usize, FilterError> {
+        if n == 0 {
+            return Ok(0);
+        }
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+
+        let (lo_bits, hi_bits) = pred.to_bits();
+        let pred_type = pred.pred_type_id();
+        let data_type = T::DATA_TYPE_ID;
+        let has_nulls = validity_buf.is_some();
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        // Zero count buffer
+        unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        // Build function constants for bitmap_scan with optional HAS_NULLS
+        let scan_constants: Vec<(usize, FnConstant)> = vec![
+            (0, FnConstant::U32(pred_type)),
+            (1, FnConstant::Bool(T::IS_64BIT)),
+            (4, FnConstant::U32(data_type)),
+            (5, FnConstant::Bool(has_nulls)),
+        ];
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: lo_bits as u32,
+                lo_hi: (lo_bits >> 32) as u32,
+                hi_lo: hi_bits as u32,
+                hi_hi: (hi_bits >> 32) as u32,
+                _pad: [0, 0],
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &scan_constants,
+                );
+                enc.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                // Use validity buffer if provided, otherwise bind bitmap as placeholder
+                let validity_bind: &ProtocolObject<dyn MTLBuffer> =
+                    validity_buf.unwrap_or(buf_bitmap);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(validity_bind), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+
+            // Dispatch 2: scan partials (reused)
+            self.encode_scan_partials(&enc, num_tiles);
+
+            // Dispatch 3: filter_bitmap_scatter
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scatter",
+                    &[
+                        (1, FnConstant::Bool(true)), // IS_64BIT
+                        (2, FnConstant::Bool(output_idx)),
+                        (3, FnConstant::Bool(output_vals)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 4);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams64>(),
+                        5,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: lo_bits as u32,
+                hi_bits: hi_bits as u32,
+            };
+
+            // Dispatch 1: filter_bitmap_scan
+            {
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scan",
+                    &scan_constants,
+                );
+                enc.setComputePipelineState(pso);
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let validity_bind: &ProtocolObject<dyn MTLBuffer> =
+                    validity_buf.unwrap_or(buf_bitmap);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(validity_bind), 0, 3);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        4,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+
+            // Dispatch 2: scan partials (reused)
+            self.encode_scan_partials(&enc, num_tiles);
+
+            // Dispatch 3: filter_bitmap_scatter
+            {
+                let buf_partials = self.buf_partials.as_ref().unwrap();
+                let buf_output = self.buf_output.as_ref().unwrap();
+                let buf_output_idx = self.buf_output_idx.as_ref().unwrap();
+                let buf_bitmap = self.buf_bitmap.as_ref().unwrap();
+                let pso = self.pso_cache.get_or_create_specialized(
+                    &self.library,
+                    "filter_bitmap_scatter",
+                    &[
+                        (1, FnConstant::Bool(false)), // IS_64BIT
+                        (2, FnConstant::Bool(output_idx)),
+                        (3, FnConstant::Bool(output_vals)),
+                        (4, FnConstant::U32(data_type)),
+                    ],
+                );
+                enc.setComputePipelineState(pso);
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(input_buf), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(buf_bitmap), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(buf_output), 0, 2);
+                    enc.setBuffer_offset_atIndex(Some(buf_output_idx), 0, 3);
+                    enc.setBuffer_offset_atIndex(Some(buf_partials), 0, 4);
+                    enc.setBytes_length_atIndex(
+                        NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                        std::mem::size_of::<FilterParams>(),
+                        5,
+                    );
+                }
+                enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+            }
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read count from count_buf[0]
+        let buf_count = self.buf_count.as_ref().unwrap();
+        let count = unsafe { *(buf_count.contents().as_ptr() as *const u32) } as usize;
+        Ok(count)
+    }
+
+    /// Filter a [`FilterBuffer`] with a validity bitmap, excluding NULL elements.
+    ///
+    /// NULL elements (where the validity bit is 0) are always excluded from the output,
+    /// regardless of the predicate result. The validity bitmap uses Arrow convention:
+    /// packed `u8` bytes, LSB-first (byte 0 bit 0 = element 0, bit 7 = element 7, etc.).
+    ///
+    /// # Arguments
+    ///
+    /// * `buf` - Input data buffer
+    /// * `pred` - Predicate to evaluate on non-NULL elements
+    /// * `validity` - Validity bitmap as `&[u8]`, LSB-first (Arrow convention).
+    ///   Must have at least `ceil(buf.len() / 8)` bytes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let data: Vec<u32> = vec![10, 20, 30, 40, 50];
+    /// let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+    /// buf.copy_from_slice(&data);
+    /// // validity: elements 0,1,3,4 are valid; element 2 is NULL
+    /// // bits: 11011 = 0b00011011 = 0x1B
+    /// let validity = vec![0x1Bu8];
+    /// let result = gpu.filter_nullable(&buf, &Predicate::Gt(15u32), &validity).unwrap();
+    /// // Element 2 (30) excluded despite matching predicate
+    /// assert_eq!(result.as_slice(), &[20, 40, 50]);
+    /// ```
+    pub fn filter_nullable<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        pred: &Predicate<T>,
+        validity: &[u8],
+    ) -> Result<FilterResult<T>, FilterError> {
+        let n = buf.len();
+        if n == 0 {
+            return Ok(FilterResult {
+                count: 0,
+                values_buf: None,
+                indices_buf: None,
+                _capacity: 0,
+                _marker: PhantomData,
+            });
+        }
+
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+        let validity_metal = self.validity_to_metal_buffer(validity, n);
+        let count = self.dispatch_filter_bitmap_nullable(
+            &buf.buffer,
+            n,
+            pred,
+            true,
+            false,
+            Some(&validity_metal),
+        )?;
+
+        Ok(FilterResult {
+            count,
+            values_buf: self.buf_output.clone(),
+            indices_buf: None,
+            _capacity: n,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Evaluate a predicate on a [`FilterBuffer`] with a validity bitmap,
+    /// returning a [`BooleanMask`] that excludes NULL elements.
+    ///
+    /// Like [`filter_mask`](Self::filter_mask) but with NULL awareness. Elements
+    /// where the validity bit is 0 are always excluded (bit = 0 in the mask).
+    ///
+    /// # Arguments
+    ///
+    /// * `buf` - Input data buffer
+    /// * `pred` - Predicate to evaluate on non-NULL elements
+    /// * `validity` - Validity bitmap as `&[u8]`, LSB-first (Arrow convention)
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use forge_filter::{GpuFilter, Predicate};
+    ///
+    /// let mut gpu = GpuFilter::new().unwrap();
+    /// let data: Vec<u32> = vec![10, 20, 30, 40, 50];
+    /// let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+    /// buf.copy_from_slice(&data);
+    /// let validity = vec![0x1Bu8]; // elements 0,1,3,4 valid
+    /// let mask = gpu.filter_mask_nullable(&buf, &Predicate::Gt(15u32), &validity).unwrap();
+    /// assert_eq!(mask.count(), 3); // 20, 40, 50 (30 excluded as NULL)
+    /// ```
+    pub fn filter_mask_nullable<T: FilterKey>(
+        &mut self,
+        buf: &FilterBuffer<T>,
+        pred: &Predicate<T>,
+        validity: &[u8],
+    ) -> Result<BooleanMask, FilterError> {
+        let n = buf.len();
+        if n == 0 {
+            let empty_buf = alloc_buffer(&self.device, 4);
+            let empty_partials = alloc_buffer(&self.device, 4);
+            return Ok(BooleanMask {
+                buffer: empty_buf,
+                partials: empty_partials,
+                len: 0,
+                count: 0,
+            });
+        }
+
+        let tile_size = if T::IS_64BIT {
+            FILTER_TILE_64 as usize
+        } else {
+            FILTER_TILE_32 as usize
+        };
+        let num_tiles = (n + tile_size - 1) / tile_size;
+
+        let (lo_bits, hi_bits) = pred.to_bits();
+        let pred_type = pred.pred_type_id();
+        let data_type = T::DATA_TYPE_ID;
+
+        let tg_size = MTLSize {
+            width: FILTER_THREADS as usize,
+            height: 1,
+            depth: 1,
+        };
+        let tile_grid = MTLSize {
+            width: num_tiles,
+            height: 1,
+            depth: 1,
+        };
+
+        // Allocate dedicated bitmap and partials buffers for the mask
+        let bitmap_words = num_tiles * (tile_size / 32);
+        let mask_bitmap_buf = alloc_buffer(&self.device, bitmap_words * 4);
+        let mask_partials_buf = alloc_buffer(&self.device, num_tiles * 4);
+
+        // Ensure count buffer exists
+        self.ensure_scratch_buffers(n, T::KEY_SIZE);
+
+        // Zero count buffer
+        unsafe {
+            let buf_count = self.buf_count.as_ref().unwrap();
+            std::ptr::write_bytes(buf_count.contents().as_ptr() as *mut u8, 0, 4);
+        }
+
+        let validity_metal = self.validity_to_metal_buffer(validity, n);
+
+        let cmd = self.queue.commandBuffer().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create command buffer".to_string())
+        })?;
+        let enc = cmd.computeCommandEncoder().ok_or_else(|| {
+            FilterError::GpuExecution("failed to create compute encoder".to_string())
+        })?;
+
+        let scan_constants: Vec<(usize, FnConstant)> = vec![
+            (0, FnConstant::U32(pred_type)),
+            (1, FnConstant::Bool(T::IS_64BIT)),
+            (4, FnConstant::U32(data_type)),
+            (5, FnConstant::Bool(true)), // HAS_NULLS
+        ];
+
+        if T::IS_64BIT {
+            let params = FilterParams64 {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_lo: lo_bits as u32,
+                lo_hi: (lo_bits >> 32) as u32,
+                hi_lo: hi_bits as u32,
+                hi_hi: (hi_bits >> 32) as u32,
+                _pad: [0, 0],
+            };
+
+            let pso = self.pso_cache.get_or_create_specialized(
+                &self.library,
+                "filter_bitmap_scan",
+                &scan_constants,
+            );
+            enc.setComputePipelineState(pso);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(&mask_bitmap_buf), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(&mask_partials_buf), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(&validity_metal), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&params as *const FilterParams64 as *mut _).unwrap(),
+                    std::mem::size_of::<FilterParams64>(),
+                    4,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+        } else {
+            let params = FilterParams {
+                element_count: n as u32,
+                num_tiles: num_tiles as u32,
+                lo_bits: lo_bits as u32,
+                hi_bits: hi_bits as u32,
+            };
+
+            let pso = self.pso_cache.get_or_create_specialized(
+                &self.library,
+                "filter_bitmap_scan",
+                &scan_constants,
+            );
+            enc.setComputePipelineState(pso);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(&mask_bitmap_buf), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(&mask_partials_buf), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(&validity_metal), 0, 3);
+                enc.setBytes_length_atIndex(
+                    NonNull::new(&params as *const FilterParams as *mut _).unwrap(),
+                    std::mem::size_of::<FilterParams>(),
+                    4,
+                );
+            }
+            enc.dispatchThreadgroups_threadsPerThreadgroup(tile_grid, tg_size);
+        }
+
+        // Dispatch 2: scan partials — use the mask's partials buffer
+        let saved_partials = self.buf_partials.take();
+        self.buf_partials = Some(mask_partials_buf.clone());
+
+        let saved_block_totals = if num_tiles > Self::SCAN_BLOCK_SIZE {
+            let num_blocks = (num_tiles + Self::SCAN_BLOCK_SIZE - 1) / Self::SCAN_BLOCK_SIZE;
+            let block_totals_buf = alloc_buffer(&self.device, num_blocks * 4);
+            let saved = self.buf_block_totals.take();
+            self.buf_block_totals = Some(block_totals_buf);
+            saved
+        } else {
+            None
+        };
+
+        self.encode_scan_partials(&enc, num_tiles);
+
+        // Restore original partials/block_totals
+        self.buf_partials = saved_partials;
+        if num_tiles > Self::SCAN_BLOCK_SIZE {
+            self.buf_block_totals = saved_block_totals;
+        }
+
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+
+        if MTLCommandBufferStatus::Error == cmd.status() {
+            return Err(FilterError::GpuExecution(format!(
+                "command buffer error: {:?}",
+                cmd.error()
+            )));
+        }
+
+        // Read count from count_buf[0]
+        let buf_count = self.buf_count.as_ref().unwrap();
+        let count = unsafe { *(buf_count.contents().as_ptr() as *const u32) } as usize;
+
+        Ok(BooleanMask {
+            buffer: mask_bitmap_buf,
+            partials: mask_partials_buf,
+            len: n,
+            count,
+        })
+    }
 }
 
 // --- FilterBuffer<T> ---
@@ -4581,5 +5099,231 @@ mod tests {
         );
         assert_eq!(gpu_vals.len(), cpu_vals.len());
         assert_eq!(gpu_vals, cpu_vals);
+    }
+
+    // ================================================================
+    // NULL bitmap tests
+    // ================================================================
+
+    /// Helper: create a validity bitmap (packed u8, LSB-first) from a bool slice.
+    fn make_validity_bitmap(valid: &[bool]) -> Vec<u8> {
+        let num_bytes = (valid.len() + 7) / 8;
+        let mut bitmap = vec![0u8; num_bytes];
+        for (i, &v) in valid.iter().enumerate() {
+            if v {
+                bitmap[i / 8] |= 1 << (i % 8);
+            }
+        }
+        bitmap
+    }
+
+    #[test]
+    fn test_null_every_1000th_excluded() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // Every 1000th element is NULL (invalid)
+        let valid: Vec<bool> = (0..n).map(|i| i % 1000 != 0).collect();
+        let validity = make_validity_bitmap(&valid);
+
+        let pred = Predicate::Gt(50_000u32);
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        // CPU reference: element matches if valid AND predicate passes
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x > 50_000)
+            .map(|(_, &x)| x)
+            .collect();
+
+        println!(
+            "test_null_every_1000th_excluded: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len());
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+    }
+
+    #[test]
+    fn test_null_all_null_returns_empty() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 10_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // All elements are NULL
+        let validity = vec![0u8; (n + 7) / 8];
+
+        let pred = Predicate::Gt(0u32);
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        println!("test_null_all_null_returns_empty: GPU={}", result.len());
+        assert_eq!(result.len(), 0, "all-NULL should return empty");
+    }
+
+    #[test]
+    fn test_null_no_nulls_identical_to_non_nullable() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 100_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // All valid (no NULLs)
+        let validity = vec![0xFFu8; (n + 7) / 8];
+
+        let pred = Predicate::Gt(50_000u32);
+
+        // Nullable path
+        let result_null = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        // Non-nullable path
+        let result_normal = gpu.filter(&buf, &pred).expect("filter failed");
+
+        println!(
+            "test_null_no_nulls_identical: nullable={}, non-nullable={}",
+            result_null.len(),
+            result_normal.len()
+        );
+        assert_eq!(result_null.len(), result_normal.len());
+        assert_eq!(result_null.as_slice(), result_normal.as_slice());
+    }
+
+    #[test]
+    fn test_null_boundary_positions() {
+        // Test NULLs at specific boundary positions: 0, 7, 8, 15, 31, 32
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 1000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        let null_positions = vec![0, 7, 8, 15, 31, 32];
+        let mut valid = vec![true; n];
+        for &pos in &null_positions {
+            valid[pos] = false;
+        }
+        let validity = make_validity_bitmap(&valid);
+
+        // Use Gt(0) so almost all elements match — only element 0 doesn't
+        // match the predicate naturally. So we can see NULL exclusion clearly.
+        let pred = Predicate::Ge(0u32);
+        let result = gpu
+            .filter_nullable(&buf, &pred, &validity)
+            .expect("filter_nullable failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| valid[*i])
+            .map(|(_, &x)| x)
+            .collect();
+
+        println!(
+            "test_null_boundary_positions: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len());
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
+
+        // Verify each null position is NOT in the output
+        let gpu_vals = result.to_vec();
+        for &pos in &null_positions {
+            assert!(
+                !gpu_vals.contains(&(pos as u32)),
+                "NULL at position {} should be excluded",
+                pos
+            );
+        }
+    }
+
+    #[test]
+    fn test_null_mask_nullable_returns_correct_mask() {
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 10_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // Every 100th element is NULL
+        let valid: Vec<bool> = (0..n).map(|i| i % 100 != 0).collect();
+        let validity = make_validity_bitmap(&valid);
+
+        let pred = Predicate::Gt(5_000u32);
+        let mask = gpu
+            .filter_mask_nullable(&buf, &pred, &validity)
+            .expect("filter_mask_nullable failed");
+
+        // CPU reference count
+        let cpu_count = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x > 5_000)
+            .count();
+
+        println!(
+            "test_null_mask_nullable: mask.count={}, cpu={}",
+            mask.count(),
+            cpu_count
+        );
+        assert_eq!(mask.count(), cpu_count);
+
+        // Verify mask bits match CPU reference
+        let mask_vec = mask.to_vec();
+        for (i, &x) in data.iter().enumerate() {
+            let expected = valid[i] && x > 5_000;
+            assert_eq!(
+                mask_vec[i], expected,
+                "mask mismatch at position {}: GPU={}, expected={}",
+                i, mask_vec[i], expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_null_mask_nullable_gather_roundtrip() {
+        // Verify filter_mask_nullable + gather produces correct output
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 50_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        let valid: Vec<bool> = (0..n).map(|i| i % 500 != 0).collect();
+        let validity = make_validity_bitmap(&valid);
+
+        let pred = Predicate::Gt(25_000u32);
+        let mask = gpu
+            .filter_mask_nullable(&buf, &pred, &validity)
+            .expect("filter_mask_nullable failed");
+        let result = gpu.gather(&buf, &mask).expect("gather failed");
+
+        let cpu_ref: Vec<u32> = data
+            .iter()
+            .enumerate()
+            .filter(|(i, &x)| valid[*i] && x > 25_000)
+            .map(|(_, &x)| x)
+            .collect();
+
+        println!(
+            "test_null_mask_nullable_gather: GPU={}, CPU={}",
+            result.len(),
+            cpu_ref.len()
+        );
+        assert_eq!(result.len(), cpu_ref.len());
+        assert_eq!(result.as_slice(), &cpu_ref[..]);
     }
 }
