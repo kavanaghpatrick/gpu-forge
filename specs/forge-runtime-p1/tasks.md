@@ -119,7 +119,7 @@ After POC validated, build the pipeline and gather kernel.
   - _Requirements: FR-9, FR-10_
   - _Design: GPU Gather Kernel_
 
-- [ ] 2.2 Add encode_sort() public method to GpuSorter
+- [x] 2.2 Add encode_sort() public method to GpuSorter
   - **Do**:
     1. In forge-sort/src/lib.rs, add `pub fn encode_sort(&mut self, encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>, buf: &SortBuffer<u32>) -> Result<(), SortError>`
     2. Implementation: ensure scratch buffers, zero MSD histogram, call existing `encode_sort_pipeline()` with the external encoder
