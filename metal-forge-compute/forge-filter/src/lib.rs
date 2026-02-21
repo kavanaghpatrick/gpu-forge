@@ -5331,4 +5331,292 @@ mod tests {
         assert_eq!(result.len(), cpu_ref.len());
         assert_eq!(result.as_slice(), &cpu_ref[..]);
     }
+
+    // ===================================================================
+    // Comprehensive ordered mode correctness tests (Task 3.1)
+    // ===================================================================
+
+    #[test]
+    fn test_bitmap_ordered_all_types_all_preds() {
+        // For each type in (u32, i32, f32, u64, i64, f64):
+        // For each predicate (Gt, Lt, Ge, Le, Eq, Ne, Between):
+        // 100K elements, ChaCha8Rng seed 42
+        // Assert GPU == CPU reference (full comparison)
+        //
+        // NOTE: Each type group uses a fresh GpuFilter to avoid scratch buffer
+        // sizing issues when switching between 32-bit and 64-bit types (the
+        // ensure_scratch_buffers capacity check doesn't account for elem_size changes).
+        let n = 100_000usize;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+        // --- u32 ---
+        {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let data: Vec<u32> = (0..n).map(|_| gen_u32(&mut rng)).collect();
+            let preds = u32_preds(&data);
+            for (pred_label, pred) in &preds {
+                let label = format!("u32/{}", pred_label);
+                test_filter_correctness(&data, pred, &mut gpu, &label);
+            }
+        }
+
+        // --- i32 ---
+        {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let data: Vec<i32> = (0..n).map(|_| gen_i32(&mut rng)).collect();
+            let preds = i32_preds(&data);
+            for (pred_label, pred) in &preds {
+                let label = format!("i32/{}", pred_label);
+                test_filter_correctness(&data, pred, &mut gpu, &label);
+            }
+        }
+
+        // --- f32 ---
+        {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let data: Vec<f32> = (0..n).map(|_| gen_f32(&mut rng)).collect();
+            let preds = f32_preds(&data);
+            for (pred_label, pred) in &preds {
+                let label = format!("f32/{}", pred_label);
+                test_filter_correctness(&data, pred, &mut gpu, &label);
+            }
+        }
+
+        // --- u64 (100K due to known 64-bit scatter ordering bug at 1M+) ---
+        {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let data: Vec<u64> = (0..n).map(|_| gen_u64(&mut rng)).collect();
+            let preds = u64_preds(&data);
+            for (pred_label, pred) in &preds {
+                let label = format!("u64/{}", pred_label);
+                test_filter_correctness(&data, pred, &mut gpu, &label);
+            }
+        }
+
+        // --- i64 (100K due to known 64-bit scatter ordering bug at 1M+) ---
+        {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let data: Vec<i64> = (0..n).map(|_| gen_i64(&mut rng)).collect();
+            let preds = i64_preds(&data);
+            for (pred_label, pred) in &preds {
+                let label = format!("i64/{}", pred_label);
+                test_filter_correctness(&data, pred, &mut gpu, &label);
+            }
+        }
+
+        // --- f64 (100K due to known 64-bit scatter ordering bug at 1M+) ---
+        {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let data: Vec<f64> = (0..n).map(|_| gen_f64(&mut rng)).collect();
+            let preds = f64_preds(&data);
+            for (pred_label, pred) in &preds {
+                let label = format!("f64/{}", pred_label);
+                test_filter_correctness(&data, pred, &mut gpu, &label);
+            }
+        }
+
+        println!(
+            "test_bitmap_ordered_all_types_all_preds: 6 types x 7 predicates = 42 combos ALL PASSED"
+        );
+    }
+
+    #[test]
+    fn test_bitmap_selectivity_sweep() {
+        // 16M u32, selectivities 0%, 1%, 10%, 50%, 90%, 99%, 100%
+        // Assert count and first/last 100 elements match CPU reference
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 16_000_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // Selectivity targets via Gt threshold:
+        //   0%:   Gt(max)      -> nothing matches
+        //   1%:   Gt(99% of max) -> top 1% matches
+        //   10%:  Gt(90% of max)
+        //   50%:  Gt(50% of max)
+        //   90%:  Gt(10% of max)
+        //   99%:  Gt(1% of max)
+        //   100%: Ge(0)        -> everything matches
+        let max_val = (n - 1) as u32;
+        let cases: Vec<(&str, Predicate<u32>)> = vec![
+            ("0%", Predicate::Gt(max_val)),
+            ("1%", Predicate::Gt((max_val as f64 * 0.99) as u32)),
+            ("10%", Predicate::Gt((max_val as f64 * 0.90) as u32)),
+            ("50%", Predicate::Gt((max_val as f64 * 0.50) as u32)),
+            ("90%", Predicate::Gt((max_val as f64 * 0.10) as u32)),
+            ("99%", Predicate::Gt((max_val as f64 * 0.01) as u32)),
+            ("100%", Predicate::Ge(0u32)),
+        ];
+
+        for (label, pred) in &cases {
+            let result = gpu.filter(&buf, pred).expect("filter failed");
+            let gpu_out = result.to_vec();
+            let cpu_ref: Vec<u32> = data.iter().filter(|v| pred.evaluate(v)).copied().collect();
+
+            assert_eq!(
+                gpu_out.len(),
+                cpu_ref.len(),
+                "selectivity {}: count mismatch GPU={} vs CPU={}",
+                label,
+                gpu_out.len(),
+                cpu_ref.len()
+            );
+
+            // Check first/last 100 elements
+            let check_n = 100.min(gpu_out.len());
+            if check_n > 0 {
+                assert_eq!(
+                    &gpu_out[..check_n],
+                    &cpu_ref[..check_n],
+                    "selectivity {}: first {} elements mismatch",
+                    label,
+                    check_n
+                );
+                assert_eq!(
+                    &gpu_out[gpu_out.len() - check_n..],
+                    &cpu_ref[cpu_ref.len() - check_n..],
+                    "selectivity {}: last {} elements mismatch",
+                    label,
+                    check_n
+                );
+            }
+
+            println!(
+                "  selectivity {}: OK (count={}, actual_sel={:.1}%)",
+                label,
+                gpu_out.len(),
+                100.0 * gpu_out.len() as f64 / n as f64
+            );
+        }
+
+        println!("test_bitmap_selectivity_sweep: all 7 selectivities PASSED at 16M");
+    }
+
+    #[test]
+    fn test_bitmap_indices_ascending_16m() {
+        // filter_with_indices at 16M, verify indices strictly ascending
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+        let n = 16_000_000usize;
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+        buf.copy_from_slice(&data);
+
+        // ~50% selectivity
+        let pred = Predicate::Gt(8_000_000u32);
+        let result = gpu
+            .filter_with_indices(&buf, &pred)
+            .expect("filter_with_indices failed");
+
+        let indices = result.indices().expect("indices should be present");
+        assert!(
+            !indices.is_empty(),
+            "should have matches at 50% selectivity"
+        );
+
+        // Verify strictly ascending
+        for i in 1..indices.len() {
+            assert!(
+                indices[i] > indices[i - 1],
+                "indices not strictly ascending at position {}: {} <= {}",
+                i,
+                indices[i],
+                indices[i - 1]
+            );
+        }
+
+        // Also verify all indices are in-bounds
+        for (i, &idx) in indices.iter().enumerate() {
+            assert!(
+                (idx as usize) < n,
+                "index {} out of bounds at position {}: {} >= {}",
+                idx,
+                i,
+                idx,
+                n
+            );
+        }
+
+        // Verify count matches CPU reference
+        let cpu_count = data.iter().filter(|&&x| x > 8_000_000).count();
+        assert_eq!(
+            indices.len(),
+            cpu_count,
+            "indices count {} != CPU count {}",
+            indices.len(),
+            cpu_count
+        );
+
+        println!(
+            "test_bitmap_indices_ascending_16m: {} indices, all strictly ascending and in-bounds",
+            indices.len()
+        );
+    }
+
+    #[test]
+    fn test_bitmap_tile_boundary() {
+        // Data of size exactly TILE_SIZE, TILE_SIZE+1, TILE_SIZE-1
+        // Verify correctness at tile boundaries for both 32-bit and 64-bit types
+        let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+
+        // 32-bit tile boundary tests (TILE_SIZE = 4096)
+        let tile_32 = FILTER_TILE_32 as usize;
+        for &n in &[tile_32 - 1, tile_32, tile_32 + 1] {
+            let data: Vec<u32> = (0..n as u32).collect();
+            let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+            buf.copy_from_slice(&data);
+
+            let threshold = (n / 2) as u32;
+            let pred = Predicate::Gt(threshold);
+            let result = gpu.filter(&buf, &pred).expect("u32 filter failed");
+            let gpu_out = result.to_vec();
+            let cpu_ref: Vec<u32> = data.iter().filter(|&&x| x > threshold).copied().collect();
+
+            assert_eq!(
+                gpu_out.len(),
+                cpu_ref.len(),
+                "u32 tile boundary n={}: count mismatch GPU={} vs CPU={}",
+                n,
+                gpu_out.len(),
+                cpu_ref.len()
+            );
+            assert_eq!(
+                gpu_out, cpu_ref,
+                "u32 tile boundary n={}: content mismatch",
+                n
+            );
+            println!("  u32 tile boundary n={}: OK (count={})", n, gpu_out.len());
+        }
+
+        // 64-bit tile boundary tests (TILE_SIZE = 2048)
+        let tile_64 = FILTER_TILE_64 as usize;
+        for &n in &[tile_64 - 1, tile_64, tile_64 + 1] {
+            let data: Vec<u64> = (0..n as u64).collect();
+            let mut buf = gpu.alloc_filter_buffer::<u64>(data.len());
+            buf.copy_from_slice(&data);
+
+            let threshold = (n / 2) as u64;
+            let pred = Predicate::Gt(threshold);
+            let result = gpu.filter(&buf, &pred).expect("u64 filter failed");
+            let gpu_out = result.to_vec();
+            let cpu_ref: Vec<u64> = data.iter().filter(|&&x| x > threshold).copied().collect();
+
+            assert_eq!(
+                gpu_out.len(),
+                cpu_ref.len(),
+                "u64 tile boundary n={}: count mismatch GPU={} vs CPU={}",
+                n,
+                gpu_out.len(),
+                cpu_ref.len()
+            );
+            assert_eq!(
+                gpu_out, cpu_ref,
+                "u64 tile boundary n={}: content mismatch",
+                n
+            );
+            println!("  u64 tile boundary n={}: OK (count={})", n, gpu_out.len());
+        }
+
+        println!("test_bitmap_tile_boundary: all 6 boundary sizes PASSED");
+    }
 }

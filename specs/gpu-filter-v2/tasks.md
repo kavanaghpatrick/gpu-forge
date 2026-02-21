@@ -292,7 +292,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
 
 ## Phase 3: Testing
 
-- [ ] 3.1 Comprehensive ordered mode correctness tests
+- [x] 3.1 Comprehensive ordered mode correctness tests
   - **Do**:
     1. Add `test_bitmap_ordered_all_types_all_preds` test:
        - For each type in (u32, i32, f32, u64, i64, f64):
