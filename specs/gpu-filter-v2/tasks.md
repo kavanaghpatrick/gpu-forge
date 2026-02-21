@@ -374,7 +374,7 @@ Focus: Bitmap-cached ordered mode working end-to-end with u32, benchmarked at >=
   - **Commit**: `test(forge-filter): add comprehensive Arrow integration tests`
   - _Requirements: AC-3.1 through AC-3.8_
 
-- [ ] 3.6 Property tests with proptest
+- [x] 3.6 Property tests with proptest
   - **Do**:
     1. Add `proptest` to dev-dependencies in Cargo.toml
     2. Add property tests:

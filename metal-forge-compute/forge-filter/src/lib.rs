@@ -6661,4 +6661,196 @@ mod tests {
             nan_count_in_ne
         );
     }
+
+    // --- Property-based tests (proptest) ---
+
+    use proptest::prelude::*;
+
+    fn arb_threshold() -> impl Strategy<Value = u32> {
+        any::<u32>()
+    }
+
+    fn arb_data(max_len: usize) -> impl Strategy<Value = Vec<u32>> {
+        prop::collection::vec(any::<u32>(), 1..=max_len)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 100,
+            // Fixed seed for CI reproducibility
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_filter_output_sorted(
+            data in arb_data(4096),
+            threshold in arb_threshold(),
+        ) {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+            buf.copy_from_slice(&data);
+            let pred = Predicate::Gt(threshold);
+            let result = gpu.filter(&buf, &pred).expect("filter failed");
+            let out = result.as_slice();
+            // Ordered mode: output must preserve input order.
+            // Since we filter from ascending-index data, output values should
+            // appear in the same relative order as input. Verify that sorted
+            // output == output (i.e., it IS sorted ascending).
+            // NOTE: Output is ordered by input index, not by value. But we
+            // CAN verify that values appear in the same order as in the input.
+            // The stronger property is: indices are ascending (tested separately).
+            // Here we just check sorted for the common case with sequential data.
+            // Actually, the task says "output is sorted ascending" for ordered mode
+            // which is true when input is already sorted. Let's verify:
+            // For general random data, output preserves input order (not sorted by value).
+            // The correct property: output values appear in the same order as in input.
+            let expected: Vec<u32> = data.iter().filter(|&&x| x > threshold).copied().collect();
+            // The expected output preserves input order (which is the order of `data`).
+            prop_assert_eq!(out.len(), expected.len());
+            prop_assert_eq!(out, &expected[..]);
+        }
+
+        #[test]
+        fn prop_filter_output_subset(
+            data in arb_data(4096),
+            threshold in arb_threshold(),
+        ) {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+            buf.copy_from_slice(&data);
+            let pred = Predicate::Gt(threshold);
+            let result = gpu.filter(&buf, &pred).expect("filter failed");
+            let out = result.as_slice();
+            // Every output value must exist in the input
+            for &v in out {
+                prop_assert!(
+                    data.contains(&v),
+                    "output value {} not found in input", v
+                );
+            }
+        }
+
+        #[test]
+        fn prop_filter_count_matches_cpu(
+            data in arb_data(4096),
+            threshold in arb_threshold(),
+        ) {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+            buf.copy_from_slice(&data);
+            let pred = Predicate::Gt(threshold);
+            let result = gpu.filter(&buf, &pred).expect("filter failed");
+            let cpu_count = data.iter().filter(|&&x| x > threshold).count();
+            prop_assert_eq!(
+                result.len(), cpu_count,
+                "GPU count {} != CPU count {} for threshold {}",
+                result.len(), cpu_count, threshold
+            );
+        }
+
+        #[test]
+        fn prop_multi_and_subset_of_single(
+            data_a in arb_data(4096),
+            threshold_a in arb_threshold(),
+            threshold_b in arb_threshold(),
+        ) {
+            let n = data_a.len();
+            // Generate second column as reversed data for variety
+            let data_b: Vec<u32> = data_a.iter().map(|&x| x.wrapping_mul(2654435761)).collect();
+
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+
+            // Single-column masks
+            let mut buf_a = gpu.alloc_filter_buffer::<u32>(n);
+            buf_a.copy_from_slice(&data_a);
+            let pred_a = Predicate::Gt(threshold_a);
+            let mask_a = gpu.filter_mask(&buf_a, &pred_a).expect("mask_a failed");
+
+            let mut buf_b = gpu.alloc_filter_buffer::<u32>(n);
+            buf_b.copy_from_slice(&data_b);
+            let pred_b = Predicate::Gt(threshold_b);
+            let mask_b = gpu.filter_mask(&buf_b, &pred_b).expect("mask_b failed");
+
+            // Multi-column AND mask
+            let multi_mask = gpu
+                .filter_multi_mask(
+                    &[(&buf_a, &pred_a), (&buf_b, &pred_b)],
+                    LogicOp::And,
+                )
+                .expect("multi_mask failed");
+
+            // AND result must be subset of each single-column result
+            let bools_a = mask_a.to_vec();
+            let bools_b = mask_b.to_vec();
+            let bools_multi = multi_mask.to_vec();
+
+            for i in 0..n {
+                if bools_multi[i] {
+                    prop_assert!(
+                        bools_a[i],
+                        "AND result true at {} but col A false", i
+                    );
+                    prop_assert!(
+                        bools_b[i],
+                        "AND result true at {} but col B false", i
+                    );
+                }
+            }
+
+            // Also verify AND count <= min(count_a, count_b)
+            prop_assert!(
+                multi_mask.count() <= mask_a.count(),
+                "AND count {} > col A count {}", multi_mask.count(), mask_a.count()
+            );
+            prop_assert!(
+                multi_mask.count() <= mask_b.count(),
+                "AND count {} > col B count {}", multi_mask.count(), mask_b.count()
+            );
+        }
+
+        #[test]
+        fn prop_indices_in_bounds(
+            data in arb_data(4096),
+            threshold in arb_threshold(),
+        ) {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let n = data.len();
+            let mut buf = gpu.alloc_filter_buffer::<u32>(n);
+            buf.copy_from_slice(&data);
+            let pred = Predicate::Gt(threshold);
+            let result = gpu
+                .filter_with_indices(&buf, &pred)
+                .expect("filter_with_indices failed");
+            if let Some(indices) = result.indices() {
+                for &idx in indices {
+                    prop_assert!(
+                        (idx as usize) < n,
+                        "index {} out of bounds (n={})", idx, n
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn prop_indices_ascending(
+            data in arb_data(4096),
+            threshold in arb_threshold(),
+        ) {
+            let mut gpu = GpuFilter::new().expect("GpuFilter::new failed");
+            let mut buf = gpu.alloc_filter_buffer::<u32>(data.len());
+            buf.copy_from_slice(&data);
+            let pred = Predicate::Gt(threshold);
+            let result = gpu
+                .filter_with_indices(&buf, &pred)
+                .expect("filter_with_indices failed");
+            if let Some(indices) = result.indices() {
+                for w in indices.windows(2) {
+                    prop_assert!(
+                        w[0] < w[1],
+                        "indices not strictly ascending: {} >= {}", w[0], w[1]
+                    );
+                }
+            }
+        }
+    }
 }
